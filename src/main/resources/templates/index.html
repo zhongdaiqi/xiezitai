@@ -4,8 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-    <title th:text="${'写字台 - 首页'}">写字台</title>
+    <title th:text="${pageNo > 1 ? '写字台 - 首页 - 第 ' + pageNo + ' 页' : '写字台 - 首页'}">写字台</title>
     <meta name="description" content="写字台 xiezitai.cn — 简洁、SEO 友好的自托管博客">
+    <!-- SEO：翻页用真实链接，并声明 canonical / prev / next，避免重复内容 -->
+    <link rel="canonical" th:if="${pageNo == 1}" th:href="@{/}">
+    <link rel="canonical" th:if="${pageNo > 1}" th:href="@{/(page=${pageNo})}">
+    <link rel="prev" th:if="${pageNo > 1}" th:href="@{/(page=${pageNo - 1})}">
+    <link rel="next" th:if="${pageNo < totalPages}" th:href="@{/(page=${pageNo + 1})}">
     <style>
         :root { --ink: #1a1a1a; --muted: #6b7280; --line: #e5e7eb; --accent: #2563eb; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -26,6 +31,23 @@
         /* 正文里的媒体自适应，避免大图/视频撑破 720px 正文栏 */
         .prose img, .prose video { max-width: 100%; height: auto; border-radius: 6px; }
         .prose video { display: block; margin: 12px 0; background: #000; }
+        /* GFM 任务列表（摘要里也可能出现），与文章页保持一致；扩展不带 class，用 :has() 命中 */
+        .prose ul:has(> li > input[type=checkbox]) { list-style: none; padding-left: 2px; }
+        .prose li:has(> input[type=checkbox]) { list-style: none; }
+        .prose li > input[type=checkbox] { margin-right: 7px; width: 15px; height: 15px;
+            vertical-align: -2px; accent-color: var(--accent); }
+        /* 分页条 */
+        .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+        .pager { display: flex; align-items: center; justify-content: center; gap: 10px;
+                 border-top: 1px solid var(--line); padding-top: 24px; margin-top: 8px; font-size: 14px; }
+        .pager a, .pager span.dis { padding: 5px 11px; border-radius: 6px; text-decoration: none; }
+        .pager a { color: var(--accent); }
+        .pager a:hover { background: #f3f4f6; }
+        .pager span.dis { color: #c7cbd3; }
+        .pager .pages { display: flex; gap: 4px; }
+        .pager .pages a.cur { background: var(--accent); color: #fff; font-weight: 600; }
+        .pager .count { color: var(--muted); margin-left: 6px; font-size: 13px; }
+        @media (max-width: 480px) { .pager .count { display: none; } }
     </style>
 </head>
 <body>
@@ -39,6 +61,8 @@
         </nav>
     </header>
 
+    <p class="empty" th:if="${#lists.isEmpty(articles)}">还没有发布的文章。</p>
+
     <article th:each="a : ${articles}">
         <h2><a th:href="@{'/article/' + ${a.slug}}" th:text="${a.title}"></a></h2>
         <div class="meta">
@@ -49,6 +73,19 @@
         <div class="prose" th:utext="${htmls[a.id]}"></div>
         <a class="more" th:href="@{'/article/' + ${a.slug}}">继续阅读 →</a>
     </article>
+
+    <nav class="pager" th:if="${totalPages > 1}" aria-label="分页导航">
+        <a th:if="${pageNo > 1}" th:href="@{/(page=${pageNo - 1})}" rel="prev">← 上一页</a>
+        <span class="dis" th:unless="${pageNo > 1}">← 上一页</span>
+        <span class="pages">
+            <a th:each="p : ${pageNumbers}" th:href="@{/(page=${p})}" th:text="${p}"
+               th:classappend="${p == pageNo} ? 'cur'"
+               th:attr="aria-current=${p == pageNo ? 'page' : null}"></a>
+        </span>
+        <a th:if="${pageNo < totalPages}" th:href="@{/(page=${pageNo + 1})}" rel="next">下一页 →</a>
+        <span class="dis" th:unless="${pageNo < totalPages}">下一页 →</span>
+        <span class="count" th:text="${'共 ' + totalArticles + ' 篇'}"></span>
+    </nav>
 
     <footer>© 2026 写字台 xiezitai.cn · Powered by Xiezitai</footer>
 </div>

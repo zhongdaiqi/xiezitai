@@ -16,6 +16,7 @@ import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 
 import java.util.List;
@@ -42,12 +43,30 @@ public class PageViewController {
         this.notify = notify;
     }
 
+    /** 首页每页文章数（SEO：翻页用真实链接 + rel prev/next，不用 JS 拼） */
+    private static final int PAGE_SIZE = 10;
+
     @GetMapping("/")
-    public String home(Model model) {
-        List<Article> list = articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(0, 20)).getContent();
+    public String home(@RequestParam(name = "page", defaultValue = "1") int page, Model model) {
+        org.springframework.data.domain.Page<Article> result =
+                articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(0, PAGE_SIZE));
+        int totalPages = Math.max(1, result.getTotalPages());
+        int pageNo = Math.min(Math.max(page, 1), totalPages);
+        // 页码越界（含 ?page=999）时按钳制后的页码重新取一页，而不是给空列表
+        if (pageNo - 1 != 0) {
+            result = articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(pageNo - 1, PAGE_SIZE));
+        }
+        List<Article> list = result.getContent();
         model.addAttribute("articles", list);
         model.addAttribute("htmls", list.stream().collect(java.util.stream.Collectors.toMap(
                 Article::getId, a -> md.toHtml(abbrev(a.getContent(), 300)))));
+        model.addAttribute("pageNo", pageNo);
+        model.addAttribute("totalPages", totalPages);
+        model.addAttribute("totalArticles", result.getTotalElements());
+        // 页码窗口：最多 5 个，围绕当前页，避免文章多了以后页码条铺满一行
+        int winStart = Math.max(1, Math.min(pageNo - 2, totalPages - 4));
+        int winEnd = Math.min(totalPages, winStart + 4);
+        model.addAttribute("pageNumbers", java.util.stream.IntStream.rangeClosed(winStart, winEnd).boxed().toList());
         return "index";
     }
 

@@ -82,6 +82,12 @@
             <artifactId>commonmark-ext-gfm-tables</artifactId>
             <version>0.24.0</version>
         </dependency>
+        <!-- GFM 任务列表：- [x] / - [ ] 渲染成复选框，而不是字面量 -->
+        <dependency>
+            <groupId>org.commonmark</groupId>
+            <artifactId>commonmark-ext-task-list-items</artifactId>
+            <version>0.24.0</version>
+        </dependency>
         <!-- TOTP 绑定二维码（服务端生成 PNG，前端零依赖） -->
         <dependency>
             <groupId>com.google.zxing</groupId>

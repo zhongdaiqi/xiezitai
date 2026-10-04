@@ -23,6 +23,13 @@
         /* 正文里的媒体自适应（github-markdown-css 只管 img，video 需自己兜） */
         .markdown-body img, .markdown-body video { max-width: 100%; height: auto; border-radius: 6px; }
         .markdown-body video { display: block; margin: 12px 0; background: #000; }
+        /* GFM 任务列表：commonmark 只输出 <li><input type="checkbox" disabled>，不带 class，
+           所以用 :has() 命中「含复选框的 li」，去掉项目符号并给复选框留位 */
+        .markdown-body ul:has(> li > input[type=checkbox]) { list-style: none; padding-left: 2px; }
+        .markdown-body li:has(> input[type=checkbox]) { list-style: none; }
+        .markdown-body li > input[type=checkbox] { margin-right: 7px; width: 15px; height: 15px;
+            vertical-align: -2px; accent-color: var(--accent); }
+        .markdown-body li > input[type=checkbox]:checked ~ * { color: var(--muted); }
         /* 评论区排版参考小红书：整体相对正文缩进，条目 = 圆形头像 + 右侧内容，条目间浅分隔线 */
         .comments { margin-left: 8px; }
         .comment { display: flex; gap: 12px; padding: 16px 0; border-bottom: 1px solid #f1f1f3; }

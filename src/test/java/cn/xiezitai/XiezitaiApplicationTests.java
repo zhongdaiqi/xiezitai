@@ -241,6 +241,69 @@ class XiezitaiApplicationTests {
         mvc.perform(get("/article/" + slug)).andExpect(status().is3xxRedirection());
     }
 
+    @Test
+    @DisplayName("GFM 任务列表渲染为复选框，而不是字面量 [x]")
+    void taskListRenderedAsCheckboxes() throws Exception {
+        String token = loginToken(ADMIN, ADMIN_PWD);
+        String md = "待办：\n\n- [x] 已完成的事\n- [ ] 还没做的事\n";
+        MvcResult created = mvc.perform(post("/api/admin/articles").header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("title", "任务列表-" + System.currentTimeMillis(),
+                                "content", md, "status", "PUBLISHED"))))
+                .andExpect(status().isOk()).andReturn();
+        String slug = om.readTree(created.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                .path("slug").asText();
+
+        String html = mvc.perform(get("/article/" + slug)).andExpect(status().isOk()).andReturn()
+                .getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(html).contains("type=\"checkbox\"");                    // 扩展生效
+        assertThat(html).contains("disabled");                             // 只读，不提交
+        assertThat(html).contains("checked");                              // 已勾选项
+        assertThat(html).doesNotContain("[x]").doesNotContain("[ ]");      // 不再露出字面量
+
+        // 摘要（首页）走同一个 MarkdownService，也应渲染成复选框。
+        // 用例执行顺序不确定，别的用例可能往前面塞了更多文章把它挤到第 2 页，所以看前 3 页的并集。
+        StringBuilder home = new StringBuilder();
+        for (int p = 1; p <= 3; p++) home.append(getBody("/?page=" + p));
+        assertThat(home.toString()).contains("type=\"checkbox\"");
+    }
+
+    @Test
+    @DisplayName("首页分页：每页 10 篇、翻页有真实链接、越界页码钳制而非空列表")
+    void homePagination() throws Exception {
+        String token = loginToken(ADMIN, ADMIN_PWD);
+        String prefix = "分页文章-" + System.currentTimeMillis() + "-";
+        for (int i = 1; i <= 12; i++) {
+            mvc.perform(post("/api/admin/articles").header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("title", prefix + i, "content", "第 " + i + " 篇",
+                                    "status", "PUBLISHED"))))
+                    .andExpect(status().isOk());
+        }
+
+        String p1 = getBody("/");
+        assertThat(countOccurrences(p1, "<article>")).isEqualTo(10);            // 每页 10 篇
+        assertThat(p1).contains("class=\"pager\"").contains("rel=\"next\"");
+        assertThat(p1).doesNotContain("rel=\"prev\"");                         // 第 1 页没有上一页
+        assertThat(p1).contains("aria-current=\"page\"");
+
+        String p2 = getBody("/?page=2");
+        assertThat(countOccurrences(p2, "<article>")).isBetween(1, 10);
+        assertThat(p2).contains("rel=\"prev\"").contains("<link rel=\"canonical\"");
+        assertThat(p2).contains("第 2 页");                                    // title 里带页码，便于分享/SEO 区分
+
+        // 越界（999 / 0 / 负数）都必须钳到有效页，不能给空列表
+        for (String bad : new String[]{"/?page=999", "/?page=0", "/?page=-3"}) {
+            String body = getBody(bad);
+            assertThat(countOccurrences(body, "<article>")).as("越界页码 " + bad).isGreaterThanOrEqualTo(1);
+        }
+
+        // 新建的 12 篇都能翻到（最多跨 3 页，越界页会重复最后一页，用并集判断更稳）
+        StringBuilder all = new StringBuilder();
+        for (int p = 1; p <= 3; p++) all.append(getBody("/?page=" + p));
+        for (int i = 1; i <= 12; i++) assertThat(all.toString()).contains(prefix + i);
+    }
+
     /* ==================== 评论（懒加载序列化回归） ==================== */
 
     @Test
@@ -713,5 +776,17 @@ class XiezitaiApplicationTests {
         MvcResult r = mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + jwt))
                 .andExpect(status().isOk()).andReturn();
         return om.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8)).path("apiToken").asText();
+    }
+
+    /** GET 一个 HTML 页面并按 UTF-8 取回正文（中文断言必须显式解码，否则乱码） */
+    private String getBody(String path) throws Exception {
+        return mvc.perform(get(path)).andExpect(status().isOk()).andReturn()
+                .getResponse().getContentAsString(StandardCharsets.UTF_8);
+    }
+
+    private static int countOccurrences(String haystack, String needle) {
+        int n = 0, i = haystack.indexOf(needle);
+        while (i >= 0) { n++; i = haystack.indexOf(needle, i + needle.length()); }
+        return n;
     }
 }
