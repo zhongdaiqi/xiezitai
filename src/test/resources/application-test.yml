@@ -1,0 +1,26 @@
+# 集成测试：H2 内存库，无需 MySQL；上传目录隔离到 data/uploads-test
+spring:
+  datasource:
+    url: jdbc:h2:mem:xiezitai-test;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+  thymeleaf:
+    cache: false
+
+xiezitai:
+  jwt-secret: xiezitai-test-secret-0123456789abcdefghijklmnopqrstuvwxyz
+  jwt-expire-hours: 1
+  upload-dir: ./data/uploads-test
+
+logging:
+  level:
+    cn.xiezitai: INFO
+    org.hibernate: WARN

@@ -34,6 +34,11 @@ public class TotpService {
         return false;
     }
 
+    /** 按密钥计算当前动态码（用于自检，非登录校验路径） */
+    public String currentCode(String base32Secret) {
+        return totp(base32Decode(base32Secret), Instant.now().getEpochSecond() / STEP);
+    }
+
     public String otpAuthUrl(String username, String secret, String issuer) {
         return "otpauth://totp/" + issuer + ":" + username
                 + "?secret=" + secret + "&issuer=" + issuer + "&period=30&digits=6";

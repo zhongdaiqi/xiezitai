@@ -34,7 +34,8 @@ public class FileController {
         this.users = users;
         this.scanner = scanner;
         this.notify = notify;
-        this.uploadDir = Path.of(uploadDir);
+        // 必须绝对化 + normalize，否则相对路径与 resolve().normalize() 结果不一致，会误判“非法路径”
+        this.uploadDir = Path.of(uploadDir).toAbsolutePath().normalize();
     }
 
     @GetMapping("/admin/files")

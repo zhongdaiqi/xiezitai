@@ -65,8 +65,9 @@ public class FileScanService {
             boolean declaredVideo = VIDEO_EXT.contains(ext);
             if (declaredImage || declaredVideo) {
                 if (!magicOk(head, ext)) {
-                    // SVG / webm 等头部多样，只对确定不匹配的标记
-                    if (!looksText(head) || "svg".equals(ext) == false) {
+                    // SVG 是文本格式、头部多样，放行；其余类型魔数不匹配即视为伪装文件
+                    boolean svgLike = "svg".equals(ext) && looksText(head);
+                    if (!svgLike) {
                         verdict = "DANGEROUS";
                         detail = "文件头与声明类型不符（疑似伪装文件）";
                     }
@@ -115,14 +116,18 @@ public class FileScanService {
     private boolean magicOk(byte[] h, String ext) {
         return switch (ext) {
             case "jpg", "jpeg" -> h.length >= 3 && (h[0] & 0xFF) == 0xFF && (h[1] & 0xFF) == 0xD8;
-            case "png" -> h.length >= 4 && h[0] == (byte) 0x89 && h[1] == 'P';
+            case "png" -> h.length >= 4 && (h[0] & 0xFF) == 0x89 && h[1] == 'P';
             case "gif" -> h.length >= 3 && h[0] == 'G' && h[1] == 'I' && h[2] == 'F';
             case "bmp" -> h.length >= 2 && h[0] == 'B' && h[1] == 'M';
-            case "webp" -> h.length >= 4 && h[0] == 'R' && h[1] == 'I' && h[2] == 'F' && h[3] == 'F';
+            case "webp" -> h.length >= 12 && h[0] == 'R' && h[1] == 'I' && h[2] == 'F' && h[3] == 'F'
+                    && h[8] == 'W' && h[9] == 'E' && h[10] == 'B' && h[11] == 'P';
             case "ico" -> h.length >= 2 && h[0] == 0 && h[1] == 0;
-            case "mp4", "mov", "avi", "mkv" -> h.length >= 4 && h[4] == 'f' && h[5] == 't' && h[6] == 'y' && h[7] == 'p'
-                    || h.length >= 4 && h[4] == 'f' && h[5] == 't';
-            case "webm" -> h.length >= 4 && h[0] == 0x1A && h[1] == 0x45;
+            // mp4/mov: ftyp box；注意必须判到第 8 字节，短文件直接判为不匹配（避免越界）
+            case "mp4", "mov" -> h.length >= 8 && h[4] == 'f' && h[5] == 't' && h[6] == 'y' && h[7] == 'p';
+            case "avi" -> h.length >= 4 && h[0] == 'R' && h[1] == 'I' && h[2] == 'F' && h[3] == 'F';
+            case "mkv" -> h.length >= 4 && (h[0] & 0xFF) == 0x1A && (h[1] & 0xFF) == 0x45
+                    && (h[2] & 0xFF) == 0xDF && (h[3] & 0xFF) == 0xA3;
+            case "webm" -> h.length >= 4 && (h[0] & 0xFF) == 0x1A && (h[1] & 0xFF) == 0x45;
             default -> true; // 无法判断的类型不误报
         };
     }

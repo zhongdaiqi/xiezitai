@@ -41,7 +41,7 @@ public class AdminController {
         this.tamper = tamper;
         this.users = users;
         this.logs = logs;
-        this.uploadDir = Path.of(uploadDir);
+        this.uploadDir = Path.of(uploadDir).toAbsolutePath().normalize();
     }
 
     /* ---------- 权限 ---------- */

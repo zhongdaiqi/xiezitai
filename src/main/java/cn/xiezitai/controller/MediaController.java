@@ -31,7 +31,7 @@ public class MediaController {
                            @org.springframework.beans.factory.annotation.Value("${xiezitai.upload-dir}") String uploadDir) {
         this.files = files;
         this.logs = logs;
-        this.uploadDir = Path.of(uploadDir);
+        this.uploadDir = Path.of(uploadDir).toAbsolutePath().normalize();
     }
 
     @GetMapping("/media/{storedName:.+}")
