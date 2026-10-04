@@ -712,6 +712,48 @@ class XiezitaiApplicationTests {
     }
 
     @Test
+    @DisplayName("登录用户可修改密码：旧密码校验 + 新密码生效")
+    void changePassword() throws Exception {
+        String uname = "pwdchg" + (System.currentTimeMillis() % 100000);
+        mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("username", uname, "password", "oldpass66"))))
+                .andExpect(status().isOk());
+        String token = loginToken(uname, "oldpass66");
+
+        // 未登录不能改密码
+        mvc.perform(post("/api/auth/password").contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("oldPassword", "oldpass66", "newPassword", "newpass77"))))
+                .andExpect(status().isUnauthorized());
+
+        // 原密码错误 → 400
+        mvc.perform(post("/api/auth/password").header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("oldPassword", "wrongpwd1", "newPassword", "newpass77"))))
+                .andExpect(status().isBadRequest());
+
+        // 新密码太短 → 400
+        mvc.perform(post("/api/auth/password").header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("oldPassword", "oldpass66", "newPassword", "123"))))
+                .andExpect(status().isBadRequest());
+
+        // 正确修改 → 200
+        mvc.perform(post("/api/auth/password").header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("oldPassword", "oldpass66", "newPassword", "newpass77"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("密码已修改"));
+
+        // 旧密码登录失败、新密码登录成功
+        mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("username", uname, "password", "oldpass66"))))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("username", uname, "password", "newpass77"))))
+                .andExpect(status().isOk());
+    }
+
+    @Test
     @DisplayName("请求日志被完整记录")
     void requestLogsRecorded() throws Exception {
         mvc.perform(get("/robots.txt")).andExpect(status().isOk());

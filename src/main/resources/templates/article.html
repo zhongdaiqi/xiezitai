@@ -169,6 +169,19 @@
         <div class="msg" id="authMsg"></div>
     </div>
 </div>
+
+<!-- 修改密码弹窗（登录用户；与登录弹窗复用同一套 modal 样式） -->
+<div class="modal" id="pwdModal">
+    <div class="modal-card">
+        <span class="x" onclick="closePwd()">&times;</span>
+        <div class="tabs"><button type="button" class="active">修改密码</button></div>
+        <input id="pw-old" type="password" placeholder="原密码" autocomplete="current-password">
+        <input id="pw-new" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password">
+        <input id="pw-new2" type="password" placeholder="确认新密码" autocomplete="new-password">
+        <button type="button" class="wide" onclick="doChangePwd()">确认修改</button>
+        <div class="msg" id="pwdMsg"></div>
+    </div>
+</div>
 <script>
     /* 评论仅限登录用户：token 存 localStorage，与后台 admin.html 共用同一个 key（xz_token） */
     const TOKEN_KEY = 'xz_token';
@@ -206,6 +219,7 @@
         const form = document.getElementById('commentForm');
         if (currentUser) {
             box.innerHTML = '<span>👤 ' + esc(currentUser) + '</span>'
+                + '<button type="button" class="ghost" onclick="openPwd()">修改密码</button>'
                 + '<button type="button" class="ghost" onclick="logout()">退出</button>';
             hint.style.display = 'none';
             form.style.display = 'block';
@@ -225,6 +239,37 @@
         localStorage.removeItem(TOKEN_KEY);
         setMsg('cmsg', '', '');
         renderAuth();
+    }
+
+    /* ---------- 修改密码（登录用户） ---------- */
+    function openPwd() {
+        ['pw-old', 'pw-new', 'pw-new2'].forEach(id => document.getElementById(id).value = '');
+        setMsg('pwdMsg', '', '');
+        document.getElementById('pwdModal').classList.add('open');
+    }
+    function closePwd() { document.getElementById('pwdModal').classList.remove('open'); }
+    async function doChangePwd() {
+        const oldv = document.getElementById('pw-old').value;
+        const n1 = document.getElementById('pw-new').value;
+        const n2 = document.getElementById('pw-new2').value;
+        if (!oldv || !n1) return setMsg('pwdMsg', '请填写原密码与新密码', 'err');
+        if (n1.length < 6) return setMsg('pwdMsg', '新密码至少 6 位', 'err');
+        if (n1 !== n2) return setMsg('pwdMsg', '两次输入的新密码不一致', 'err');
+        const res = await fetch('/api/auth/password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+            body: JSON.stringify({ oldPassword: oldv, newPassword: n1 })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+            setMsg('pwdMsg', '✓ 密码已修改', 'ok');
+            setTimeout(closePwd, 900);
+        } else if (res.status === 401) {
+            closePwd(); logout();
+            setMsg('cmsg', '登录已过期，请重新登录后再修改密码', 'err');
+        } else {
+            setMsg('pwdMsg', data.error || ('修改失败（HTTP ' + res.status + '）'), 'err');
+        }
     }
 
     /* ---------- 登录 / 注册弹窗 ---------- */
