@@ -3,12 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <title th:text="${article.title + ' - 写字台'}">写字台</title>
     <meta name="description" th:content="${article.seoDescription != null ? article.seoDescription : article.summary}">
     <meta name="keywords" th:content="${article.seoKeywords}">
     <meta property="og:title" th:content="${article.title}">
     <meta property="og:type" content="article">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5/github-markdown-light.min.css">
+    <link rel="stylesheet" href="/vendor/github-markdown-css/github-markdown-light.min.css">
     <style>
         :root { --ink: #1a1a1a; --muted: #6b7280; --line: #e5e7eb; --accent: #2563eb; }
         * { box-sizing: border-box; margin: 0; padding: 0; }

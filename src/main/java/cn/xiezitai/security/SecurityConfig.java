@@ -42,7 +42,7 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 // 公开：站点页面与公开读接口
                 .requestMatchers("/", "/article/**", "/page/**", "/media/**", "/admin.html", "/index.html",
-                        "/css/**", "/js/**", "/favicon.ico", "/robots.txt", "/sitemap.xml").permitAll()
+                        "/css/**", "/js/**", "/vendor/**", "/favicon.ico", "/robots.txt", "/sitemap.xml").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/articles/**", "/api/pages/**").permitAll()
                 .requestMatchers("/api/auth/login", "/api/auth/register").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/articles/*/comments").permitAll()

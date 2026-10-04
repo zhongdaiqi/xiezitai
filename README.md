@@ -40,6 +40,7 @@ docker compose up -d --build
 | 开放 API | `POST /api/v1/publish`，Header `X-API-Token`（后台"设置"页查看）                           |
 | MCP    | `POST /api/v1/mcp`，JSON-RPC 2.0，工具：publish_article / list_articles / get_article |
 | SEO    | 服务端渲染、robots.txt、sitemap.xml、OG 标签                                               |
+| 前端资源 | ByteMD / github-markdown-css / Mermaid **全部本地内置**（`static/vendor/`），不依赖任何外部 CDN，可离线/内网部署 |
 
 ## MCP 接入示例
 
@@ -81,5 +82,5 @@ src/main/java/cn/xiezitai/
  └─ config/       默认数据初始化
 src/main/resources/
  ├─ templates/    SEO 服务端渲染模板
- └─ static/       admin.html（ByteMD 管理后台）
+ └─ static/       admin.html（ByteMD 管理后台）+ vendor/（本地内置前端依赖，无 CDN）
 ```

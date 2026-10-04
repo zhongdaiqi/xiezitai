@@ -4,8 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>写字台 · 管理后台</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bytemd@1.21.0/dist/index.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5/github-markdown-light.min.css">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/vendor/bytemd/index.min.css">
+    <link rel="stylesheet" href="/vendor/github-markdown-css/github-markdown-light.min.css">
     <style>
         :root { --ink: #1a1a1a; --muted: #6b7280; --line: #e5e7eb; --accent: #2563eb; --bg: #f9fafb; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -186,17 +187,38 @@
     </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bytemd@1.21.0/dist/bytemd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/bytemd@1.21.0/dist/plugin-gfm.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/bytemd@1.21.0/dist/plugin-frontmatter.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script src="/vendor/bytemd/bytemd.umd.js"></script>
+<script src="/vendor/bytemd/plugin-gfm.umd.js"></script>
+<script src="/vendor/bytemd/plugin-frontmatter.umd.js"></script>
+<script src="/vendor/mermaid/mermaid.min.js"></script>
 <script>
 let token = localStorage.getItem('xz_token') || '';
-let bytemd = null;
+let mdEditor = null;   // ByteMD 实例（禁用变量名 bytemd：会遮蔽 UMD 全局命名空间）
+let mdValue = '';
 
-const H = { Authorization: 'Bearer ' + token };
+/* HTML 的 id 只有在【不含连字符】时才会生成隐式全局变量（可用 aTitle 直接访问 a-title）。
+   本项目 id 大多带连字符，因此必须显式绑定，否则调用即 ReferenceError。 */
+const $ = id => document.getElementById(id);
+// 文章
+const aId = $('a-id'), aTitle = $('a-title'), aSlug = $('a-slug'), aStatus = $('a-status'),
+      aKeywords = $('a-keywords'), aDesc = $('a-desc'), aSummary = $('a-summary'), aCover = $('a-cover');
+// 页面
+const pgId = $('pg-id'), pgTitle = $('pg-title'), pgSlug = $('pg-slug'),
+      pgContent = $('pg-content'), pgPub = $('pg-pub');
+// 设置
+const sWebhook = $('s-webhook'), sAiurl = $('s-aiurl'), sAikey = $('s-aikey'),
+      sAimodel = $('s-aimodel'), sAiimage = $('s-aiimage');
+// 登录
+const luser = $('luser'), lpass = $('lpass'), ltotp = $('ltotp');
+// 各面板提示信息
+const aimsg = $('aimsg'), fmsg = $('fmsg'), smsg = $('smsg');
+
+// 注意：必须每次请求时现算，不能缓存成常量——登录成功后 token 才被赋值
+function authHeaders(extra) {
+    return { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(extra || {}) };
+}
 async function api(path, opts = {}) {
-    const res = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', ...H, ...(opts.headers || {}) } });
+    const res = await fetch(path, { ...opts, headers: authHeaders(opts.headers) });
     if (res.status === 401) { logout(); throw new Error('未登录'); }
     return res;
 }
@@ -204,15 +226,22 @@ async function jget(p) { return (await api(p)).json(); }
 async function jpost(p, body, method = 'POST') { const r = await api(p, { method, body: JSON.stringify(body) }); return r.json(); }
 
 function initEditor(v) {
-    if (bytemd) { bytemd.$set({ value: v }); return; }
+    mdValue = v || '';
+    if (mdEditor) { mdEditor.$set({ value: mdValue }); return; }
+    if (typeof bytemd === 'undefined' || typeof bytemdPluginGfm === 'undefined' || typeof bytemdPluginFrontmatter === 'undefined') {
+        document.getElementById('editor').innerHTML =
+            '<p style="padding:16px;color:#b91c1c">编辑器资源加载失败：请确认 /vendor/bytemd/ 下静态资源可访问。</p>';
+        return;
+    }
     const plugins = [bytemdPluginGfm(), bytemdPluginFrontmatter()];
-    bytemd = new bytemd.default({
+    mdEditor = new bytemd.Editor({
         target: document.getElementById('editor'),
-        props: { value: v || '', plugins, editorConfig: { lineNumbers: true } }
+        props: { value: mdValue, plugins, editorConfig: { lineNumbers: true } }
     });
-    bytemd.$on('change', e => { bytemd.value = e.detail.value; });
+    // ByteMD 是受控组件：预览与字数统计只跟随 value 属性，change 后必须把新值回写
+    mdEditor.$on('change', e => { mdValue = e.detail.value; mdEditor.$set({ value: mdValue }); });
 }
-function getEditorValue() { return bytemd ? bytemd.value : ''; }
+function getEditorValue() { return mdValue; }
 
 /* ---------- 登录 ---------- */
 async function doLogin() {
@@ -279,6 +308,9 @@ async function saveArticle() {
     const id = aId.value;
     const data = id ? await jpost('/api/admin/articles/' + id, body, 'PUT') : await jpost('/api/admin/articles', body);
     aId.value = data.id; articlesCache[data.id] = data;
+    if (data.slug) aSlug.value = data.slug;   // 回填服务端自动生成的 slug
+    if (data.status === 'PUBLISHED') aStatus.value = 'PUBLISHED';
+    aimsg.textContent = '已保存：' + data.slug;
     loadArticles();
 }
 async function delArticle(id) {
