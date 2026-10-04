@@ -157,7 +157,7 @@
     <!-- 评论 -->
     <div class="panel" id="p-comments">
         <div class="card">
-            <table id="clist"><thead><tr><th>评论</th><th>文章</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table>
+            <table id="clist"><thead><tr><th>评论人</th><th>评论</th><th>文章</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table>
         </div>
     </div>
 
@@ -597,7 +597,7 @@ async function loadArticles() {
     tb.innerHTML = '';
     page.content.forEach(a => {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td><a href="/article/${a.slug}" target="_blank">${a.title}</a></td>
+        tr.innerHTML = `<td><a href="/article/${a.slug}" target="_blank">${escapeHtml(a.title)}</a></td>
             <td>${a.status}</td><td>${a.updatedAt || ''}</td>
             <td><button class="ghost" onclick="editArticle(${a.id})">编辑</button>
                 <button class="ghost" onclick="delArticle(${a.id})">删除</button></td>`;
@@ -662,14 +662,20 @@ async function loadPages() {
     const tb = document.querySelector('#pglist tbody');
     tb.innerHTML = '';
     list.forEach(p => {
+        pagesCache[p.id] = p;   // 正文含引号时不能再塞进 onclick 属性（会逃逸 → 存储型 XSS）
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${p.title}</td><td>${p.slug}</td><td>${p.published ? '已发布' : '未发布'}</td>
-            <td><button class="ghost" onclick='editPage(${JSON.stringify(p)})'>编辑</button>
+        tr.innerHTML = `<td>${escapeHtml(p.title)}</td><td>${escapeHtml(p.slug)}</td><td>${p.published ? '已发布' : '未发布'}</td>
+            <td><button class="ghost" onclick="editPage(${p.id})">编辑</button>
                 <button class="ghost" onclick="delPage(${p.id})">删除</button></td>`;
         tb.appendChild(tr);
     });
 }
-function editPage(p) { pgId.value = p.id; pgTitle.value = p.title; pgSlug.value = p.slug; pgContent.value = p.content; pgPub.checked = p.published; }
+let pagesCache = {};
+function editPage(id) {
+    const p = pagesCache[id];
+    if (!p) return;
+    pgId.value = p.id; pgTitle.value = p.title; pgSlug.value = p.slug; pgContent.value = p.content; pgPub.checked = p.published;
+}
 async function savePage() {
     const body = { title: pgTitle.value, slug: pgSlug.value, content: pgContent.value, published: pgPub.checked };
     if (pgId.value) await jpost('/api/admin/pages/' + pgId.value, body, 'PUT');
@@ -711,7 +717,7 @@ async function loadComments() {
     tb.innerHTML = '';
     list.forEach(c => {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${c.content}</td><td>${c.article ? c.article.title : ''}</td><td>${c.status}</td>
+        tr.innerHTML = `<td>${escapeHtml(c.authorName)}</td><td>${escapeHtml(c.content)}</td><td>${c.article ? escapeHtml(c.article.title) : ''}</td><td>${c.status}</td>
             <td><button class="ghost" onclick="setComment(${c.id}, 'APPROVED')">通过</button>
                 <button class="ghost" onclick="setComment(${c.id}, 'REJECTED')">拒绝</button>
                 <button class="ghost" onclick="delComment(${c.id})">删除</button></td>`;
@@ -728,14 +734,14 @@ async function loadUsers() {
     tb.innerHTML = '';
     list.forEach(u => {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${u.username}</td><td>${u.email}</td>
+        tr.innerHTML = `<td>${escapeHtml(u.username)}</td><td>${escapeHtml(u.email)}</td>
             <td><select id="u-role-${u.id}">
                 <option value="USER" ${u.role === 'USER' ? 'selected' : ''}>USER</option>
                 <option value="ADMIN" ${u.role === 'ADMIN' ? 'selected' : ''}>ADMIN</option>
             </select></td>
             <td><input type="checkbox" id="u-en-${u.id}" ${u.enabled ? 'checked' : ''}></td>
             <td>${u.totpEnabled ? '已开启' : '-'}</td>
-            <td><input type="text" id="u-ft-${u.id}" value="${u.allowedFileTypes}" placeholder="如 jpg,png,mp4" style="width:180px;"></td>
+            <td><input type="text" id="u-ft-${u.id}" value="${escapeHtml(u.allowedFileTypes)}" placeholder="如 jpg,png,mp4" style="width:180px;"></td>
             <td><button class="ghost" onclick="saveUser(${u.id})">保存</button></td>`;
         tb.appendChild(tr);
     });

@@ -2,13 +2,15 @@ package cn.xiezitai.controller;
 
 import cn.xiezitai.entity.Article;
 import cn.xiezitai.entity.Comment;
+import cn.xiezitai.entity.User;
 import cn.xiezitai.repository.ArticleRepository;
 import cn.xiezitai.repository.CommentRepository;
+import cn.xiezitai.repository.UserRepository;
 import cn.xiezitai.service.NotifyService;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -17,17 +19,32 @@ public class CommentController {
 
     private final CommentRepository comments;
     private final ArticleRepository articles;
+    private final UserRepository users;
     private final NotifyService notify;
 
-    public CommentController(CommentRepository comments, ArticleRepository articles, NotifyService notify) {
+    public CommentController(CommentRepository comments, ArticleRepository articles,
+                             UserRepository users, NotifyService notify) {
         this.comments = comments;
         this.articles = articles;
+        this.users = users;
         this.notify = notify;
     }
 
-    /** 公开：游客评论（默认待审核） */
+    /**
+     * 发表评论：<b>仅限已登录用户</b>（匿名被 SecurityConfig 拦成 401）。
+     * 作者名/邮箱一律取自登录账号，不接受请求体里的 authorName/email —— 否则任何登录用户都能冒充他人。
+     * 提交后仍为 PENDING，需管理员审核通过才公开展示。
+     */
     @PostMapping("/api/articles/{slug}/comments")
-    public ResponseEntity<?> add(@PathVariable String slug, @RequestBody Map<String, String> body) {
+    public ResponseEntity<?> add(@PathVariable String slug, @RequestBody Map<String, String> body,
+                                 Authentication auth) {
+        if (auth == null || auth.getName() == null) {
+            return ResponseEntity.status(401).body(Map.of("error", "请先登录后再评论"));
+        }
+        User user = users.findByUsername(auth.getName()).orElse(null);
+        if (user == null || !user.isEnabled()) {
+            return ResponseEntity.status(401).body(Map.of("error", "账号不可用，请重新登录"));
+        }
         Article a = articles.findBySlug(slug).orElse(null);
         if (a == null || !"PUBLISHED".equals(a.getStatus())) return ResponseEntity.notFound().build();
         String content = body.getOrDefault("content", "").trim();
@@ -36,8 +53,8 @@ public class CommentController {
         }
         Comment c = new Comment();
         c.setArticle(a);
-        c.setAuthorName(clip(body.getOrDefault("authorName", "匿名"), 50));
-        c.setEmail(clip(body.get("email"), 100));
+        c.setAuthorName(clip(user.getUsername(), 50));   // 服务端权威取名
+        c.setEmail(clip(user.getEmail(), 100));
         c.setContent(content);
         c.setStatus("PENDING");
         comments.save(c);

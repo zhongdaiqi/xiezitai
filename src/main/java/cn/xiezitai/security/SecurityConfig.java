@@ -45,7 +45,8 @@ public class SecurityConfig {
                         "/css/**", "/js/**", "/vendor/**", "/favicon.ico", "/robots.txt", "/sitemap.xml").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/articles/**", "/api/pages/**").permitAll()
                 .requestMatchers("/api/auth/login", "/api/auth/register").permitAll()
-                .requestMatchers(HttpMethod.POST, "/api/articles/*/comments").permitAll()
+                // 评论仅限登录用户（禁止匿名）；读接口仍是公开的
+                .requestMatchers(HttpMethod.POST, "/api/articles/*/comments").authenticated()
                 .requestMatchers("/api/v1/**").permitAll()   // 开放 API / MCP：内部用 token 鉴权
                 // 管理端
                 .requestMatchers("/api/admin/**", "/api/auth/me", "/api/auth/totp/**", "/api/auth/password").authenticated()

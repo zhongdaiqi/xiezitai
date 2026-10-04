@@ -22,6 +22,10 @@ import java.util.Map;
 @RequestMapping("/api/auth")
 public class AuthController {
 
+    /** 用户名规则：字母/数字/下划线/点/短横线，3-20 位（评论作者名会公开展示，禁止特殊字符） */
+    private static final java.util.regex.Pattern USERNAME_RULE =
+            java.util.regex.Pattern.compile("^[A-Za-z0-9_.-]{3,20}$");
+
     private final UserRepository users;
     private final PasswordEncoder encoder;
     private final JwtUtil jwt;
@@ -78,8 +82,13 @@ public class AuthController {
     public ResponseEntity<?> register(@RequestBody Map<String, String> body) {
         String username = body.getOrDefault("username", "").trim();
         String password = body.getOrDefault("password", "");
-        if (username.length() < 3 || password.length() < 6) {
-            return ResponseEntity.badRequest().body(Map.of("error", "用户名至少 3 位，密码至少 6 位"));
+        // 用户名会被公开展示（评论作者等），限制字符集以杜绝存储型 XSS / 混淆名
+        if (!USERNAME_RULE.matcher(username).matches()) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("error", "用户名需 3-20 位，仅限字母、数字、下划线、点、短横线"));
+        }
+        if (password.length() < 6) {
+            return ResponseEntity.badRequest().body(Map.of("error", "密码至少 6 位"));
         }
         if (users.findByUsername(username).isPresent()) {
             return ResponseEntity.badRequest().body(Map.of("error", "用户名已存在"));
@@ -87,7 +96,8 @@ public class AuthController {
         User user = new User();
         user.setUsername(username);
         user.setPassword(encoder.encode(password));
-        user.setEmail(body.get("email"));
+        String email = body.get("email");
+        user.setEmail(email == null ? null : (email.trim().length() > 100 ? email.trim().substring(0, 100) : email.trim()));
         user.setRole("USER");
         user.setApiToken(randomToken());
         users.save(user);

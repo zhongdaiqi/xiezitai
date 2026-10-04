@@ -28,6 +28,26 @@
         textarea { width: 100%; min-height: 90px; border: 1px solid var(--line); border-radius: 6px; padding: 10px; font: inherit; }
         button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 20px; cursor: pointer; margin-top: 8px; }
         input { border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-right: 8px; }
+        .ghost { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+        .userbox { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+        .userbox button { margin-top: 0; padding: 6px 14px; }
+        .cmt-note { color: var(--muted); font-size: 13px; margin-top: 8px; }
+        .cmt-box { border: 1px dashed var(--line); border-radius: 8px; padding: 16px; margin-top: 16px;
+                   display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; }
+        .cmt-box button { margin-top: 0; padding: 6px 16px; }
+        .as-who { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+        .modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none;
+                 align-items: center; justify-content: center; padding: 16px; z-index: 50; }
+        .modal.open { display: flex; }
+        .modal-card { background: #fff; border-radius: 10px; padding: 20px; width: 100%; max-width: 360px; position: relative; }
+        .modal-card input { width: 100%; margin: 0 0 10px; }
+        .wide { width: 100%; margin-top: 4px; }
+        .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+        .tabs button { flex: 1; width: auto; background: #f3f4f6; color: var(--ink); margin-top: 0; }
+        .tabs button.active { background: var(--accent); color: #fff; }
+        .x { position: absolute; top: 10px; right: 14px; cursor: pointer; color: var(--muted); font-size: 20px; line-height: 1; }
+        .msg { font-size: 13px; margin-top: 10px; min-height: 18px; }
+        .msg.ok { color: #16a34a; } .msg.err { color: #b91c1c; }
         footer { border-top: 1px solid var(--line); margin-top: 40px; padding-top: 16px; color: var(--muted); font-size: 13px; }
     </style>
 </head>
@@ -35,6 +55,7 @@
 <div class="wrap">
     <div class="top">
         <a href="/">← 写字台</a>
+        <div class="userbox" id="userBox"></div>
     </div>
     <h1 th:text="${article.title}"></h1>
     <div class="meta">
@@ -46,38 +67,212 @@
     <div class="markdown-body" th:utext="${contentHtml}"></div>
 
     <h3 style="margin-top:48px;" id="comments">评论</h3>
+    <p class="cmt-note" th:if="${#lists.isEmpty(comments)}">还没有评论，登录后来说两句。</p>
     <div class="comment" th:each="c : ${comments}">
         <div class="who"><b th:text="${c.authorName}"></b> · <span th:text="${#temporals.format(c.createdAt, 'yyyy-MM-dd')}"></span></div>
         <div th:text="${c.content}"></div>
     </div>
 
-    <form onsubmit="submitComment(event)" style="margin-top:16px;">
-        <input id="cname" placeholder="昵称（可留空）" style="width:200px;">
-        <input id="cemail" placeholder="邮箱（不公开）" style="width:200px;">
+    <!-- 未登录：不出现输入框，只给登录/注册入口 -->
+    <div class="cmt-box" id="loginHint" style="display:none;">
+        <span>评论仅限登录用户发表</span>
+        <button type="button" onclick="openAuth('login')">登录</button>
+        <button type="button" class="ghost" onclick="openAuth('register')">注册</button>
+    </div>
+
+    <!-- 已登录：显示评论框 -->
+    <form id="commentForm" onsubmit="submitComment(event)" style="margin-top:16px; display:none;">
+        <div class="as-who">以 <b id="cmtAs"></b> 的身份评论</div>
         <textarea id="ccontent" placeholder="说点什么……"></textarea>
         <button type="submit">提交评论</button>
-        <span id="cmsg" style="margin-left:8px;font-size:13px;color:#16a34a;"></span>
+        <span class="msg ok" id="cmsg" style="margin-left:8px; display:inline-block;"></span>
+        <p class="cmt-note">评论提交后需管理员审核通过才会公开展示。</p>
     </form>
 
     <footer>© 2026 写字台 xiezitai.cn</footer>
 </div>
+
+<!-- 登录 / 注册弹窗（复用后台同一套 JWT，token 存 localStorage 的 xz_token） -->
+<div class="modal" id="authModal">
+    <div class="modal-card">
+        <span class="x" onclick="closeAuth()">&times;</span>
+        <div class="tabs">
+            <button type="button" id="tabLogin" class="active" onclick="switchAuth('login')">登录</button>
+            <button type="button" id="tabReg" onclick="switchAuth('register')">注册</button>
+        </div>
+
+        <div id="paneLogin">
+            <input id="au-user" placeholder="用户名" autocomplete="username">
+            <input id="au-pass" type="password" placeholder="密码" autocomplete="current-password">
+            <input id="au-totp" placeholder="动态验证码（开启两步验证才需要）" style="display:none;">
+            <button type="button" class="wide" onclick="doAuthLogin()">登录</button>
+        </div>
+
+        <div id="paneReg" style="display:none;">
+            <input id="ar-user" placeholder="用户名（至少 3 位）" autocomplete="username">
+            <input id="ar-pass" type="password" placeholder="密码（至少 6 位）" autocomplete="new-password">
+            <input id="ar-email" placeholder="邮箱（可选，仅站长可见）" autocomplete="email">
+            <button type="button" class="wide" onclick="doAuthRegister()">注册并登录</button>
+        </div>
+
+        <div class="msg" id="authMsg"></div>
+    </div>
+</div>
 <script>
+    /* 评论仅限登录用户：token 存 localStorage，与后台 admin.html 共用同一个 key（xz_token） */
+    const TOKEN_KEY = 'xz_token';
     const slug = location.pathname.split('/').pop();
+    let token = localStorage.getItem(TOKEN_KEY) || '';
+    let currentUser = '';
+
+    /* ---------- 登录态 ---------- */
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g,
+            c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+    function setMsg(id, text, kind) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = text || '';
+        el.className = 'msg' + (kind ? ' ' + kind : '');
+    }
+    async function refreshUser() {
+        if (!token) { currentUser = ''; renderAuth(); return; }
+        try {
+            const r = await fetch('/api/auth/me', { headers: { Authorization: 'Bearer ' + token } });
+            if (r.ok) {
+                const d = await r.json();
+                currentUser = d.username || '';
+            } else {
+                token = ''; localStorage.removeItem(TOKEN_KEY); currentUser = '';
+            }
+        } catch (e) { currentUser = ''; }
+        renderAuth();
+    }
+    function renderAuth() {
+        const box = document.getElementById('userBox');
+        const hint = document.getElementById('loginHint');
+        const form = document.getElementById('commentForm');
+        if (currentUser) {
+            box.innerHTML = '<span>👤 ' + esc(currentUser) + '</span>'
+                + '<button type="button" class="ghost" onclick="logout()">退出</button>';
+            hint.style.display = 'none';
+            form.style.display = 'block';
+            document.getElementById('cmtAs').textContent = currentUser;
+        } else {
+            box.innerHTML = '<button type="button" onclick="openAuth(\'login\')">登录</button>'
+                + '<button type="button" class="ghost" onclick="openAuth(\'register\')">注册</button>';
+            hint.style.display = 'flex';
+            form.style.display = 'none';
+        }
+    }
+    function logout() {
+        token = ''; currentUser = '';
+        localStorage.removeItem(TOKEN_KEY);
+        setMsg('cmsg', '', '');
+        renderAuth();
+    }
+
+    /* ---------- 登录 / 注册弹窗 ---------- */
+    function openAuth(mode) {
+        switchAuth(mode || 'login');
+        document.getElementById('authModal').classList.add('open');
+    }
+    function closeAuth() { document.getElementById('authModal').classList.remove('open'); }
+    function switchAuth(mode) {
+        const isLogin = mode !== 'register';
+        document.getElementById('tabLogin').classList.toggle('active', isLogin);
+        document.getElementById('tabReg').classList.toggle('active', !isLogin);
+        document.getElementById('paneLogin').style.display = isLogin ? 'block' : 'none';
+        document.getElementById('paneReg').style.display = isLogin ? 'none' : 'block';
+        setMsg('authMsg', '', '');
+    }
+
+    async function doAuthLogin() {
+        const username = document.getElementById('au-user').value.trim();
+        const password = document.getElementById('au-pass').value;
+        const totpCode = document.getElementById('au-totp').value.trim();
+        if (!username || !password) return setMsg('authMsg', '请输入用户名和密码', 'err');
+        const body = { username, password };
+        if (totpCode) body.totpCode = totpCode;
+        let res, data = {};
+        try {
+            res = await fetch('/api/auth/login', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+            });
+            data = await res.json().catch(() => ({}));
+        } catch (e) { return setMsg('authMsg', '网络异常，请重试', 'err'); }
+        if (res.ok) {
+            token = data.token;
+            localStorage.setItem(TOKEN_KEY, token);
+            document.getElementById('au-pass').value = '';
+            document.getElementById('au-totp').value = '';
+            closeAuth();
+            await refreshUser();
+            return;
+        }
+        if (data.error === 'NEED_TOTP') {
+            document.getElementById('au-totp').style.display = 'block';
+            document.getElementById('au-totp').focus();
+            return setMsg('authMsg', data.message || '请输入动态验证码', 'err');
+        }
+        setMsg('authMsg', data.message || data.error || ('登录失败（HTTP ' + res.status + '）'), 'err');
+    }
+
+    async function doAuthRegister() {
+        const username = document.getElementById('ar-user').value.trim();
+        const password = document.getElementById('ar-pass').value;
+        const email = document.getElementById('ar-email').value.trim();
+        if (username.length < 3) return setMsg('authMsg', '用户名至少 3 位', 'err');
+        if (password.length < 6) return setMsg('authMsg', '密码至少 6 位', 'err');
+        let res, data = {};
+        try {
+            res = await fetch('/api/auth/register', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password, email })
+            });
+            data = await res.json().catch(() => ({}));
+        } catch (e) { return setMsg('authMsg', '网络异常，请重试', 'err'); }
+        if (!res.ok) return setMsg('authMsg', data.message || data.error || ('注册失败（HTTP ' + res.status + '）'), 'err');
+        // 注册成功直接接着登录，省一次输入
+        document.getElementById('au-user').value = username;
+        document.getElementById('au-pass').value = password;
+        await doAuthLogin();
+    }
+
+    /* ---------- 提交评论（作者由服务端按登录账号决定，前端只传正文） ---------- */
     async function submitComment(e) {
         e.preventDefault();
-        const res = await fetch('/api/articles/' + slug + '/comments', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                authorName: document.getElementById('cname').value,
-                email: document.getElementById('cemail').value,
-                content: document.getElementById('ccontent').value
-            })
-        });
-        const msg = document.getElementById('cmsg');
-        msg.textContent = res.ok ? '已提交，审核通过后展示' : '提交失败';
-        if (res.ok) document.getElementById('ccontent').value = '';
+        const content = document.getElementById('ccontent').value.trim();
+        if (!content) return setMsg('cmsg', '评论内容不能为空', 'err');
+        let res, data = {};
+        try {
+            res = await fetch('/api/articles/' + slug + '/comments', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+                body: JSON.stringify({ content })
+            });
+            data = await res.json().catch(() => ({}));
+        } catch (err) { return setMsg('cmsg', '网络异常，请重试', 'err'); }
+        if (res.ok) {
+            document.getElementById('ccontent').value = '';
+            setMsg('cmsg', data.message || '已提交，审核通过后展示', 'ok');
+            return;
+        }
+        if (res.status === 401) {
+            logout();                       // token 失效：退回未登录态
+            setMsg('cmsg', '登录已过期，请重新登录后再评论', 'err');
+            return;
+        }
+        setMsg('cmsg', data.message || data.error || ('提交失败（HTTP ' + res.status + '）'), 'err');
     }
+
+    document.getElementById('authModal').addEventListener('click', e => {
+        if (e.target.id === 'authModal') closeAuth();
+    });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeAuth(); });
+    renderAuth();
+    refreshUser();
 </script>
 </body>
 </html>

@@ -243,8 +243,8 @@ class XiezitaiApplicationTests {
     /* ==================== 评论（懒加载序列化回归） ==================== */
 
     @Test
-    @DisplayName("游客评论待审，管理员审核后公开可见")
-    void visitorCommentNeedsApproval() throws Exception {
+    @DisplayName("评论仅限登录用户：匿名 401，作者名取自登录账号（不可伪造），待审后公开")
+    void commentRequiresLoginAndNeedsApproval() throws Exception {
         String token = loginToken(ADMIN, ADMIN_PWD);
         MvcResult created = mvc.perform(post("/api/admin/articles").header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -254,15 +254,30 @@ class XiezitaiApplicationTests {
         String slug = om.readTree(created.getResponse().getContentAsString(StandardCharsets.UTF_8))
                 .path("slug").asText();
 
+        // 匿名（未带 token）评论 -> 401，禁止匿名
         mvc.perform(post("/api/articles/" + slug + "/comments").contentType(MediaType.APPLICATION_JSON)
-                        .content(json(Map.of("content", "写得不错", "authorName", "路人甲"))))
+                        .content(json(Map.of("content", "匿名灌水", "authorName", "路人甲"))))
+                .andExpect(status().isUnauthorized());
+
+        // 注册一个普通用户并登录
+        String uname = "cmt" + (System.currentTimeMillis() % 100000);
+        mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("username", uname, "password", "cmt123456"))))
+                .andExpect(status().isOk());
+        String userToken = loginToken(uname, "cmt123456");
+
+        // 登录用户评论：请求体里塞 authorName 冒充他人应被忽略，服务端按登录账号取名
+        mvc.perform(post("/api/articles/" + slug + "/comments")
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("content", "写得不错", "authorName", "管理员本尊"))))
                 .andExpect(status().isOk());
 
         // 未审核 -> 公开列表为空
         mvc.perform(get("/api/articles/" + slug + "/comments")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(0));
 
-        // 管理员看到待审评论（此处会序列化 article 字段，验证 @EntityGraph 生效）
+        // 管理员看到待审评论（序列化 article 字段，顺带验证 @EntityGraph 生效）
         MvcResult all = mvc.perform(get("/api/admin/comments").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk()).andReturn();
         JsonNode list = om.readTree(all.getResponse().getContentAsString(StandardCharsets.UTF_8));
@@ -271,7 +286,9 @@ class XiezitaiApplicationTests {
         for (JsonNode c : list) {
             if (slug.equals(c.path("article").path("slug").asText())) {
                 id = c.path("id").asLong();
-                assertThat(c.path("authorName").asText()).isEqualTo("路人甲");
+                assertThat(c.path("authorName").asText())
+                        .as("作者名必须取自登录账号，不能被请求体伪造")
+                        .isEqualTo(uname);
             }
         }
         assertThat(id).isPositive();
@@ -282,7 +299,24 @@ class XiezitaiApplicationTests {
 
         mvc.perform(get("/api/articles/" + slug + "/comments")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(1))
-                .andExpect(jsonPath("$[0].content").value("写得不错"));
+                .andExpect(jsonPath("$[0].content").value("写得不错"))
+                .andExpect(jsonPath("$[0].authorName").value(uname));
+    }
+
+    @Test
+    @DisplayName("注册用户名限制字符集（防存储型 XSS / 混淆名）")
+    void registerRejectsUnsafeUsername() throws Exception {
+        // 含尖括号/空格/中文等一律拒绝
+        for (String bad : new String[]{"<script>", "a b", "中文名", "ab", "x".repeat(21)}) {
+            mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("username", bad, "password", "pass123456"))))
+                    .andExpect(status().isBadRequest());
+        }
+        // 合法用户名可通过
+        String ok = "ok_" + (System.currentTimeMillis() % 100000);
+        mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("username", ok, "password", "pass123456"))))
+                .andExpect(status().isOk());
     }
 
     /* ==================== 页面 ==================== */
