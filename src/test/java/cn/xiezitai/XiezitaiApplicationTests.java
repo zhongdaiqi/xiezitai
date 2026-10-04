@@ -64,6 +64,7 @@ class XiezitaiApplicationTests {
     @Autowired ObjectMapper om;
     @Autowired UserRepository users;
     @Autowired ArticleRepository articles;
+    @Autowired cn.xiezitai.repository.CommentRepository comments;
     @Autowired FileRepository fileRepo;
     @Autowired RequestLogRepository logs;
     @Autowired PasswordEncoder encoder;
@@ -300,7 +301,111 @@ class XiezitaiApplicationTests {
         mvc.perform(get("/api/articles/" + slug + "/comments")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(1))
                 .andExpect(jsonPath("$[0].content").value("写得不错"))
-                .andExpect(jsonPath("$[0].authorName").value(uname));
+                .andExpect(jsonPath("$[0].authorName").value(uname))
+                .andExpect(jsonPath("$[0].replies.length()").value(0));
+    }
+
+    @Test
+    @DisplayName("评论层级：回复挂到根评论下（两级封顶），父未过审则回复不展示，删除父则级联删回复")
+    void commentRepliesFormTwoLevelTree() throws Exception {
+        String admin = loginToken(ADMIN, ADMIN_PWD);
+        MvcResult created = mvc.perform(post("/api/admin/articles").header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("title", "层级评论-" + System.currentTimeMillis(),
+                                "content", "正文", "status", "PUBLISHED"))))
+                .andExpect(status().isOk()).andReturn();
+        String slug = om.readTree(created.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                .path("slug").asText();
+
+        // 三个用户：A 发一级评论，B 回复 A，C 回复 B（应被收敛到 A 下面）
+        String[] names = new String[3];
+        String[] tokens = new String[3];
+        for (int i = 0; i < 3; i++) {
+            names[i] = "lv" + i + (System.currentTimeMillis() % 100000);
+            mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("username", names[i], "password", "lv123456"))))
+                    .andExpect(status().isOk());
+            tokens[i] = loginToken(names[i], "lv123456");
+        }
+
+        long rootId = postComment(slug, tokens[0], "一级评论：正文写得不错", null);
+        assertThat(rootId).isPositive();
+        long replyId = postComment(slug, tokens[1], "回复一级：同意", String.valueOf(rootId));
+        long replyOfReply = postComment(slug, tokens[2], "回复二级：+1", String.valueOf(replyId));
+
+        // 回复不存在的评论 -> 400
+        mvc.perform(post("/api/articles/" + slug + "/comments")
+                        .header("Authorization", "Bearer " + tokens[0])
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("content", "乱回复", "parentId", "99999999"))))
+                .andExpect(status().isBadRequest());
+
+        // 全部未审核 -> 公开树为空
+        mvc.perform(get("/api/articles/" + slug + "/comments")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+
+        // 只通过两条回复，不通过父评论 -> 依然是空（父未过审，回复不展示）
+        approve(admin, replyId);
+        approve(admin, replyOfReply);
+        mvc.perform(get("/api/articles/" + slug + "/comments")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+
+        // 通过父评论 -> 树成形：1 个根 + 2 条回复，二级回复被收敛到根下
+        approve(admin, rootId);
+        mvc.perform(get("/api/articles/" + slug + "/comments")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].id").value((int) rootId))
+                .andExpect(jsonPath("$[0].parentId").doesNotExist())
+                .andExpect(jsonPath("$[0].replies.length()").value(2))
+                .andExpect(jsonPath("$[0].replies[0].content").value("回复一级：同意"))
+                .andExpect(jsonPath("$[0].replies[0].replyToName").value(names[0]))
+                .andExpect(jsonPath("$[0].replies[1].content").value("回复二级：+1"))
+                // 回复的回复被收敛到根评论下，但「回复 @」仍指向被回复的那位
+                .andExpect(jsonPath("$[0].replies[1].replyToName").value(names[1]))
+                .andExpect(jsonPath("$[0].replies[1].parentId").value((int) rootId));
+
+        // 回复里伪造的 authorName / replyToName 一律忽略
+        assertThat(om.readTree(mvc.perform(get("/api/articles/" + slug + "/comments"))
+                        .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8))
+                .path(0).path("replies").path(0).path("authorName").asText())
+                .isEqualTo(names[1]);
+
+        // 删除根评论 -> 级联删掉两条回复，公开树清空
+        mvc.perform(delete("/api/admin/comments/" + rootId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("2 条回复")));
+        assertThat(comments.findById(rootId)).isEmpty();
+        assertThat(comments.findById(replyId)).isEmpty();
+        assertThat(comments.findById(replyOfReply)).isEmpty();
+        mvc.perform(get("/api/articles/" + slug + "/comments")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    /** 以某个用户身份发评论/回复，返回新评论 id */
+    private long postComment(String slug, String token, String content, String parentId) throws Exception {
+        Map<String, String> body = new java.util.HashMap<>();
+        body.put("content", content);
+        if (parentId != null) body.put("parentId", parentId);
+        MvcResult r = mvc.perform(post("/api/articles/" + slug + "/comments")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON).content(json(body)))
+                .andExpect(status().isOk()).andReturn();
+        // 从后台列表里找出刚创建的那条（公开接口只返回已审核的）
+        String admin = loginToken(ADMIN, ADMIN_PWD);
+        JsonNode all = om.readTree(mvc.perform(get("/api/admin/comments").header("Authorization", "Bearer " + admin))
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8));
+        long max = 0;
+        for (JsonNode c : all) {
+            if (content.equals(c.path("content").asText())) max = Math.max(max, c.path("id").asLong());
+        }
+        return max;
+    }
+
+    private void approve(String adminToken, long commentId) throws Exception {
+        mvc.perform(put("/api/admin/comments/" + commentId + "/status")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON).content(json(Map.of("status", "APPROVED"))))
+                .andExpect(status().isOk());
     }
 
     @Test

@@ -1,5 +1,6 @@
 package cn.xiezitai.controller;
 
+import cn.xiezitai.dto.CommentNode;
 import cn.xiezitai.entity.Article;
 import cn.xiezitai.entity.Comment;
 import cn.xiezitai.entity.User;
@@ -31,8 +32,10 @@ public class CommentController {
     }
 
     /**
-     * 发表评论：<b>仅限已登录用户</b>（匿名被 SecurityConfig 拦成 401）。
+     * 发表评论 / 回复：<b>仅限已登录用户</b>（匿名被 SecurityConfig 拦成 401）。
      * 作者名/邮箱一律取自登录账号，不接受请求体里的 authorName/email —— 否则任何登录用户都能冒充他人。
+     * 可选 {@code parentId} 表示回复；只做两级，回复的回复仍归到同一根评论下，
+     * replyToName 由服务端按被回复评论的作者写入（前端传值一律忽略）。
      * 提交后仍为 PENDING，需管理员审核通过才公开展示。
      */
     @PostMapping("/api/articles/{slug}/comments")
@@ -51,24 +54,42 @@ public class CommentController {
         if (content.isEmpty() || content.length() > 2000) {
             return ResponseEntity.badRequest().body(Map.of("error", "评论内容为空或超长"));
         }
+
+        Long parentId = parseId(body.get("parentId"));
+        String replyToName = null;
+        if (parentId != null) {
+            Comment parent = comments.findByIdWithArticle(parentId).orElse(null);
+            if (parent == null || parent.getArticle() == null
+                    || !parent.getArticle().getId().equals(a.getId())) {
+                return ResponseEntity.badRequest().body(Map.of("error", "被回复的评论不存在"));
+            }
+            replyToName = clip(parent.getAuthorName(), 50);
+            // 只保留两级：回复一条回复时，仍挂到它所属的一级评论下
+            if (parent.getParentId() != null) parentId = parent.getParentId();
+        }
+
         Comment c = new Comment();
         c.setArticle(a);
         c.setAuthorName(clip(user.getUsername(), 50));   // 服务端权威取名
         c.setEmail(clip(user.getEmail(), 100));
         c.setContent(content);
         c.setStatus("PENDING");
+        c.setParentId(parentId);
+        c.setReplyToName(replyToName);
         comments.save(c);
         notify.notifyEvent("comment", "**写字台新评论待审**\n> 文章: " + a.getTitle()
-                + "\n> 评论人: " + c.getAuthorName());
-        return ResponseEntity.ok(Map.of("message", "评论已提交，待审核后展示"));
+                + "\n> 评论人: " + c.getAuthorName()
+                + (replyToName != null ? "\n> 回复: " + replyToName : ""));
+        return ResponseEntity.ok(Map.of("message", parentId == null ? "评论已提交，待审核后展示" : "回复已提交，待审核后展示"));
     }
 
-    /** 公开：已通过审核的评论 */
+    /** 公开：已通过审核的评论（两级树形，父评论未过审时其回复自然不展示） */
     @GetMapping("/api/articles/{slug}/comments")
-    public List<Comment> listPublic(@PathVariable String slug) {
+    public List<CommentNode> listPublic(@PathVariable String slug) {
         Article a = articles.findBySlug(slug).orElse(null);
         if (a == null) return List.of();
-        return comments.findByArticleIdAndStatusOrderByCreatedAtDesc(a.getId(), "APPROVED");
+        return CommentNode.tree(
+                comments.findByArticleIdAndStatusOrderByCreatedAtAsc(a.getId(), "APPROVED"));
     }
 
     /** 管理：全部评论 */
@@ -86,10 +107,22 @@ public class CommentController {
         return ResponseEntity.ok(Map.of("message", "已更新"));
     }
 
+    /** 删除评论：连同其下的回复一起删掉，避免留下孤儿回复 */
     @DeleteMapping("/api/admin/comments/{id}")
     public ResponseEntity<?> delete(@PathVariable Long id) {
+        List<Comment> children = comments.findByParentId(id);
+        if (!children.isEmpty()) comments.deleteAll(children);
         comments.deleteById(id);
-        return ResponseEntity.ok(Map.of("message", "已删除"));
+        return ResponseEntity.ok(Map.of("message", "已删除，同时移除 " + children.size() + " 条回复"));
+    }
+
+    private Long parseId(String s) {
+        if (s == null || s.isBlank()) return null;
+        try {
+            return Long.parseLong(s.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private String clip(String s, int max) {

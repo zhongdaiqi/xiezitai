@@ -36,6 +36,17 @@
         .comment .who { color: #9ca3af; font-size: 13px; margin-bottom: 5px; }
         .comment .who b { color: #6b7280; font-weight: 500; }
         .comment .text { font-size: 15px; line-height: 1.65; color: var(--ink); word-break: break-word; white-space: pre-wrap; }
+        /* 层级：回复相对一级评论内容再缩进一档，形成阶梯（参考小红书） */
+        .replies { margin-left: 16px; }
+        .replies .comment { padding: 12px 0 0; border-bottom: 0; }
+        .avatar.sm { width: 26px; height: 26px; flex: 0 0 26px; font-size: 12px; }
+        .replies .who .at { color: var(--accent); }
+        .reply-btn { background: none; border: 0; padding: 0; margin-top: 6px; font-size: 13px;
+                     color: var(--muted); cursor: pointer; }
+        .reply-btn:hover { color: var(--accent); }
+        .reply-form { margin: 10px 0 4px; }
+        .reply-form textarea { min-height: 64px; font-size: 14px; }
+        .reply-form .msg { margin-left: 8px; }
         textarea { width: 100%; min-height: 90px; border: 1px solid var(--line); border-radius: 6px; padding: 10px; font: inherit; }
         button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 20px; cursor: pointer; margin-top: 8px; }
         input { border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-right: 8px; }
@@ -77,15 +88,31 @@
     <img class="cover" th:if="${article.cover != null && !article.cover.isEmpty()}" th:src="${article.cover}" alt="cover">
     <div class="markdown-body" th:utext="${contentHtml}"></div>
 
-    <h3 style="margin-top:48px;" id="comments">评论</h3>
+    <h3 style="margin-top:48px;" id="comments">评论<span th:if="${commentCount > 0}" th:text="' · ' + ${commentCount}"></span></h3>
     <div class="comments">
         <p class="cmt-note" th:if="${#lists.isEmpty(comments)}">还没有评论，登录后来说两句。</p>
-        <div class="comment" th:each="c : ${comments}">
+        <div class="comment" th:each="c : ${comments}" th:attr="data-id=${c.id},data-author=${c.authorName}">
             <div class="avatar" th:classappend="|av-${c.id % 6}|"
                  th:text="${!#strings.isEmpty(c.authorName) ? #strings.substring(c.authorName, 0, 1) : '?'}"></div>
             <div class="body">
                 <div class="who"><b th:text="${c.authorName}"></b> · <span th:text="${#temporals.format(c.createdAt, 'yyyy-MM-dd')}"></span></div>
                 <div class="text" th:text="${c.content}"></div>
+                <button type="button" class="reply-btn" style="display:none;" onclick="openReply(this)">回复</button>
+
+                <!-- 二级：回复列表，相对一级评论内容再缩进一档 -->
+                <div class="replies" th:if="${!#lists.isEmpty(c.replies)}">
+                    <div class="comment" th:each="r : ${c.replies}" th:attr="data-id=${r.id},data-author=${r.authorName}">
+                        <div class="avatar sm" th:classappend="|av-${r.id % 6}|"
+                             th:text="${!#strings.isEmpty(r.authorName) ? #strings.substring(r.authorName, 0, 1) : '?'}"></div>
+                        <div class="body">
+                            <div class="who"><b th:text="${r.authorName}"></b>
+                                <span class="at" th:if="${!#strings.isEmpty(r.replyToName)}" th:text="'回复 @' + ${r.replyToName}"></span>
+                                · <span th:text="${#temporals.format(r.createdAt, 'yyyy-MM-dd')}"></span></div>
+                            <div class="text" th:text="${r.content}"></div>
+                            <button type="button" class="reply-btn" style="display:none;" onclick="openReply(this)">回复</button>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -181,7 +208,10 @@
                 + '<button type="button" class="ghost" onclick="openAuth(\'register\')">注册</button>';
             hint.style.display = 'flex';
             form.style.display = 'none';
+            document.querySelectorAll('.reply-form').forEach(f => f.remove());
         }
+        // 「回复」按钮只在登录后可用
+        document.querySelectorAll('.reply-btn').forEach(b => { b.style.display = currentUser ? 'inline-block' : 'none'; });
     }
     function logout() {
         token = ''; currentUser = '';
@@ -282,6 +312,56 @@
             return;
         }
         setMsg('cmsg', data.message || data.error || ('提交失败（HTTP ' + res.status + '）'), 'err');
+    }
+
+    /* ---------- 回复（两级层级：回复一条回复时，服务端会把 parentId 收敛回同一根评论） ---------- */
+    function openReply(btn) {
+        const host = btn.closest('.comment');
+        const body = host.querySelector('.body');
+        const old = body.querySelector('.reply-form');
+        if (old) { old.remove(); return; }           // 再次点击 = 收起
+        const form = document.createElement('form');
+        form.className = 'reply-form';
+        const ta = document.createElement('textarea');
+        ta.placeholder = '回复 @' + (host.dataset.author || '') + '……';
+        const send = document.createElement('button');
+        send.type = 'submit'; send.textContent = '回复';
+        const cancel = document.createElement('button');
+        cancel.type = 'button'; cancel.className = 'ghost'; cancel.textContent = '取消';
+        cancel.addEventListener('click', () => form.remove());
+        const msg = document.createElement('span');
+        msg.className = 'msg';
+        form.append(ta, send, cancel, msg);
+        form.addEventListener('submit', e => submitReply(e, host.dataset.id, ta, msg));
+        body.appendChild(form);
+        ta.focus();
+    }
+    async function submitReply(e, parentId, ta, msg) {
+        e.preventDefault();
+        const content = ta.value.trim();
+        if (!content) { msg.className = 'msg err'; msg.textContent = '内容不能为空'; return; }
+        let res, data = {};
+        try {
+            res = await fetch('/api/articles/' + slug + '/comments', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+                body: JSON.stringify({ content, parentId })
+            });
+            data = await res.json().catch(() => ({}));
+        } catch (err) { msg.className = 'msg err'; msg.textContent = '网络异常，请重试'; return; }
+        if (res.ok) {
+            ta.value = '';
+            msg.className = 'msg ok';
+            msg.textContent = data.message || '已提交，待审核后展示';
+            return;
+        }
+        if (res.status === 401) {
+            logout();
+            msg.className = 'msg err'; msg.textContent = '登录已过期，请重新登录';
+            return;
+        }
+        msg.className = 'msg err';
+        msg.textContent = data.message || data.error || ('提交失败（HTTP ' + res.status + '）');
     }
 
     document.getElementById('authModal').addEventListener('click', e => {

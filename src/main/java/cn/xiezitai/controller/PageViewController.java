@@ -59,7 +59,10 @@ public class PageViewController {
         notifyVisit(a, request);
         model.addAttribute("article", a);
         model.addAttribute("contentHtml", md.toHtml(a.getContent()));
-        model.addAttribute("comments", comments.findByArticleIdAndStatusOrderByCreatedAtDesc(a.getId(), "APPROVED"));
+        List<cn.xiezitai.dto.CommentNode> threads = cn.xiezitai.dto.CommentNode.tree(
+                comments.findByArticleIdAndStatusOrderByCreatedAtAsc(a.getId(), "APPROVED"));
+        model.addAttribute("comments", threads);
+        model.addAttribute("commentCount", cn.xiezitai.dto.CommentNode.count(threads));
         return "article";
     }
 

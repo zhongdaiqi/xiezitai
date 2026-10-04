@@ -27,6 +27,16 @@ public class Comment {
     /** PENDING / APPROVED / REJECTED */
     private String status = "PENDING";
 
+    /**
+     * 层级：一级评论为 null；回复挂在一级评论上（只做两级，回复的回复仍归到同一根）。
+     * 用 id 而非对象关联，避免自关联带来的懒加载与序列化麻烦。
+     */
+    private Long parentId;
+
+    /** 回复对象显示名（「回复 @xxx」），由服务端按被回复评论的 authorName 写入，不接受前端传值 */
+    @Column(length = 50)
+    private String replyToName;
+
     private LocalDateTime createdAt = LocalDateTime.now();
 
     public Long getId() { return id; }
@@ -41,6 +51,10 @@ public class Comment {
     public void setContent(String content) { this.content = content; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
+    public Long getParentId() { return parentId; }
+    public void setParentId(Long parentId) { this.parentId = parentId; }
+    public String getReplyToName() { return replyToName; }
+    public void setReplyToName(String replyToName) { this.replyToName = replyToName; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 }
