@@ -331,8 +331,14 @@ function getEditorValue() { return mdValue; }
 /* ==================== 媒体插入（图片 / 视频） ====================
    - 「插入媒体」按钮 → 媒体库弹窗：上传（点击/拖拽）或从已有文件里挑，插入到光标处
    - 粘贴截图 / 拖图片进编辑器 → ByteMD 的 uploadImages 自动入库并插入 Markdown
-   - 拖视频进编辑器 → 走自己的 drop 处理（ByteMD 的 uploadImages 只认 image/*）
-   注意：图片插入用 Markdown 语法（前台是服务端 commonmark 渲染）；视频 Markdown 没有原生语法，
+   - 拖非图片（视频等）进编辑器 → 自己的 drop 处理负责（ByteMD 的 drop/paste 只认 image/*）
+   - 工具栏「图片」按钮选了视频等非图片文件 → 也在 editorUploadImages 里分流处理
+
+   【重要】ByteMD 的 uploadImages 契约是「返回什么就被插成 ![alt](url)」，没有例外：
+       const res = await uploadImages(files);
+       appendBlock(res.map(({url,alt,title},i) => `![${alt ?? files[i].name}](${url})`).join('\n\n'));
+   所以视频绝不能出现在返回值里（否则就成了 ![](/media/xxx.mp4)）。
+   图片插入用 Markdown 语法（前台是服务端 commonmark 渲染）；视频 Markdown 没有原生语法，
    约定用内联 <video> 标签——commonmark 默认 escapeHtml=false，直接原样输出，
    ByteMD 预览侧靠 extendSanitize() 把 video 加进白名单。 */
 let mediaTarget = 'editor';   // 'editor' = 文章 ByteMD；'page' = 页面 textarea
@@ -340,16 +346,23 @@ let mediaCache = [];
 let mediaFilter = 'all';
 
 function isImageFile(f) {
-    return (f.contentType || '').startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i.test(f.storedName || '');
+    return (f.contentType || '').startsWith('image/')
+        || /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i.test(f.storedName || f.originalName || '');
 }
 function isVideoFile(f) {
-    return (f.contentType || '').startsWith('video/') || /\.(mp4|webm|ogv|ogg|mov|m4v|mkv|avi)$/i.test(f.storedName || '');
+    return (f.contentType || '').startsWith('video/')
+        || /\.(mp4|webm|ogv|ogg|mov|m4v|mkv|avi)$/i.test(f.storedName || f.originalName || '');
 }
-/** 生成要写进正文的片段 */
+function isAudioFile(f) {
+    return (f.contentType || '').startsWith('audio/')
+        || /\.(mp3|wav|ogg|m4a|flac|aac)$/i.test(f.storedName || f.originalName || '');
+}
+/** 生成要写进正文的片段：视频/音频用内联 HTML 标签（Markdown 无原生语法），图片用 Markdown 图片语法 */
 function mediaSnippet(f) {
     const url = '/media/' + f.storedName;
     const name = String(f.originalName || f.storedName).replace(/[[\]]/g, '');
     if (isVideoFile(f)) return `<video src="${url}" controls preload="metadata" playsinline></video>`;
+    if (isAudioFile(f)) return `<audio src="${url}" controls preload="metadata"></audio>`;
     if (isImageFile(f)) return `![${name}](${url})`;
     return `[${name}](${url})`;
 }
@@ -358,6 +371,14 @@ function mediaSnippet(f) {
 function codeMirrorInstance() {
     const el = document.querySelector('#editor .CodeMirror');
     return el && el.CodeMirror ? el.CodeMirror : null;
+}
+/** 把片段直接插进文章编辑器（明确针对文章编辑器，不受 mediaTarget 影响） */
+function insertIntoArticleEditor(text) {
+    const cm = codeMirrorInstance();
+    if (cm) { cm.replaceSelection(text); cm.focus(); return true; }
+    mdValue = mdValue ? mdValue + '\n\n' + text : text;   // 编辑器未就绪时兜底
+    if (mdEditor) mdEditor.$set({ value: mdValue });
+    return false;
 }
 /** 在光标处插入文本；replaceSelection 会触发 change，ByteMD 的 value 自动同步 */
 function insertAtCursor(text) {
@@ -370,11 +391,7 @@ function insertAtCursor(text) {
         ta.focus();
         return true;
     }
-    const cm = codeMirrorInstance();
-    if (cm) { cm.replaceSelection(text); cm.focus(); return true; }
-    mdValue = mdValue ? mdValue + '\n\n' + text : text;   // 编辑器未就绪时兜底
-    if (mdEditor) mdEditor.$set({ value: mdValue });
-    return false;
+    return insertIntoArticleEditor(text);
 }
 
 function escapeHtml(s) {
@@ -408,11 +425,26 @@ async function uploadMediaFiles(files) {
     return out;
 }
 
-/** ByteMD uploadImages 契约：入参 File[]，返回 [{ url, alt?, title? }]（注意是 url 不是 src） */
+/** ByteMD uploadImages 契约：入参 File[]，返回 [{ url, alt?, title? }]。
+    注意 ByteMD 会把返回的每一项**一律**渲染成 `![alt](url)`（是 url 不是 src），
+    所以只有图片可以出现在返回值里；视频/音频/其他文件自己插入 HTML 片段，不进返回值。 */
 async function editorUploadImages(files) {
-    const uploaded = await uploadMediaFiles(files);
-    if (uploaded.length) loadMediaLibrary();
-    return uploaded.map(f => ({ url: '/media/' + f.storedName, alt: f.originalName }));
+    const arr = Array.from(files || []);
+    const images = arr.filter(f => (f.type || '').startsWith('image/'));
+    const others = arr.filter(f => !(f.type || '').startsWith('image/'));
+
+    let out = [];
+    if (images.length) {
+        const up = await uploadMediaFiles(images);
+        out = up.map(f => ({ url: '/media/' + f.storedName, alt: f.originalName }));
+    }
+    if (others.length) {
+        // 视频/音频等：Markdown 没有原生语法，由我们自己在光标处插 <video>/<audio>/链接
+        const up = await uploadMediaFiles(others);
+        if (up.length) insertIntoArticleEditor(up.map(mediaSnippet).join('\n\n'));
+    }
+    if (out.length || others.length) loadMediaLibrary();
+    return out;
 }
 
 /** hact-util-sanitize 默认白名单没有 video/source/audio/iframe；sanitize 支持传 (schema)=>schema 增量改 */
@@ -426,20 +458,28 @@ function extendSanitize(schema) {
     return schema;
 }
 
-/** 视频拖拽进编辑器：捕获阶段拦下，只处理 video/*，图片留给 ByteMD */
+/** 拖拽进编辑器：捕获阶段先拦「非图片」文件（视频/音频/其他）自行入库并插入，
+    图片（image/*）留给 ByteMD 的 drop 处理，避免重复上传与插入。 */
 function setupEditorDrop() {
     const host = $('editor');
     if (!host || host.dataset.dropBound) return;
     host.dataset.dropBound = '1';
-    const hasVideo = dt => Array.from((dt && dt.items) || []).some(i => i.kind === 'file' && (i.type || '').startsWith('video/'));
-    host.addEventListener('dragover', e => { if (hasVideo(e.dataTransfer)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
+    const dropped = dt => Array.from((dt && dt.files) || []);
+    const bytemdHandles = f => (f.type || '').startsWith('image/');   // 图片交给 ByteMD
+    host.addEventListener('dragover', e => {
+        const fs = dropped(e.dataTransfer);
+        if (fs.length && fs.some(f => !bytemdHandles(f))) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+        }
+    });
     host.addEventListener('drop', async e => {
-        const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []).filter(f => (f.type || '').startsWith('video/'));
-        if (!files.length) return;
+        const files = dropped(e.dataTransfer).filter(f => !bytemdHandles(f));
+        if (!files.length) return;          // 纯图片：不拦截，交给 ByteMD
         e.preventDefault();
         e.stopPropagation();
         const up = await uploadMediaFiles(files);
-        if (up.length) { insertAtCursor(up.map(mediaSnippet).join('\n\n')); loadMediaLibrary(); }
+        if (up.length) { insertIntoArticleEditor(up.map(mediaSnippet).join('\n\n')); loadMediaLibrary(); }
     }, true);
 }
 
