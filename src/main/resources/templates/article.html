@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title th:text="${article.title + ' - 写字台'}">写字台</title>
+    <meta name="description" th:content="${article.seoDescription != null ? article.seoDescription : article.summary}">
+    <meta name="keywords" th:content="${article.seoKeywords}">
+    <meta property="og:title" th:content="${article.title}">
+    <meta property="og:type" content="article">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5/github-markdown-light.min.css">
+    <style>
+        :root { --ink: #1a1a1a; --muted: #6b7280; --line: #e5e7eb; --accent: #2563eb; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--ink); background: #fff; }
+        .wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
+        .top { padding: 24px 0; border-bottom: 1px solid var(--line); margin-bottom: 32px; display: flex; justify-content: space-between; }
+        .top a { color: var(--accent); text-decoration: none; font-size: 14px; }
+        h1 { font-size: 26px; line-height: 1.4; }
+        .meta { color: var(--muted); font-size: 13px; margin: 10px 0 8px; }
+        .cover { max-width: 100%; border-radius: 6px; margin: 12px 0; }
+        .comment { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 12px 0; }
+        .comment .who { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+        textarea { width: 100%; min-height: 90px; border: 1px solid var(--line); border-radius: 6px; padding: 10px; font: inherit; }
+        button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 20px; cursor: pointer; margin-top: 8px; }
+        input { border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-right: 8px; }
+        footer { border-top: 1px solid var(--line); margin-top: 40px; padding-top: 16px; color: var(--muted); font-size: 13px; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <div class="top">
+        <a href="/">← 写字台</a>
+    </div>
+    <h1 th:text="${article.title}"></h1>
+    <div class="meta">
+        <span th:text="${article.author}"></span> ·
+        <span th:text="${#temporals.format(article.publishedAt, 'yyyy-MM-dd HH:mm')}"></span> ·
+        <span th:text="${article.viewCount} + ' 次阅读'"></span>
+    </div>
+    <img class="cover" th:if="${article.cover != null && !article.cover.isEmpty()}" th:src="${article.cover}" alt="cover">
+    <div class="markdown-body" th:utext="${contentHtml}"></div>
+
+    <h3 style="margin-top:48px;" id="comments">评论</h3>
+    <div class="comment" th:each="c : ${comments}">
+        <div class="who"><b th:text="${c.authorName}"></b> · <span th:text="${#temporals.format(c.createdAt, 'yyyy-MM-dd')}"></span></div>
+        <div th:text="${c.content}"></div>
+    </div>
+
+    <form onsubmit="submitComment(event)" style="margin-top:16px;">
+        <input id="cname" placeholder="昵称（可留空）" style="width:200px;">
+        <input id="cemail" placeholder="邮箱（不公开）" style="width:200px;">
+        <textarea id="ccontent" placeholder="说点什么……"></textarea>
+        <button type="submit">提交评论</button>
+        <span id="cmsg" style="margin-left:8px;font-size:13px;color:#16a34a;"></span>
+    </form>
+
+    <footer>© 2026 写字台 xiezitai.cn</footer>
+</div>
+<script>
+    const slug = location.pathname.split('/').pop();
+    async function submitComment(e) {
+        e.preventDefault();
+        const res = await fetch('/api/articles/' + slug + '/comments', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                authorName: document.getElementById('cname').value,
+                email: document.getElementById('cemail').value,
+                content: document.getElementById('ccontent').value
+            })
+        });
+        const msg = document.getElementById('cmsg');
+        msg.textContent = res.ok ? '已提交，审核通过后展示' : '提交失败';
+        if (res.ok) document.getElementById('ccontent').value = '';
+    }
+</script>
+</body>
+</html>

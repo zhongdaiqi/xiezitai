@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title th:text="${'写字台 - 首页'}">写字台</title>
+    <meta name="description" content="写字台 xiezitai.cn — 简洁、SEO 友好的自托管博客">
+    <style>
+        :root { --ink: #1a1a1a; --muted: #6b7280; --line: #e5e7eb; --accent: #2563eb; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--ink); background: #fff; line-height: 1.7; }
+        .wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
+        header { padding: 40px 0 24px; border-bottom: 1px solid var(--line); margin-bottom: 32px; }
+        header h1 a { color: var(--ink); text-decoration: none; font-size: 28px; }
+        header .sub { color: var(--muted); margin-top: 4px; font-size: 14px; }
+        nav { margin-top: 12px; display: flex; gap: 16px; font-size: 14px; }
+        nav a { color: var(--accent); text-decoration: none; }
+        article { margin-bottom: 40px; }
+        article h2 a { color: var(--ink); text-decoration: none; font-size: 20px; }
+        article h2 a:hover { color: var(--accent); }
+        .meta { color: var(--muted); font-size: 13px; margin: 6px 0 10px; }
+        .more { color: var(--accent); font-size: 14px; text-decoration: none; }
+        footer { border-top: 1px solid var(--line); padding-top: 16px; color: var(--muted); font-size: 13px; }
+        .prose p { margin: 8px 0; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <header>
+        <h1><a href="/">写字台</a></h1>
+        <div class="sub">写字台 xiezitai.cn · 把想法摊开来写</div>
+        <nav>
+            <a href="/">文章</a>
+            <a href="/admin.html">后台</a>
+        </nav>
+    </header>
+
+    <article th:each="a : ${articles}">
+        <h2><a th:href="@{'/article/' + ${a.slug}}" th:text="${a.title}"></a></h2>
+        <div class="meta">
+            <span th:text="${a.author}"></span> ·
+            <span th:text="${#temporals.format(a.publishedAt, 'yyyy-MM-dd')}"></span> ·
+            <span th:text="${a.viewCount} + ' 次阅读'"></span>
+        </div>
+        <div class="prose" th:utext="${htmls[a.id]}"></div>
+        <a class="more" th:href="@{'/article/' + ${a.slug}}">继续阅读 →</a>
+    </article>
+
+    <footer>© 2026 写字台 xiezitai.cn · Powered by Spring Boot</footer>
+</div>
+</body>
+</html>

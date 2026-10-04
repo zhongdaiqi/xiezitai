@@ -1,0 +1,40 @@
+server:
+  port: 8080
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+
+spring:
+  application:
+    name: xiezitai
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DB:xiezitai}?useUnicode=true&characterEncoding=utf8mb4&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+    username: ${MYSQL_USER:xiezitai}
+    password: ${MYSQL_PASSWORD:xiexiexie}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+        format_sql: false
+  thymeleaf:
+    cache: true
+  servlet:
+    multipart:
+      max-file-size: 200MB
+      max-request-size: 220MB
+
+xiezitai:
+  # 生产环境务必通过环境变量覆盖
+  jwt-secret: ${XIEZITAI_JWT_SECRET:xiezitai-default-secret-change-me-0123456789abcdef}
+  jwt-expire-hours: 72
+  upload-dir: ${XIEZITAI_UPLOAD_DIR:./data/uploads}
+  site-name: 写字台
+  site-url: ${XIEZITAI_SITE_URL:https://xiezitai.cn}
+
+logging:
+  level:
+    cn.xiezitai: INFO

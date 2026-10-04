@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title th:text="${page.title + ' - 写字台'}">写字台</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5/github-markdown-light.min.css">
+    <style>
+        :root { --ink: #1a1a1a; --line: #e5e7eb; --accent: #2563eb; }
+        body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--ink); background: #fff; }
+        .wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
+        .top { padding: 24px 0; border-bottom: 1px solid var(--line); margin-bottom: 32px; }
+        .top a { color: var(--accent); text-decoration: none; font-size: 14px; }
+        h1 { font-size: 26px; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <div class="top"><a href="/">← 写字台</a></div>
+    <h1 th:text="${page.title}"></h1>
+    <div class="markdown-body" style="margin-top:24px;" th:utext="${contentHtml}"></div>
+</div>
+</body>
+</html>
