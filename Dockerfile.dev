@@ -1,0 +1,23 @@
+# 写字台 - 快速运行版镜像（直接用已构建好的 target/xiezitai.jar）
+#
+# 用途：本机快速体验（dev profile + H2 内存库，无需 MySQL）
+# 构建（注意：构建上下文是 target 目录，只上传 jar，避免把整个仓库塞给 daemon）：
+#   docker build -f Dockerfile.dev -t xiezitai:dev ./target
+# 运行：
+#   docker run -d --name xiezitai -p 8080:8080 -v xiezitai_data:/app/data xiezitai:dev
+#
+# 生产部署请用仓库根目录的多阶段 Dockerfile + docker-compose.yml（含 MySQL）。
+
+FROM eclipse-temurin:17-jre-alpine
+
+WORKDIR /app
+
+COPY xiezitai.jar /app/app.jar
+
+ENV SERVER__PORT=8080 \
+    SERVER_PORT=8080 \
+    TZ=Asia/Shanghai
+
+EXPOSE 8080
+
+ENTRYPOINT ["java", "-jar", "/app/app.jar", "--spring.profiles.active=dev", "--server.port=8080"]
