@@ -20,6 +20,9 @@
         h1 { font-size: 26px; line-height: 1.4; }
         .meta { color: var(--muted); font-size: 13px; margin: 10px 0 8px; }
         .cover { max-width: 100%; border-radius: 6px; margin: 12px 0; }
+        /* 正文里的媒体自适应（github-markdown-css 只管 img，video 需自己兜） */
+        .markdown-body img, .markdown-body video { max-width: 100%; height: auto; border-radius: 6px; }
+        .markdown-body video { display: block; margin: 12px 0; background: #000; }
         .comment { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 12px 0; }
         .comment .who { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
         textarea { width: 100%; min-height: 90px; border: 1px solid var(--line); border-radius: 6px; padding: 10px; font: inherit; }

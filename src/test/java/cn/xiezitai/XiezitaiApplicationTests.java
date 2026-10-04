@@ -400,7 +400,23 @@ class XiezitaiApplicationTests {
 
         mvc.perform(get("/media/" + stored))
                 .andExpect(status().isOk())
-                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString("inline")));
+                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString("inline")))
+                .andExpect(header().string("Content-Type", org.hamcrest.Matchers.containsString("image/jpeg")))
+                .andExpect(header().string("Accept-Ranges", "bytes"));
+
+        // HTTP Range：视频/<audio> 按需拉流与拖动进度条依赖 206 Partial Content
+        MvcResult range = mvc.perform(get("/media/" + stored).header("Range", "bytes=0-3")).andReturn();
+        assertThat(range.getResponse().getStatus()).as("Range 请求应返回 206").isEqualTo(206);
+        String contentRange = range.getResponse().getHeader("Content-Range");
+        assertThat(contentRange).as("Content-Range 应存在").isNotNull();
+        assertThat(contentRange).as("Content-Range 内容").startsWith("bytes 0-3/");
+        assertThat(range.getResponse().getContentAsByteArray())
+                .as("只返回请求的 4 个字节")
+                .containsExactly((byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0);
+
+        // 起止非法 → 416
+        mvc.perform(get("/media/" + stored).header("Range", "bytes=999999-")).andExpect(
+                status().isRequestedRangeNotSatisfiable());
 
         boolean logged = logs.findAll().stream()
                 .anyMatch(l -> ("/media/" + stored).equals(l.getUri()));

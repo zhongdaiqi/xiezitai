@@ -30,6 +30,33 @@
         #editor { min-height: 420px; }
         .muted { color: var(--muted); font-size: 13px; }
         .row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
+        /* 预览区里的媒体（github-markdown-css 只管 img，video 要自己兜） */
+        .markdown-body video { max-width: 100%; height: auto; border-radius: 6px; display: block; margin: 12px 0; background: #000; }
+
+        /* ---------- 媒体选择弹窗 ---------- */
+        .modal { display: none; position: fixed; inset: 0; background: rgba(15,23,42,.45); z-index: 999; }
+        .modal.open { display: flex; align-items: center; justify-content: center; padding: 24px; }
+        .modal-box { background: #fff; border-radius: 12px; width: 100%; max-width: 900px; max-height: 86vh;
+                     display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,.2); }
+        .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 8px;
+                      padding: 14px 16px; border-bottom: 1px solid var(--line); }
+        .modal-head h3 { font-size: 16px; }
+        .modal-body { padding: 16px; overflow: auto; }
+        .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 18px; text-align: center;
+                color: var(--muted); font-size: 14px; cursor: pointer; background: var(--bg); }
+        .drop:hover, .drop.hover { border-color: var(--accent); background: #eff6ff; color: var(--accent); }
+        .mtoolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 14px 0 12px; }
+        .tag { font-size: 12px; padding: 3px 10px; border-radius: 999px; background: #fff;
+               border: 1px solid var(--line); cursor: pointer; }
+        .tag.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+        .mgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px; }
+        .mitem { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer;
+                 background: #fff; display: flex; flex-direction: column; }
+        .mitem:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(37,99,235,.18); }
+        .mitem .thumb { height: 92px; background: #f3f4f6; display: flex; align-items: center;
+                        justify-content: center; overflow: hidden; color: var(--muted); font-size: 24px; }
+        .mitem .thumb img, .mitem .thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .mitem .name { font-size: 12px; padding: 6px; word-break: break-all; line-height: 1.4; }
     </style>
 </head>
 <body>
@@ -75,6 +102,7 @@
                 <input type="text" id="a-desc" placeholder="SEO 描述" style="flex:2; min-width:200px;">
             </div>
             <div class="row">
+                <button class="ghost" onclick="openMedia('editor')">插入媒体</button>
                 <button class="ghost" onclick="aiAction('polish')">AI 润色/纠错</button>
                 <button class="ghost" onclick="aiAction('summary')">AI 摘要</button>
                 <button class="ghost" onclick="aiAction('cover')">AI 封面图</button>
@@ -99,6 +127,10 @@
                 <label class="muted"><input type="checkbox" id="pg-pub" checked> 发布</label>
                 <button class="primary" onclick="savePage()">保存页面</button>
                 <input type="hidden" id="pg-id">
+            </div>
+            <div class="row">
+                <button class="ghost" onclick="openMedia('page')">插入媒体</button>
+                <span class="muted">插入位置＝光标所在处</span>
             </div>
             <textarea id="pg-content" placeholder="Markdown 内容" style="width:100%; min-height:280px;"></textarea>
         </div>
@@ -204,6 +236,34 @@
             <p class="muted">MCP : POST /api/v1/mcp （JSON-RPC 2.0，工具 publish_article / list_articles / get_article）</p>
         </div>
     </div>
+
+    <!-- 媒体库弹窗：上传 + 从媒体库挑选，插入到编辑器光标处 -->
+    <div class="modal" id="media-modal">
+        <div class="modal-box">
+            <div class="modal-head">
+                <h3>插入媒体</h3>
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <span class="muted" id="m-media-msg"></span>
+                    <button class="ghost" onclick="closeMedia()">关闭</button>
+                </div>
+            </div>
+            <div class="modal-body">
+                <div class="drop" id="m-media-drop">
+                    点击选择，或把图片 / 视频拖到这里 → <b>上传并插入正文</b>
+                    <div class="muted" style="margin-top:4px;">图片插成 Markdown，视频插成 &lt;video&gt; 标签（上限 200MB）</div>
+                </div>
+                <input type="file" id="m-media-input" multiple accept="image/*,video/*" style="display:none;">
+                <div class="mtoolbar">
+                    <span class="tag active" data-kind="all" onclick="setMediaFilter(this,'all')">全部</span>
+                    <span class="tag" data-kind="image" onclick="setMediaFilter(this,'image')">图片</span>
+                    <span class="tag" data-kind="video" onclick="setMediaFilter(this,'video')">视频</span>
+                    <input type="text" id="m-media-search" placeholder="按文件名搜索" style="flex:1; min-width:160px;">
+                    <span class="muted" id="m-media-count"></span>
+                </div>
+                <div class="mgrid" id="m-media-grid"></div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script src="/vendor/bytemd/bytemd.umd.js"></script>
@@ -255,12 +315,212 @@ function initEditor(v) {
     const plugins = [bytemdPluginGfm(), bytemdPluginFrontmatter()];
     mdEditor = new bytemd.Editor({
         target: document.getElementById('editor'),
-        props: { value: mdValue, plugins, editorConfig: { lineNumbers: true } }
+        props: {
+            value: mdValue, plugins,
+            editorConfig: { lineNumbers: true },
+            uploadImages: editorUploadImages, // 粘贴截图 / 拖图片进来 / 工具栏图片按钮 → 自动入库并插入
+            sanitize: extendSanitize          // 放行 video/source/audio/iframe，否则预览会把 <video> 净化掉
+        }
     });
     // ByteMD 是受控组件：预览与字数统计只跟随 value 属性，change 后必须把新值回写
     mdEditor.$on('change', e => { mdValue = e.detail.value; mdEditor.$set({ value: mdValue }); });
+    setupEditorDrop();
 }
 function getEditorValue() { return mdValue; }
+
+/* ==================== 媒体插入（图片 / 视频） ====================
+   - 「插入媒体」按钮 → 媒体库弹窗：上传（点击/拖拽）或从已有文件里挑，插入到光标处
+   - 粘贴截图 / 拖图片进编辑器 → ByteMD 的 uploadImages 自动入库并插入 Markdown
+   - 拖视频进编辑器 → 走自己的 drop 处理（ByteMD 的 uploadImages 只认 image/*）
+   注意：图片插入用 Markdown 语法（前台是服务端 commonmark 渲染）；视频 Markdown 没有原生语法，
+   约定用内联 <video> 标签——commonmark 默认 escapeHtml=false，直接原样输出，
+   ByteMD 预览侧靠 extendSanitize() 把 video 加进白名单。 */
+let mediaTarget = 'editor';   // 'editor' = 文章 ByteMD；'page' = 页面 textarea
+let mediaCache = [];
+let mediaFilter = 'all';
+
+function isImageFile(f) {
+    return (f.contentType || '').startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i.test(f.storedName || '');
+}
+function isVideoFile(f) {
+    return (f.contentType || '').startsWith('video/') || /\.(mp4|webm|ogv|ogg|mov|m4v|mkv|avi)$/i.test(f.storedName || '');
+}
+/** 生成要写进正文的片段 */
+function mediaSnippet(f) {
+    const url = '/media/' + f.storedName;
+    const name = String(f.originalName || f.storedName).replace(/[[\]]/g, '');
+    if (isVideoFile(f)) return `<video src="${url}" controls preload="metadata" playsinline></video>`;
+    if (isImageFile(f)) return `![${name}](${url})`;
+    return `[${name}](${url})`;
+}
+
+/** ByteMD 内部是 CodeMirror5，实例挂在 .CodeMirror 包裹元素上（wrapper.CodeMirror = cm） */
+function codeMirrorInstance() {
+    const el = document.querySelector('#editor .CodeMirror');
+    return el && el.CodeMirror ? el.CodeMirror : null;
+}
+/** 在光标处插入文本；replaceSelection 会触发 change，ByteMD 的 value 自动同步 */
+function insertAtCursor(text) {
+    if (mediaTarget === 'page') {
+        const ta = pgContent;
+        const s = ta.selectionStart == null ? ta.value.length : ta.selectionStart;
+        const e = ta.selectionEnd == null ? ta.value.length : ta.selectionEnd;
+        ta.value = ta.value.slice(0, s) + text + ta.value.slice(e);
+        ta.selectionStart = ta.selectionEnd = s + text.length;
+        ta.focus();
+        return true;
+    }
+    const cm = codeMirrorInstance();
+    if (cm) { cm.replaceSelection(text); cm.focus(); return true; }
+    mdValue = mdValue ? mdValue + '\n\n' + text : text;   // 编辑器未就绪时兜底
+    if (mdEditor) mdEditor.$set({ value: mdValue });
+    return false;
+}
+
+function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g,
+        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+/** 上传一批文件到媒体库（复用 /api/admin/files/upload，返回结构与 FileEntity 对齐的轻量对象） */
+async function uploadMediaFiles(files) {
+    const arr = Array.from(files || []);
+    const out = [];
+    for (const f of arr) {
+        setMediaMsg('上传中… ' + f.name);
+        const fd = new FormData();
+        fd.append('file', f);
+        // 注意：不要手动设置 Content-Type，浏览器需自行补 multipart 边界
+        const res = await fetch('/api/admin/files/upload',
+            { method: 'POST', body: fd, headers: { Authorization: 'Bearer ' + token } });
+        let data = {};
+        try { data = await res.json(); } catch (e) { data = {}; }
+        if (res.ok) {
+            out.push({
+                id: data.id, storedName: data.storedName, originalName: f.name,
+                contentType: f.type, size: f.size, scanStatus: data.scanStatus
+            });
+        } else {
+            setMediaMsg('上传失败：' + (data.error || ('HTTP ' + res.status)));
+        }
+    }
+    if (out.length) setMediaMsg('已上传 ' + out.length + ' 个文件');
+    return out;
+}
+
+/** ByteMD uploadImages 契约：入参 File[]，返回 [{ url, alt?, title? }]（注意是 url 不是 src） */
+async function editorUploadImages(files) {
+    const uploaded = await uploadMediaFiles(files);
+    if (uploaded.length) loadMediaLibrary();
+    return uploaded.map(f => ({ url: '/media/' + f.storedName, alt: f.originalName }));
+}
+
+/** hact-util-sanitize 默认白名单没有 video/source/audio/iframe；sanitize 支持传 (schema)=>schema 增量改 */
+function extendSanitize(schema) {
+    schema.tagNames = (schema.tagNames || []).concat(['video', 'source', 'audio', 'iframe']);
+    const attrs = schema.attributes || (schema.attributes = {});
+    attrs.video = ['src', 'poster', 'controls', 'preload', 'loop', 'muted', 'autoplay', 'playsinline', 'width', 'height'];
+    attrs.audio = ['src', 'controls', 'preload', 'loop'];
+    attrs.source = ['src', 'type'];
+    attrs.iframe = ['src', 'width', 'height', 'title', 'allow', 'allowfullscreen', 'frameborder', 'loading'];
+    return schema;
+}
+
+/** 视频拖拽进编辑器：捕获阶段拦下，只处理 video/*，图片留给 ByteMD */
+function setupEditorDrop() {
+    const host = $('editor');
+    if (!host || host.dataset.dropBound) return;
+    host.dataset.dropBound = '1';
+    const hasVideo = dt => Array.from((dt && dt.items) || []).some(i => i.kind === 'file' && (i.type || '').startsWith('video/'));
+    host.addEventListener('dragover', e => { if (hasVideo(e.dataTransfer)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
+    host.addEventListener('drop', async e => {
+        const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []).filter(f => (f.type || '').startsWith('video/'));
+        if (!files.length) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const up = await uploadMediaFiles(files);
+        if (up.length) { insertAtCursor(up.map(mediaSnippet).join('\n\n')); loadMediaLibrary(); }
+    }, true);
+}
+
+/* ---------- 媒体库弹窗 ---------- */
+function openMedia(target) {
+    mediaTarget = target || 'editor';
+    setMediaMsg('');
+    $('media-modal').classList.add('open');
+    loadMediaLibrary();
+}
+function closeMedia() { $('media-modal').classList.remove('open'); }
+function setMediaMsg(t) { const el = $('m-media-msg'); if (el) el.textContent = t || ''; }
+
+async function loadMediaLibrary() {
+    try { mediaCache = await jget('/api/admin/files'); } catch (e) { mediaCache = []; }
+    renderMediaLibrary();
+}
+function setMediaFilter(btn, kind) {
+    mediaFilter = kind;
+    document.querySelectorAll('#media-modal .tag').forEach(b => b.classList.toggle('active', b === btn));
+    renderMediaLibrary();
+}
+function renderMediaLibrary() {
+    const grid = $('m-media-grid');
+    if (!grid) return;
+    const q = ($('m-media-search').value || '').trim().toLowerCase();
+    const list = (mediaCache || []).filter(f => {
+        if (mediaFilter === 'image' && !isImageFile(f)) return false;
+        if (mediaFilter === 'video' && !isVideoFile(f)) return false;
+        if (q && !((f.originalName || '') + ' ' + (f.storedName || '')).toLowerCase().includes(q)) return false;
+        return true;
+    });
+    $('m-media-count').textContent = list.length + ' / ' + (mediaCache || []).length + ' 个文件';
+    grid.innerHTML = '';
+    if (!list.length) {
+        grid.innerHTML = '<p class="muted">媒体库没有匹配的文件，先在上面点击或拖拽上传。</p>';
+        return;
+    }
+    list.forEach(f => {
+        const url = '/media/' + f.storedName;
+        const div = document.createElement('div');
+        div.className = 'mitem';
+        div.title = (f.originalName || f.storedName) + ' · ' + Math.ceil((f.size || 0) / 1024) + ' KB · 插入到光标处';
+        let thumb = '<span>📄</span>';
+        if (isImageFile(f)) thumb = `<img src="${url}" alt="" loading="lazy">`;
+        else if (isVideoFile(f)) thumb = `<video src="${url}" preload="metadata" muted></video>`;
+        div.innerHTML = `<div class="thumb">${thumb}</div><div class="name">${escapeHtml(f.originalName || f.storedName)}</div>`;
+        div.onclick = () => { insertAtCursor(mediaSnippet(f)); closeMedia(); };
+        grid.appendChild(div);
+    });
+}
+
+// 弹窗内的事件绑定（脚本在 body 末尾，DOM 已就绪）
+(function bindMediaModal() {
+    const drop = $('m-media-drop'), input = $('m-media-input'), search = $('m-media-search');
+    if (!drop) return;
+    drop.onclick = () => input.click();
+    drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('hover'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('hover'));
+    drop.addEventListener('drop', async e => {
+        e.preventDefault();
+        drop.classList.remove('hover');
+        const up = await uploadMediaFiles(e.dataTransfer && e.dataTransfer.files);
+        if (!up.length) return;
+        renderMediaLibrary();
+        insertAtCursor(up.map(mediaSnippet).join('\n\n'));
+        closeMedia();
+    });
+    input.addEventListener('change', async () => {
+        const up = await uploadMediaFiles(input.files);
+        input.value = '';
+        if (!up.length) return;
+        await loadMediaLibrary();
+        insertAtCursor(up.map(mediaSnippet).join('\n\n'));
+        closeMedia();
+    });
+    search.addEventListener('input', renderMediaLibrary);
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMedia(); });
+    $('media-modal').addEventListener('click', e => { if (e.target === $('media-modal')) closeMedia(); });
+})();
+
 
 /* ---------- 登录 ---------- */
 async function doLogin() {

@@ -23,6 +23,9 @@
         .more { color: var(--accent); font-size: 14px; text-decoration: none; }
         footer { border-top: 1px solid var(--line); padding-top: 16px; color: var(--muted); font-size: 13px; }
         .prose p { margin: 8px 0; }
+        /* 正文里的媒体自适应，避免大图/视频撑破 720px 正文栏 */
+        .prose img, .prose video { max-width: 100%; height: auto; border-radius: 6px; }
+        .prose video { display: block; margin: 12px 0; background: #000; }
     </style>
 </head>
 <body>
