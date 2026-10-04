@@ -11,6 +11,11 @@ import cn.xiezitai.security.TotpService;
 import cn.xiezitai.service.NotifyService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.zxing.BinaryBitmap;
+import com.google.zxing.MultiFormatReader;
+import com.google.zxing.Result;
+import com.google.zxing.client.j2se.BufferedImageLuminanceSource;
+import com.google.zxing.common.HybridBinarizer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -24,7 +29,11 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -139,9 +148,19 @@ class XiezitaiApplicationTests {
         String token = loginToken(ADMIN, ADMIN_PWD);
         MvcResult setup = mvc.perform(post("/api/auth/totp/setup").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk()).andReturn();
-        String secret = om.readTree(setup.getResponse().getContentAsString(StandardCharsets.UTF_8))
-                .path("secret").asText();
+        JsonNode setupBody = om.readTree(setup.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        String secret = setupBody.path("secret").asText();
         assertThat(secret).isNotBlank();
+
+        // 扫码绑定：setup 应返回可直接显示的二维码，且解码回来的内容必须等于 otpauth 链接（证明真的可扫）
+        String qr = setupBody.path("qrCode").asText();
+        assertThat(qr).startsWith("data:image/png;base64,");
+        BufferedImage qrImg = ImageIO.read(new ByteArrayInputStream(
+                Base64.getDecoder().decode(qr.substring("data:image/png;base64,".length()))));
+        assertThat(qrImg).isNotNull();
+        Result decoded = new MultiFormatReader().decode(
+                new BinaryBitmap(new HybridBinarizer(new BufferedImageLuminanceSource(qrImg))));
+        assertThat(decoded.getText()).isEqualTo(setupBody.path("otpauthUrl").asText());
 
         String code = totp.currentCode(secret);
         mvc.perform(post("/api/auth/totp/enable").header("Authorization", "Bearer " + token)

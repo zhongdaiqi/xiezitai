@@ -109,14 +109,19 @@ public class AuthController {
         return ResponseEntity.ok(resp);
     }
 
-    /** 生成 TOTP 密钥（返回 otpauth 链接，扫码绑定） */
+    /** 生成 TOTP 密钥：返回密钥、otpauth 链接，以及可直接显示的二维码（PNG data URI） */
     @PostMapping("/totp/setup")
     public ResponseEntity<?> totpSetup(Authentication auth) {
         User user = users.findByUsername(auth.getName()).orElseThrow();
         String secret = totp.generateSecret();
         user.setTotpSecret(secret);
         users.save(user);
-        return ResponseEntity.ok(Map.of("secret", secret, "otpauthUrl", totp.otpAuthUrl(user.getUsername(), secret, "xiezitai")));
+        String otpauthUrl = totp.otpAuthUrl(user.getUsername(), secret, "xiezitai");
+        Map<String, Object> out = new HashMap<>();
+        out.put("secret", secret);
+        out.put("otpauthUrl", otpauthUrl);
+        out.put("qrCode", totp.qrDataUri(otpauthUrl, 240));
+        return ResponseEntity.ok(out);
     }
 
     /** 验证动态码并正式开启 TOTP */

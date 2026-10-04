@@ -82,6 +82,19 @@
             <artifactId>commonmark-ext-gfm-tables</artifactId>
             <version>0.24.0</version>
         </dependency>
+        <!-- TOTP 绑定二维码（服务端生成 PNG，前端零依赖） -->
+        <dependency>
+            <groupId>com.google.zxing</groupId>
+            <artifactId>core</artifactId>
+            <version>3.5.3</version>
+        </dependency>
+        <!-- 仅供测试：把生成的二维码解码回来，验证确实可扫（不进运行期） -->
+        <dependency>
+            <groupId>com.google.zxing</groupId>
+            <artifactId>javase</artifactId>
+            <version>3.5.3</version>
+            <scope>test</scope>
+        </dependency>
         <!-- AI 封面图生成 -->
         <dependency>
             <groupId>com.squareup.okhttp3</groupId>

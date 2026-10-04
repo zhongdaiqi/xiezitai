@@ -1,12 +1,23 @@
 package cn.xiezitai.security;
 
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.EncodeHintType;
+import com.google.zxing.common.BitMatrix;
+import com.google.zxing.qrcode.QRCodeWriter;
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.security.SecureRandom;
 import java.time.Instant;
+import java.util.Base64;
+import java.util.EnumMap;
+import java.util.Map;
 
 /** RFC 6238 TOTP 实现（30 秒步长，6 位，±1 窗口容错） */
 @Component
@@ -42,6 +53,33 @@ public class TotpService {
     public String otpAuthUrl(String username, String secret, String issuer) {
         return "otpauth://totp/" + issuer + ":" + username
                 + "?secret=" + secret + "&issuer=" + issuer + "&period=30&digits=6";
+    }
+
+    /**
+     * 把 otpauth 链接渲染成二维码，返回 PNG 的 data URI（data:image/png;base64,...）。
+     * 前端直接塞进 &lt;img src&gt; 即可，无需任何前端二维码库或外部 CDN；失败返回空串。
+     */
+    public String qrDataUri(String content, int size) {
+        try {
+            Map<EncodeHintType, Object> hints = new EnumMap<>(EncodeHintType.class);
+            hints.put(EncodeHintType.CHARACTER_SET, "UTF-8");
+            hints.put(EncodeHintType.ERROR_CORRECTION, ErrorCorrectionLevel.M);
+            hints.put(EncodeHintType.MARGIN, 1);
+            BitMatrix matrix = new QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, size, size, hints);
+            BufferedImage img = new BufferedImage(size, size, BufferedImage.TYPE_INT_RGB);
+            int[] row = new int[size];
+            for (int y = 0; y < size; y++) {
+                for (int x = 0; x < size; x++) {
+                    row[x] = matrix.get(x, y) ? 0xFF000000 : 0xFFFFFFFF;
+                }
+                img.setRGB(0, y, size, 1, row, 0, size);
+            }
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ImageIO.write(img, "png", out);
+            return "data:image/png;base64," + Base64.getEncoder().encodeToString(out.toByteArray());
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private String totp(byte[] key, long counter) {
