@@ -23,8 +23,19 @@
         /* 正文里的媒体自适应（github-markdown-css 只管 img，video 需自己兜） */
         .markdown-body img, .markdown-body video { max-width: 100%; height: auto; border-radius: 6px; }
         .markdown-body video { display: block; margin: 12px 0; background: #000; }
-        .comment { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 12px 0; }
-        .comment .who { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+        /* 评论区排版参考小红书：整体相对正文缩进，条目 = 圆形头像 + 右侧内容，条目间浅分隔线 */
+        .comments { margin-left: 8px; }
+        .comment { display: flex; gap: 12px; padding: 16px 0; border-bottom: 1px solid #f1f1f3; }
+        .comment:last-of-type { border-bottom: 0; }
+        .avatar { width: 36px; height: 36px; flex: 0 0 36px; border-radius: 50%; display: flex;
+                  align-items: center; justify-content: center; color: #fff; font-size: 15px;
+                  font-weight: 600; user-select: none; }
+        .av-0 { background: #ff6b81; } .av-1 { background: #ffa94d; } .av-2 { background: #4dabf7; }
+        .av-3 { background: #38d9a9; } .av-4 { background: #9775fa; } .av-5 { background: #f783ac; }
+        .comment .body { flex: 1; min-width: 0; }
+        .comment .who { color: #9ca3af; font-size: 13px; margin-bottom: 5px; }
+        .comment .who b { color: #6b7280; font-weight: 500; }
+        .comment .text { font-size: 15px; line-height: 1.65; color: var(--ink); word-break: break-word; white-space: pre-wrap; }
         textarea { width: 100%; min-height: 90px; border: 1px solid var(--line); border-radius: 6px; padding: 10px; font: inherit; }
         button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 20px; cursor: pointer; margin-top: 8px; }
         input { border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-right: 8px; }
@@ -67,10 +78,16 @@
     <div class="markdown-body" th:utext="${contentHtml}"></div>
 
     <h3 style="margin-top:48px;" id="comments">评论</h3>
-    <p class="cmt-note" th:if="${#lists.isEmpty(comments)}">还没有评论，登录后来说两句。</p>
-    <div class="comment" th:each="c : ${comments}">
-        <div class="who"><b th:text="${c.authorName}"></b> · <span th:text="${#temporals.format(c.createdAt, 'yyyy-MM-dd')}"></span></div>
-        <div th:text="${c.content}"></div>
+    <div class="comments">
+        <p class="cmt-note" th:if="${#lists.isEmpty(comments)}">还没有评论，登录后来说两句。</p>
+        <div class="comment" th:each="c : ${comments}">
+            <div class="avatar" th:classappend="|av-${c.id % 6}|"
+                 th:text="${!#strings.isEmpty(c.authorName) ? #strings.substring(c.authorName, 0, 1) : '?'}"></div>
+            <div class="body">
+                <div class="who"><b th:text="${c.authorName}"></b> · <span th:text="${#temporals.format(c.createdAt, 'yyyy-MM-dd')}"></span></div>
+                <div class="text" th:text="${c.content}"></div>
+            </div>
+        </div>
     </div>
 
     <!-- 未登录：不出现输入框，只给登录/注册入口 -->
