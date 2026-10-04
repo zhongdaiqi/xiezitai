@@ -23,12 +23,17 @@ public class JwtUtil {
     }
 
     public String generate(String username, String role) {
+        return generate(username, role, expireMs);
+    }
+
+    /** 指定有效期的 token（毫秒），用于「记住我」长时效登录 */
+    public String generate(String username, String role, long ttlMs) {
         Date now = new Date();
         return Jwts.builder()
                 .subject(username)
                 .claim("role", role)
                 .issuedAt(now)
-                .expiration(new Date(now.getTime() + expireMs))
+                .expiration(new Date(now.getTime() + ttlMs))
                 .signWith(key)
                 .compact();
     }

@@ -66,6 +66,9 @@
     <input id="luser" placeholder="用户名" autocomplete="username">
     <input id="lpass" type="password" placeholder="密码" autocomplete="current-password">
     <input id="ltotp" placeholder="两步验证码（未开启则留空）">
+    <label style="display:flex; align-items:center; gap:6px; margin:4px 0; cursor:pointer; font-size:13px;">
+        <input type="checkbox" id="lremember" style="width:auto;"> 记住登录（30 天内免登录）
+    </label>
     <button onclick="doLogin()">登 录</button>
     <p id="lmsg" class="muted" style="margin-top:12px;"></p>
 </div>
@@ -279,7 +282,17 @@
 <script src="/vendor/bytemd/plugin-frontmatter.umd.js"></script>
 <script src="/vendor/mermaid/mermaid.min.js"></script>
 <script>
-let token = localStorage.getItem('xz_token') || '';
+/* 记住登录：勾选 → token 存 localStorage（配合后端 30 天 JWT）；
+   未勾选 → 只存 sessionStorage，关浏览器即失效 */
+const TOKEN_KEY = 'xz_token';
+let token = sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || '';
+function saveToken(t, remember) {
+    token = t || '';
+    if (!token) { localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); return; }
+    if (remember) localStorage.setItem(TOKEN_KEY, token);
+    else sessionStorage.setItem(TOKEN_KEY, token);
+}
+function clearToken() { localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); }
 let mdEditor = null;   // ByteMD 实例（禁用变量名 bytemd：会遮蔽 UMD 全局命名空间）
 let mdValue = '';
 
@@ -573,20 +586,20 @@ function renderMediaLibrary() {
 /* ---------- 登录 ---------- */
 async function doLogin() {
     const msg = document.getElementById('lmsg');
+    const remember = document.getElementById('lremember').checked;
     const res = await fetch('/api/auth/login', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: luser.value, password: lpass.value, totpCode: ltotp.value })
+        body: JSON.stringify({ username: luser.value, password: lpass.value, totpCode: ltotp.value, remember })
     });
     const data = await res.json();
     if (res.ok) {
-        token = data.token;
-        localStorage.setItem('xz_token', token);
+        saveToken(data.token, remember);
         boot();
     } else {
         msg.textContent = data.message || data.error || '登录失败';
     }
 }
-function logout() { localStorage.removeItem('xz_token'); location.reload(); }
+function logout() { clearToken(); location.reload(); }
 
 async function boot() {
     const me = await jget('/api/auth/me');

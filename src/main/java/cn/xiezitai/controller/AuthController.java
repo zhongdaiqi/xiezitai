@@ -68,8 +68,13 @@ public class AuthController {
             }
         }
         attempts.onSuccess(username);
-        String token = jwt.generate(user.getUsername(), user.getRole());
+        // 记住我：30 天免登录；默认 72 小时
+        boolean remember = Boolean.parseBoolean(String.valueOf(body.getOrDefault("remember", "false")));
+        String token = remember
+                ? jwt.generate(user.getUsername(), user.getRole(), 30L * 24 * 3600_000L)
+                : jwt.generate(user.getUsername(), user.getRole());
         notify.notifyEvent("login", "**写字台登录通知**\n> 用户: " + user.getUsername()
+                + (remember ? "（记住登录 30 天）" : "")
                 + "\n> 时间: " + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
         Map<String, Object> resp = new HashMap<>();
         resp.put("token", token);

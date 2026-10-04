@@ -156,6 +156,9 @@
             <input id="au-user" placeholder="用户名" autocomplete="username">
             <input id="au-pass" type="password" placeholder="密码" autocomplete="current-password">
             <input id="au-totp" placeholder="动态验证码（开启两步验证才需要）" style="display:none;">
+            <label style="display:flex; align-items:center; gap:6px; margin:2px 0 8px; cursor:pointer;">
+                <input type="checkbox" id="au-remember" style="width:auto;"> 记住登录（30 天内免登录）
+            </label>
             <button type="button" class="wide" onclick="doAuthLogin()">登录</button>
         </div>
 
@@ -183,11 +186,22 @@
     </div>
 </div>
 <script>
-    /* 评论仅限登录用户：token 存 localStorage，与后台 admin.html 共用同一个 key（xz_token） */
+    /* 评论仅限登录用户：token 与后台 admin.html 共用同一个 key（xz_token）。
+       记住登录 → localStorage（30 天免登录）；未勾选 → sessionStorage（关浏览器即失效） */
     const TOKEN_KEY = 'xz_token';
     const slug = location.pathname.split('/').pop();
-    let token = localStorage.getItem(TOKEN_KEY) || '';
+    let token = sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || '';
     let currentUser = '';
+
+    function saveToken(t, remember) {
+        token = t || '';
+        if (!token) { localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); return; }
+        if (remember) localStorage.setItem(TOKEN_KEY, token);
+        else sessionStorage.setItem(TOKEN_KEY, token);
+    }
+    function clearToken() {
+        localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY);
+    }
 
     /* ---------- 登录态 ---------- */
     function esc(s) {
@@ -208,7 +222,7 @@
                 const d = await r.json();
                 currentUser = d.username || '';
             } else {
-                token = ''; localStorage.removeItem(TOKEN_KEY); currentUser = '';
+                token = ''; clearToken(); currentUser = '';
             }
         } catch (e) { currentUser = ''; }
         renderAuth();
@@ -236,7 +250,7 @@
     }
     function logout() {
         token = ''; currentUser = '';
-        localStorage.removeItem(TOKEN_KEY);
+        clearToken();
         setMsg('cmsg', '', '');
         renderAuth();
     }
@@ -292,7 +306,7 @@
         const password = document.getElementById('au-pass').value;
         const totpCode = document.getElementById('au-totp').value.trim();
         if (!username || !password) return setMsg('authMsg', '请输入用户名和密码', 'err');
-        const body = { username, password };
+        const body = { username, password, remember: document.getElementById('au-remember').checked };
         if (totpCode) body.totpCode = totpCode;
         let res, data = {};
         try {
@@ -302,8 +316,7 @@
             data = await res.json().catch(() => ({}));
         } catch (e) { return setMsg('authMsg', '网络异常，请重试', 'err'); }
         if (res.ok) {
-            token = data.token;
-            localStorage.setItem(TOKEN_KEY, token);
+            saveToken(data.token, body.remember);
             document.getElementById('au-pass').value = '';
             document.getElementById('au-totp').value = '';
             closeAuth();

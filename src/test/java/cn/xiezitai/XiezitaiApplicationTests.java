@@ -754,6 +754,41 @@ class XiezitaiApplicationTests {
     }
 
     @Test
+    @DisplayName("记住登录：勾选后签发 30 天 token，未勾选为默认 72 小时")
+    void rememberMeTokenTtl() throws Exception {
+        String uname = "remember" + (System.currentTimeMillis() % 100000);
+        mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("username", uname, "password", "pass123456"))))
+                .andExpect(status().isOk());
+
+        // 未勾选 → 默认（测试环境 1 小时）
+        MvcResult r1 = mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("username", uname, "password", "pass123456"))))
+                .andExpect(status().isOk()).andReturn();
+        long ttl1 = tokenTtlSeconds(om.readTree(r1.getResponse().getContentAsString(StandardCharsets.UTF_8)).path("token").asText());
+        assertThat(ttl1).as("默认有效期应为 1 小时").isBetween(3500L, 3700L);
+
+        // 勾选记住登录 → 30 天
+        MvcResult r2 = mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("username", uname, "password", "pass123456", "remember", "true"))))
+                .andExpect(status().isOk()).andReturn();
+        long ttl2 = tokenTtlSeconds(om.readTree(r2.getResponse().getContentAsString(StandardCharsets.UTF_8)).path("token").asText());
+        assertThat(ttl2).as("记住登录有效期应为 30 天").isBetween(29L * 86400, 31L * 86400);
+    }
+
+    /** 解析 JWT payload 的 exp - iat（秒） */
+    private long tokenTtlSeconds(String jwt) {
+        String[] parts = jwt.split("\\.");
+        byte[] payload = java.util.Base64.getUrlDecoder().decode(parts[1]);
+        try {
+            com.fasterxml.jackson.databind.JsonNode n = om.readTree(payload);
+            return n.path("exp").asLong() - n.path("iat").asLong();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Test
     @DisplayName("请求日志被完整记录")
     void requestLogsRecorded() throws Exception {
         mvc.perform(get("/robots.txt")).andExpect(status().isOk());
