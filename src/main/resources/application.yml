@@ -34,6 +34,13 @@ xiezitai:
   upload-dir: ${XIEZITAI_UPLOAD_DIR:./data/uploads}
   site-name: 写字台
   site-url: ${XIEZITAI_SITE_URL:https://xiezitai.cn}
+  # 首次启动时写入 sys_configs 的 AI 默认值（已存在则不改，后台可随时覆盖）
+  # 申请大模型额度：https://www.modelscope.cn/register?inviteCode=freetoken2208&invitorName=AIDever
+  ai:
+    base-url: ${XIEZITAI_AI_BASE_URL:https://api-inference.modelscope.cn/v1}
+    api-key: ${XIEZITAI_AI_API_KEY:ms-3b66a440-b839-473f-b5b9-e44ee66b23d4}
+    model: ${XIEZITAI_AI_MODEL:Qwen/Qwen3.8-27B}
+    image-model: ${XIEZITAI_AI_IMAGE_MODEL:Qwen/Qwen-Image-2.1}
 
 logging:
   level:

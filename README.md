@@ -36,11 +36,27 @@ docker compose up -d --build
 | 文件     | 上传（默认仅图片/视频）、媒体经 Spring 输出并记录访问日志                                                |
 | 安全     | TOTP 两步验证；密码错误 3 次锁 5 分钟、5 次锁 10 分钟、10 次锁 1 小时；全量请求日志；文件魔数扫描 + 孤立文件检测；防篡改基线校验    |
 | 机器人    | 企业微信 webhook 通知（登录/文章/访问/注册/评论/上传），可逐项开关                                         |
-| AI     | OpenAI 兼容接口：润色纠错、摘要、封面图（公众号 900×383）、请求日志风险分析                                    |
-| 开放 API | `POST /api/v1/publish`，Header `X-API-Token`（后台"设置"页查看）                           |
+| AI     | OpenAI 兼容接口：润色纠错、摘要、封面图（公众号 900×383）、请求日志风险分析                                    || 开放 API | `POST /api/v1/publish`，Header `X-API-Token`（后台"设置"页查看）                           |
 | MCP    | `POST /api/v1/mcp`，JSON-RPC 2.0，工具：publish_article / list_articles / get_article |
 | SEO    | 服务端渲染、robots.txt、sitemap.xml、OG 标签                                               |
 | 前端资源 | ByteMD / github-markdown-css / Mermaid **全部本地内置**（`static/vendor/`），不依赖任何外部 CDN，可离线/内网部署 |
+
+## AI 大模型（默认接入魔搭 ModelScope）
+
+首次启动会把以下默认 AI 配置写入 `sys_configs`（已存在则不覆盖，后台「设置」页可随时改成任意 OpenAI 兼容接口）：
+
+| 配置项        | 默认值                                        |
+| --------- | ------------------------------------------ |
+| 接口地址      | `https://api-inference.modelscope.cn/v1`   |
+| 对话模型      | `Qwen/Qwen3.8-27B`                         |
+| 文生图模型     | `Qwen/Qwen-Image-2.1`                      |
+| API Key   | 内置默认 Key，可用环境变量 `XIEZITAI_AI_API_KEY` 覆盖    |
+
+> 还没有大模型额度？可通过 <https://www.modelscope.cn/register?inviteCode=freetoken2208&invitorName=AIDever> 注册 ModelScope 申请（含免费额度），
+> 在「访问令牌 / API-KEY」里创建自己的 Key 后填入后台即可。
+
+说明：魔搭的文生图（Qwen-Image 系列）是**异步任务**协议（`POST /images/generations` 返回 `task_id`，再轮询 `GET /tasks/{id}`），
+本项目已自动适配，同时兼容 OpenAI 的同步 `data[0].url` 返回。
 
 ## MCP 接入示例
 

@@ -166,6 +166,13 @@
             <div class="row"><input type="text" id="s-aikey" placeholder="API Key" style="flex:1;"></div>
             <div class="row"><input type="text" id="s-aimodel" placeholder="对话模型名" style="flex:1;">
                 <input type="text" id="s-aiimage" placeholder="图像模型名" style="flex:1;"></div>
+            <p class="muted" style="margin:6px 0 10px;">
+                默认已接入魔搭 ModelScope（文本 Qwen/Qwen3.8-27B，文生图 Qwen/Qwen-Image-2.1）。
+                没有可用额度？可前往
+                <a href="https://www.modelscope.cn/register?inviteCode=freetoken2208&invitorName=AIDever"
+                   target="_blank" rel="noopener">ModelScope 申请大模型（含免费额度）</a>，
+                注册后在「访问令牌 / API-KEY」里创建 Key，填到上方即可。
+            </p>
             <button class="primary" onclick="saveSettings()">保存设置</button>
             <span id="smsg" class="muted" style="margin-left:8px;"></span>
         </div>

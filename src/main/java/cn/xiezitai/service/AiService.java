@@ -64,7 +64,13 @@ public class AiService {
                 + "并给出风险等级与处置建议：\n\n" + logText);
     }
 
-    /** 生成公众号尺寸封面图，返回图片 URL */
+    /**
+     * 生成公众号尺寸封面图，返回图片 URL。
+     * 同时兼容两种协议：
+     *  A) OpenAI 风格同步返回 → data[0].url / data[0].b64_json
+     *  B) ModelScope(魔搭) 异步任务 → POST 返回 task_id，再轮询 GET /tasks/{id} 取 output_images[0]
+     *     （ModelScope 的 Qwen-Image 系列走的是异步任务，必须带 X-ModelScope-Async-Mode 头）
+     */
     public String generateCover(String prompt, int width, int height) {
         String baseUrl = get("ai.baseUrl", "");
         String apiKey = get("ai.apiKey", "");
@@ -74,30 +80,77 @@ public class AiService {
             return "";
         }
         try {
-            Map<String, Object> body = Map.of(
-                    "model", imageModel,
-                    "prompt", prompt,
-                    "size", width + "x" + height,
-                    "n", 1);
+            Map<String, Object> body = new java.util.LinkedHashMap<>();
+            body.put("model", imageModel);
+            body.put("prompt", prompt);
+            body.put("size", width + "x" + height);
+            body.put("n", 1);
             HttpRequest req = HttpRequest.newBuilder(URI.create(trim(baseUrl) + "/images/generations"))
                     .header("Content-Type", "application/json")
                     .header("Authorization", "Bearer " + apiKey)
+                    .header("X-ModelScope-Async-Mode", "true")
                     .timeout(Duration.ofSeconds(120))
                     .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
                     .build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             JsonNode node = mapper.readTree(resp.body());
+
+            // A) OpenAI 同步返回
             String url = node.path("data").path(0).path("url").asText("");
             if (url.isBlank()) {
-                // 兼容返回 b64_json 的情况
                 String b64 = node.path("data").path(0).path("b64_json").asText("");
                 if (!b64.isBlank()) return "data:image/png;base64," + b64;
             }
+            // C) 少数网关直接把结果塞在 output_images 里
+            if (url.isBlank()) url = node.path("output_images").path(0).asText("");
+
+            // B) ModelScope 异步任务：拿 task_id 轮询
+            String taskId = node.path("task_id").asText("");
+            if (url.isBlank() && !taskId.isBlank()) {
+                url = pollImageTask(baseUrl, apiKey, taskId);
+            }
+            if (url.isBlank()) log.warn("封面生成未取到图片: {}", abbreviate(resp.body()));
             return url;
         } catch (Exception e) {
             log.warn("封面生成失败: {}", e.getMessage());
             return "";
         }
+    }
+
+    /** 轮询 ModelScope 异步任务直到出图/失败/超时（上限约 110s） */
+    private String pollImageTask(String baseUrl, String apiKey, String taskId) throws InterruptedException {
+        String endpoint = trim(baseUrl) + "/tasks/" + taskId;
+        for (int i = 0; i < 36; i++) {
+            try {
+                HttpRequest req = HttpRequest.newBuilder(URI.create(endpoint))
+                        .header("Authorization", "Bearer " + apiKey)
+                        .header("X-ModelScope-Task-Type", "image_generation")
+                        .timeout(Duration.ofSeconds(30))
+                        .GET().build();
+                HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+                JsonNode n = mapper.readTree(resp.body());
+                String status = n.path("task_status").asText("");
+                if ("SUCCEED".equalsIgnoreCase(status)) {
+                    String url = n.path("output_images").path(0).asText("");
+                    if (url.isBlank()) url = n.path("outputs").path(0).path("url").asText("");
+                    return url;
+                }
+                if ("FAILED".equalsIgnoreCase(status)) {
+                    log.warn("封面任务失败: {}", abbreviate(resp.body()));
+                    return "";
+                }
+            } catch (Exception e) {
+                log.warn("封面任务轮询异常: {}", e.getMessage());
+            }
+            Thread.sleep(3000);
+        }
+        log.warn("封面任务超时: {}", taskId);
+        return "";
+    }
+
+    private String abbreviate(String s) {
+        if (s == null) return "";
+        return s.length() <= 300 ? s : s.substring(0, 300) + "…";
     }
 
     /** OpenAI 兼容 Chat 调用；未配置返回提示 */
