@@ -1,0 +1,39 @@
+# ---------------------------------------------------------------------------
+# 写字台 (xiezitai) 构建上下文过滤
+#
+# 仓库根目录里有大量本地调试产物（_*.log / _*.cjs / _*.html / _media / _shot …），
+# 不加过滤的话每次 docker build 都要把这些几十上百 MB 的东西打包发给 daemon，
+# 白等很久。这里只放行构建真正需要的文件。
+# ---------------------------------------------------------------------------
+
+# --- 构建产物：只放行运行时镜像要用的 JAR ---
+target/*
+!target/xiezitai.jar
+
+# --- 本地运行数据 ---
+data/
+
+# --- 本地调试 / 日志 / 临时脚本 ---
+_*
+hs_err_pid*.log
+*.log
+*.exit
+
+# --- 版本控制与 IDE ---
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+*.iml
+
+# --- 环境变量（保留 .env.example 供参考）---
+.env
+.env.local
+!.env.example
+
+# --- CI / 文档，进镜像没意义 ---
+.github
+README.md
+LICENSE
+docs/

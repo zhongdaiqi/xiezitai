@@ -4,6 +4,7 @@ SEO / AI 友好的自托管博客系统。官网：<https://xiezitai.cn>
 
 - 技术栈：Java 17 · Spring Boot 3 · MySQL · JPA · JWT · Thymeleaf · ByteMD
 - 仓库：<https://github.com/zhongdaiqi/xiezitai>
+- 镜像：<https://hub.docker.com/r/zhongdaiqi/xiezitai>（GitHub Actions 自动构建，支持 amd64 / arm64）
 
 ## 快速开始（Docker）
 
@@ -18,6 +19,52 @@ docker compose up -d --build
 访问 `http://localhost:8080`，后台：`http://localhost:8080/admin.html`
 
 默认管理员：`xiezitai / xiexiexie`（登录后请立即改密码并开启 TOTP）。
+
+## 使用官方镜像（Docker Hub）
+
+不想自己编译的话，直接拉官方构建好的镜像（amd64 / arm64 双架构）：
+
+```bash
+docker run -d --name xiezitai -p 8080:8080 \
+  -e MYSQL_HOST=你的MySQL地址 -e MYSQL_DB=xiezitai \
+  -e MYSQL_USER=xiezitai -e MYSQL_PASSWORD=你的数据库密码 \
+  -e XIEZITAI_JWT_SECRET=一串至少32位的随机字符串 \
+  -e XIEZITAI_SITE_URL=https://你的域名 \
+  -v xiezitai_data:/app/data \
+  --restart unless-stopped \
+  zhongdaiqi/xiezitai:latest
+```
+
+可用标签：
+
+| 标签 | 说明 |
+| --- | --- |
+| `latest` | 默认分支 `main` 的最新构建 |
+| `main` | 同上，语义化命名 |
+| `1.2.3` / `1.2` | 打 `v1.2.3` tag 时自动生成 |
+| `sha-xxxxxxx` | 按提交哈希固化的版本，适合回滚 |
+
+镜像里的 JAR **不包含**任何 profile 写死配置：数据库、JWT 密钥、站点地址全部通过
+`MYSQL_*` / `XIEZITAI_*` 环境变量注入（见 `application.yml`），`/app/data` 建议挂卷持久化。
+
+### 自动构建流程
+
+`.github/workflows/docker-publish.yml`：
+
+- push 到 `main` → 构建并推送 `latest` / `main` / `sha-*`
+- push `v*.*.*` tag → 构建并推送语义化版本号
+- Pull Request → 只构建校验，不推送
+- 也可在 Actions 页面手动触发
+
+构建方式是**先编译 JAR、再装镜像**：用原生 amd64 速度跑一次 Maven，然后把同一个 JAR
+分别装进 amd64 和 arm64 的基础镜像，避免在 QEMU 模拟的 arm64 里跑 Maven（慢 5~10 倍）。
+
+需要在仓库 Settings → Secrets and variables → Actions 里配置两个 Secret：
+
+| Secret | 值 |
+| --- | --- |
+| `DOCKERHUB_USERNAME` | Docker Hub 用户名 |
+| `DOCKERHUB_TOKEN` | Docker Hub Access Token（不是登录密码） |
 
 ## 服务器部署（非 Docker）
 

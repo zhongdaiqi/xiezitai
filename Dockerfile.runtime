@@ -1,0 +1,45 @@
+# 写字台 (xiezitai) - 运行时镜像（只装 JAR，不在镜像内编译）
+#
+# 与根目录 Dockerfile 的分工：
+#   Dockerfile          多阶段构建，镜像内跑 Maven 编译。适合 `docker compose up --build`
+#                       本地一把梭，或服务器上从源码直接构建。
+#   本文件（runtime）    只把已经编译好的 target/xiezitai.jar 装进 JRE 镜像。
+#
+# 为什么单独拆一份给 CI 用：
+#   GitHub Actions 要在一次构建里同时产出 linux/amd64 和 linux/arm64 两个平台。
+#   如果按 Dockerfile 那样在容器内跑 Maven，arm64 那一份会走 QEMU 模拟，
+#   编译速度慢 5~10 倍且容易 OOM。所以 JAR 用原生 amd64 编译一次，两个平台共用。
+#
+# 本地手动构建：
+#   mvn -B -DskipTests clean package
+#   docker build -f Dockerfile.runtime -t zhongdaiqi/xiezitai:local .
+#
+# 运行（生产，需要外部 MySQL）：
+#   docker run -d --name xiezitai -p 8080:8080 \
+#     -e MYSQL_HOST=你的MySQL地址 -e MYSQL_DB=xiezitai \
+#     -e MYSQL_USER=xiezitai -e MYSQL_PASSWORD=你的密码 \
+#     -e XIEZITAI_JWT_SECRET=一串>=32位的随机字符串 \
+#     -v xiezitai_data:/app/data \
+#     zhongdaiqi/xiezitai:latest
+
+FROM eclipse-temurin:17-jre
+
+WORKDIR /app
+
+ARG JAR_FILE=target/xiezitai.jar
+COPY ${JAR_FILE} /app/app.jar
+
+ENV TZ=Asia/Shanghai \
+    SERVER__PORT=8080 \
+    SERVER_PORT=8080 \
+    JAVA_OPTS=""
+
+# 上传的媒体文件等持久化数据，生产环境务必挂卷
+VOLUME ["/app/data"]
+
+EXPOSE 8080
+
+# 故意不写死 --spring.profiles.active：
+# 默认 profile 已经通过 MYSQL_* / XIEZITAI_* 环境变量读取配置；
+# 需要切 profile 时由外部传 SPRING_PROFILES_ACTIVE=xxx 控制。
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app/app.jar"]

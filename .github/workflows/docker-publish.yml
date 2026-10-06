@@ -1,0 +1,141 @@
+name: Build and Push Docker Image
+
+# 触发规则：
+#   - push 到 main            -> 构建并推送 latest / main / sha-xxxxxxx
+#   - push tag v1.2.3         -> 构建并推送 1.2.3 / 1.2 / latest
+#   - Pull Request 到 main    -> 只构建校验，不推送
+#   - 手动触发                -> Actions 页面点 Run workflow
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支的旧任务自动取消，避免并发推送互相覆盖
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------
+  # 第一步：以原生 amd64 速度编译 JAR
+  # 为什么不在 Dockerfile 里编译：下面的镜像构建要出 amd64 + arm64 两个平台，
+  # 如果在容器里跑 Maven，arm64 那一份会走 QEMU 模拟，慢 5~10 倍且容易 OOM。
+  # 所以 JAR 只编译一次，两个平台共用同一个产物。
+  # ---------------------------------------------------------------
+  build-jar:
+    name: 编译 JAR
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Maven 打包
+        run: mvn -B -DskipTests clean package
+
+      - name: 上传 JAR 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: target/xiezitai.jar
+          retention-days: 7
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # 第二步：把 JAR 装进 JRE 镜像，多平台构建并推送到 Docker Hub
+  # ---------------------------------------------------------------
+  docker:
+    name: 构建并推送镜像
+    needs: build-jar
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/xiezitai
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载 JAR 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: target
+
+      - name: 校验 Secrets 是否配置
+        run: |
+          missing=0
+          if [ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]; then
+            echo "::error::缺少仓库 Secret：DOCKERHUB_USERNAME（Settings → Secrets and variables → Actions）"
+            missing=1
+          fi
+          if [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "::error::缺少仓库 Secret：DOCKERHUB_TOKEN（需要 Docker Hub 的 Access Token，不是登录密码）"
+            missing=1
+          fi
+          [ "$missing" = "0" ] || exit 1
+          echo "Secrets 校验通过，目标镜像：$IMAGE_NAME"
+
+      - name: 安装 QEMU（用于构建 arm64）
+        uses: docker/setup-qemu-action@v3
+
+      - name: 安装 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 生成镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short,prefix=sha-
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.runtime
+          platforms: linux/amd64,linux/arm64
+          # PR 只验证能否构建成功，不推送
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 输出结果摘要
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### 镜像已推送 :rocket:"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 仓库 | \`${{ env.IMAGE_NAME }}\` |"
+            echo "| 平台 | linux/amd64, linux/arm64 |"
+            echo "| 标签 | ${{ steps.meta.outputs.tags }} |"
+            echo "| Digest | \`${{ steps.meta.outputs.digest }}\` |"
+            echo ""
+            echo "拉取：\`docker pull ${{ env.IMAGE_NAME }}:latest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
