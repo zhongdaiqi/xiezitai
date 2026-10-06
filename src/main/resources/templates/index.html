@@ -19,7 +19,7 @@
         header { padding: 40px 0 24px; border-bottom: 1px solid var(--line); margin-bottom: 32px; }
         header h1 a { color: var(--ink); text-decoration: none; font-size: 28px; }
         header .sub { color: var(--muted); margin-top: 4px; font-size: 14px; }
-        nav { margin-top: 12px; display: flex; gap: 16px; font-size: 14px; }
+        nav { margin-top: 12px; display: flex; gap: 16px; font-size: 14px; flex-wrap: wrap; }
         nav a { color: var(--accent); text-decoration: none; }
         article { margin-bottom: 40px; }
         article h2 a { color: var(--ink); text-decoration: none; font-size: 20px; }
@@ -57,6 +57,7 @@
         <div class="sub">写字台 xiezitai.cn · 把想法摊开来写</div>
         <nav>
             <a href="/">文章</a>
+            <a th:each="p : ${navPages}" th:href="@{'/page/' + ${p.slug}}" th:text="${p.title}"></a>
             <a href="/admin.html">后台</a>
         </nav>
     </header>

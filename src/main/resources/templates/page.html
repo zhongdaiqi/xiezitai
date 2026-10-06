@@ -10,8 +10,10 @@
         :root { --ink: #1a1a1a; --line: #e5e7eb; --accent: #2563eb; }
         body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--ink); background: #fff; }
         .wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
-        .top { padding: 24px 0; border-bottom: 1px solid var(--line); margin-bottom: 32px; }
+        .top { padding: 24px 0; border-bottom: 1px solid var(--line); margin-bottom: 32px;
+               display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
         .top a { color: var(--accent); text-decoration: none; font-size: 14px; }
+        .top a.cur { color: var(--ink); font-weight: 600; }
         h1 { font-size: 26px; }
         /* 正文里的媒体自适应 */
         .markdown-body img, .markdown-body video { max-width: 100%; height: auto; border-radius: 6px; }
@@ -20,7 +22,11 @@
 </head>
 <body>
 <div class="wrap">
-    <div class="top"><a href="/">← 写字台</a></div>
+    <div class="top">
+        <a href="/">← 写字台</a>
+        <a th:each="p : ${navPages}" th:href="@{'/page/' + ${p.slug}}" th:text="${p.title}"
+           th:classappend="${p.slug == page.slug} ? 'cur'"></a>
+    </div>
     <h1 th:text="${page.title}"></h1>
     <div class="markdown-body" style="margin-top:24px;" th:utext="${contentHtml}"></div>
 </div>

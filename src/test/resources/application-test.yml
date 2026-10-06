@@ -19,6 +19,10 @@ xiezitai:
   jwt-secret: xiezitai-test-secret-0123456789abcdefghijklmnopqrstuvwxyz
   jwt-expire-hours: 1
   upload-dir: ./data/uploads-test
+  # 测试里不自动写示例内容：否则每个用例都要面对 4 篇预置文章，
+  # 断言首页/分页/列表的地方全得改成"相对数量"，得不偿失。
+  # 示例内容本身由 seedDemoContent 用例手动触发验证。
+  seed-demo: false
 
 logging:
   level:

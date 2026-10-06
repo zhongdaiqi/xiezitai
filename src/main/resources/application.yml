@@ -34,6 +34,10 @@ xiezitai:
   upload-dir: ${XIEZITAI_UPLOAD_DIR:./data/uploads}
   site-name: 写字台
   site-url: ${XIEZITAI_SITE_URL:https://xiezitai.cn}
+  # 首次启动且文章/页面都为空时，写入一批示例内容（4 篇文章 + 关于/友链页面 + 几条评论），
+  # 免得部署完打开首页只有一句「还没有发布的文章」。写过一次就打标记、不会重复写入，
+  # 也不影响已经存在的库。不想要示例内容：XIEZITAI_SEED_DEMO=false
+  seed-demo: ${XIEZITAI_SEED_DEMO:true}
   # 首次启动时写入 sys_configs 的 AI 默认值（已存在则不改，后台可随时覆盖）
   # 申请大模型额度：https://www.modelscope.cn/register?inviteCode=freetoken2208&invitorName=AIDever
   ai:

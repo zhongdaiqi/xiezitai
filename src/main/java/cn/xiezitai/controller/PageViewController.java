@@ -8,10 +8,8 @@ import cn.xiezitai.repository.PageRepository;
 import cn.xiezitai.service.ArticleService;
 import cn.xiezitai.service.MarkdownService;
 import cn.xiezitai.service.NotifyService;
-import org.commonmark.node.Node;
-import org.commonmark.parser.Parser;
-import org.commonmark.renderer.text.TextContentRenderer;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -58,6 +56,7 @@ public class PageViewController {
         }
         List<Article> list = result.getContent();
         model.addAttribute("articles", list);
+        model.addAttribute("navPages", navPages());
         model.addAttribute("htmls", list.stream().collect(java.util.stream.Collectors.toMap(
                 Article::getId, a -> md.toHtml(abbrev(a.getContent(), 300)))));
         model.addAttribute("pageNo", pageNo);
@@ -77,6 +76,7 @@ public class PageViewController {
         articleService.increaseView(a);
         notifyVisit(a, request);
         model.addAttribute("article", a);
+        model.addAttribute("navPages", navPages());
         model.addAttribute("contentHtml", md.toHtml(a.getContent()));
         List<cn.xiezitai.dto.CommentNode> threads = cn.xiezitai.dto.CommentNode.tree(
                 comments.findByArticleIdAndStatusOrderByCreatedAtAsc(a.getId(), "APPROVED"));
@@ -108,8 +108,19 @@ public class PageViewController {
         PageEntity p = pages.findBySlug(slug).filter(PageEntity::isPublished).orElse(null);
         if (p == null) return "redirect:/";
         model.addAttribute("page", p);
+        model.addAttribute("navPages", navPages());
         model.addAttribute("contentHtml", md.toHtml(p.getContent()));
         return "page";
+    }
+
+    /**
+     * 顶部导航里的自定义页面：只列已发布、按创建顺序。
+     * 不加上这个的话，初始化生成的「关于 / 友链」页面在站内没有任何入口。
+     */
+    private List<PageEntity> navPages() {
+        return pages.findAll(Sort.by(Sort.Direction.ASC, "id")).stream()
+                .filter(PageEntity::isPublished)
+                .toList();
     }
 
     @GetMapping(value = "/robots.txt", produces = "text/plain")
