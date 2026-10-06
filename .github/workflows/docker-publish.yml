@@ -2,9 +2,14 @@ name: Build and Push Docker Image
 
 # 触发规则：
 #   - push 到 main            -> 构建并推送 latest / main / sha-xxxxxxx
-#   - push tag v1.2.3         -> 构建并推送 1.2.3 / 1.2 / sha-xxxxxxx（latest 仍跟随 main）
+#   - push tag v1.2.3         -> 构建并推送 1.2.3 / 1.2 / sha-xxxxxxx / latest
 #   - Pull Request 到 main    -> 只构建校验，不推送
 #   - 手动触发                -> Actions 页面点 Run workflow
+#
+# 关于 latest：两条路径都会推送它 —— main 分支由下面的 type=raw 规则负责，
+# 语义化 tag 则由 metadata-action 的 flavor: latest=auto 自动补上。
+# 也就是说 latest 始终指向「最新的发布版本」，而 main 才是滚动的最新构建。
+# 想让 latest 严格只跟随 main：把 flavor 改成 latest=false 并删掉下面那行 type=raw。
 on:
   push:
     branches: [main]
@@ -106,6 +111,9 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
+          # latest=auto（默认值，这里显式写出来）：main 分支与语义化 tag 都会生成 latest
+          flavor: |
+            latest=auto
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
