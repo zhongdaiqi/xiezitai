@@ -289,6 +289,21 @@ mvn test
 - 测试类：`src/test/java/cn/xiezitai/XiezitaiApplicationTests.java`
 - 测试配置：`src/test/resources/application-test.yml`
 
+### 端到端验证（Playwright + 真实 Chrome）
+
+`e2e/` 下有 14 个脚本，覆盖后台建文发布、评论两级与审核、首页分页、媒体上传、
+视频插入、改密、记住登录、TOTP 绑定、示例内容种子等场景，跑完打印 `PASS/FAIL` 汇总。
+**必须在项目根目录执行**（截图输出到 `e2e/out/`）：
+
+```bash
+docker compose -f docker-compose.lite.yml up -d     # 或被测实例
+node e2e/smoke.cjs
+E2E_BASE=http://localhost:8099 node e2e/pager.cjs
+```
+
+详见 [`e2e/README.md`](e2e/README.md)。运维 / 联调小工具（CI 与镜像状态查询、AI 能力实调）
+见 [`tools/README.md`](tools/README.md)。
+
 ## 目录
 
 ```
@@ -302,4 +317,6 @@ src/main/java/cn/xiezitai/
 src/main/resources/
  ├─ templates/    SEO 服务端渲染模板
  └─ static/       admin.html（ByteMD 管理后台）+ vendor/（本地内置前端依赖，无 CDN）
+e2e/             Playwright 端到端脚本（截图输出到 e2e/out/）
+tools/           CI 与联调小工具
 ```

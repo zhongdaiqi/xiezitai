@@ -7,9 +7,18 @@ node_modules/
 .DS_Store
 
 # 本地部署与调试产物
+# 约定：临时文件不要再丢在仓库根目录，统一写进 e2e/out/（截图）或 tools/*.txt（工具输出）
 .env
 _*
 *.log
+hs_err_pid*.log
+replay_pid*.log
+__pycache__/
+
+# 端到端测试输出 / 工具产物
+e2e/out/*
+!e2e/out/.gitkeep
+tools/*.txt
 
 # 协作/助手工作数据，不入开源仓库
 .workbuddy/
