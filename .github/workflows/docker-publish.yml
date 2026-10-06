@@ -1,15 +1,20 @@
 name: Build and Push Docker Image
 
 # 触发规则：
-#   - push 到 main            -> 构建并推送 latest / main / sha-xxxxxxx
+#   - push 到 main            -> 构建并推送 main / sha-xxxxxxx
 #   - push tag v1.2.3         -> 构建并推送 1.2.3 / 1.2 / sha-xxxxxxx / latest
 #   - Pull Request 到 main    -> 只构建校验，不推送
 #   - 手动触发                -> Actions 页面点 Run workflow
 #
-# 关于 latest：两条路径都会推送它 —— main 分支由下面的 type=raw 规则负责，
-# 语义化 tag 则由 metadata-action 的 flavor: latest=auto 自动补上。
-# 也就是说 latest 始终指向「最新的发布版本」，而 main 才是滚动的最新构建。
-# 想让 latest 严格只跟随 main：把 flavor 改成 latest=false 并删掉下面那行 type=raw。
+# 关于 latest：**只有打语义化 tag 才会更新 latest**，让 latest 始终等于最新的发布版本，
+# 生产环境照着 README 用 :latest 也不会拿到半成品开发构建。
+# 想要滚动的最新代码，用 :main 标签。
+#
+# 实现上必须把 metadata-action 的 flavor 设成 latest=false：
+# 它的默认值 latest=auto 会在「默认分支」和「语义化 tag」两种情况下都自动注入 latest，
+# 那样一次普通的 main 提交就会把 latest 从已发布版本挪走（v1.0.0 发布时就真踩到了）。
+# 关掉自动注入后，由下面的 type=raw 规则精确控制：仅 refs/tags/v* 生成 latest。
+
 on:
   push:
     branches: [main]
@@ -111,11 +116,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
-          # latest=auto（默认值，这里显式写出来）：main 分支与语义化 tag 都会生成 latest
+          # latest=false：关掉 metadata-action 的自动 latest 注入（默认 auto 会在
+          # main 推送和 tag 推送时都加 latest），改由下面的 type=raw 精确控制
           flavor: |
-            latest=auto
+            latest=false
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
