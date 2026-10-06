@@ -9,7 +9,10 @@ spring:
   application:
     name: xiezitai
   datasource:
-    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DB:xiezitai}?useUnicode=true&characterEncoding=utf8mb4&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+    # characterEncoding 必须是 Java 字符集名（UTF-8），不能写 MySQL 的 utf8mb4 ——
+    # Connector/J 会把它映射成服务端 utf8mb4（8.0.13+），写成 utf8mb4 会直接启动失败：
+    # "Unsupported character encoding 'utf8mb4'"。sslMode=DISABLED 是 8.x 的规范写法（旧写法 useSSL=false）。
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DB:xiezitai}?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&sslMode=DISABLED
     username: ${MYSQL_USER:xiezitai}
     password: ${MYSQL_PASSWORD:xiexiexie}
   jpa:

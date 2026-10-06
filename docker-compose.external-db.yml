@@ -1,0 +1,133 @@
+# ---------------------------------------------------------------------------
+# 写字台 (xiezitai) — 连接「云端 / 外部 MySQL」的编排（应用容器化，数据库不在本编排里）
+#
+# 什么时候用这份：
+#   数据库已经存在于别处 —— 云厂商托管 MySQL（阿里云 RDS、腾讯云 CDB、华为云 RDS、
+#   AWS RDS、Azure Database for MySQL 等）、公司内网的自建库、或者宿主机上已有的 MySQL。
+#   本文件只起「一个应用容器」，不再顺带起 mysql:8.4 容器。
+#
+# 四份编排的分工：
+#   docker-compose.yml              app 从源码构建   + 本地 mysql:8.4 容器   （改代码用）
+#   docker-compose.hub.yml          app 用官方镜像   + 本地 mysql:8.4 容器   （服务器省事）
+#   docker-compose.lite.yml         app 单容器，内置 H2 文件库，完全不要数据库（NAS / 内网）
+#   docker-compose.external-db.yml  app 用官方镜像   + 你自己提供的外部 MySQL   ← 本文件
+#
+# 快速开始：
+#   cp .env.example .env
+#   vi .env                                       # 填数据库地址 / 账号 / 密码 / JWT 密钥
+#   docker compose -f docker-compose.external-db.yml up -d
+#   docker compose -f docker-compose.external-db.yml logs -f app    # 出现 "Started XiezitaiApplication" 即成功
+#
+# 不想用 .env 就 export 同名环境变量（二者等价，compose 会自动读取同目录的 .env：
+# .env 里的值只做变量替换，不会整包塞进容器，比 env_file 更干净）：
+#   export MYSQL_HOST=rm-xxxxxx.mysql.rds.aliyuncs.com
+#   export MYSQL_PASSWORD='你的数据库密码'
+#   export XIEZITAI_JWT_SECRET="$(openssl rand -hex 32)"
+#   docker compose -f docker-compose.external-db.yml up -d
+#
+# 升级 / 回滚：
+#   docker compose -f docker-compose.external-db.yml pull && docker compose -f docker-compose.external-db.yml up -d
+#   固定版本：XIEZITAI_IMAGE=zhongdaiqi/xiezitai:sha-abc1234（或语义化版本号 1.2.3）
+#
+# 注 1：变量默认值必须写 `${VAR:-default}`（带横线）。写成 `${VAR:default}` 是非法插值，compose 会
+#       直接报 "invalid interpolation format" 拒绝启动。
+# 注 2：`${VAR:?提示语}` 是「必填校验」——变量没值时 compose 立刻报错并原样打印提示语。
+#       下面几个关键项故意用它：连云端库说明是生产环境，不该拿内置弱口令/默认密钥上线。
+# ---------------------------------------------------------------------------
+
+services:
+  app:
+    image: ${XIEZITAI_IMAGE:-zhongdaiqi/xiezitai:latest}
+    container_name: xiezitai
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+
+      # ---------- 数据库连接（必填）----------
+      # 云库地址：控制台里的「内网地址」优先（同 VPC 走内网更快也更安全），跨公网时才用外网地址
+      MYSQL_HOST: ${MYSQL_HOST:?请设置数据库地址，例如 export MYSQL_HOST=rm-xxxxxx.mysql.rds.aliyuncs.com}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DB: ${MYSQL_DB:-xiezitai}
+      MYSQL_USER: ${MYSQL_USER:-xiezitai}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请设置数据库密码，例如 export MYSQL_PASSWORD=你的数据库密码}
+
+      # ---------- 站点（必填）----------
+      XIEZITAI_JWT_SECRET: ${XIEZITAI_JWT_SECRET:?请设置至少 32 位随机字符串，例如 export XIEZITAI_JWT_SECRET=$(openssl rand -hex 32)}
+      # 站点对外地址，影响 sitemap.xml / canonical / OG 标签里输出的绝对链接
+      XIEZITAI_SITE_URL: ${XIEZITAI_SITE_URL:-https://xiezitai.cn}
+
+      # ---------- 本机持久化（数据库在云端，但上传的媒体仍存在本机卷里）----------
+      XIEZITAI_UPLOAD_DIR: /app/data/uploads
+
+      # 首次启动且库为空时写入示例内容（4 篇文章 + 关于/友链页面 + 几条评论）；已有数据的库不受影响
+      XIEZITAI_SEED_DEMO: ${XIEZITAI_SEED_DEMO:-true}
+
+      # ⚠️ 大模型 / 连接池这类「可选覆盖项」不要在这里写 ${VAR:-}：
+      #    变量为空时会向容器注入一个「值为空字符串」的同名环境变量，而 Spring 的
+      #    ${XIEZITAI_AI_BASE_URL:默认值} 只在变量「不存在」时才用默认值 —— 空字符串会被当成
+      #    「存在且为空」，反而把镜像内置的默认配置顶掉。需要覆盖时把下面几行取消注释并赋值：
+      #
+      # XIEZITAI_AI_BASE_URL: ${XIEZITAI_AI_BASE_URL}
+      # XIEZITAI_AI_API_KEY: ${XIEZITAI_AI_API_KEY}
+      # XIEZITAI_AI_MODEL: ${XIEZITAI_AI_MODEL}
+      # XIEZITAI_AI_IMAGE_MODEL: ${XIEZITAI_AI_IMAGE_MODEL}
+      # SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL}          # 整条 JDBC URL 覆盖，见文件末尾
+      # SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${DB_POOL_SIZE}
+    ports:
+      # 只监听回环地址？把左边改成 "127.0.0.1:${APP_PORT:-8080}:8080"，
+      # 再由 Nginx / Caddy 反向代理到 8080，应用就不必直接暴露在公网
+      - "${APP_PORT:-8080}:8080"
+    volumes:
+      - xiezitai_data:/app/data
+    extra_hosts:
+      # 数据库跑在「宿主机」上时（宿主机自装的 MySQL、或 docker run 起的 mysql 容器），
+      # MYSQL_HOST 填 host.docker.internal 即可。Docker Desktop 自带解析；Linux 靠这行。
+      # 直连云端库的话这段可以删掉。
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # 基础镜像自带 bash，用 bash 的 /dev/tcp 探活，不依赖 curl / wget
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  # 上传的图片 / 视频。数据库在云端，但媒体文件仍在本机 —— 换容器务必保留这个卷
+  xiezitai_data:
+
+# ---------------------------------------------------------------------------
+# 附：云数据库连接要点
+#
+# 1) 建库要用 utf8mb4，否则中文、emoji 会报错：
+#      CREATE DATABASE xiezitai DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+#      CREATE USER 'xiezitai'@'%' IDENTIFIED BY '你的密码';
+#      GRANT ALL PRIVILEGES ON xiezitai.* TO 'xiezitai'@'%';   -- 首次启动要建表，需 CREATE/ALTER 权限
+#      FLUSH PRIVILEGES;
+#    云控制台里也可以只建库，链接账号一般已给足权限。
+#
+# 2) 白名单：云库默认拒绝外部 IP。在控制台把部署这台服务器的「公网出口 IP」加进白名单；
+#    同 VPC 内网访问则放内网段。加完连不上先 `docker exec -it xiezitai sh -c 'nc -vz 你的库地址 3306'` 探一下。
+#
+# 3) 想开 SSL / 加参数，用 SPRING_DATASOURCE_URL 整条覆盖（默认那条是 sslMode=DISABLED）：
+#      SPRING_DATASOURCE_URL=jdbc:mysql://${MYSQL_HOST}:${MYSQL_PORT}/${MYSQL_DB}?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&sslMode=REQUIRED
+#    • 阿里云 RDS / 腾讯云 CDB / 华为云 RDS：建议开加密，用 sslMode=REQUIRED；
+#      服务端是自签证书，REQUIRED 只要求加密、不校验证书链，开箱即可连上。
+#    • 托管服务（TiDB Cloud、PlanetScale 等）多数强制 SSL，同样用 sslMode=REQUIRED。
+#    • characterEncoding 只能填 Java 字符集名 UTF-8；填 MySQL 的 utf8mb4 会直接启动失败
+#      （"Unsupported character encoding 'utf8mb4'"）—— Connector/J 会把 UTF-8 映射成服务端的 utf8mb4。
+#    • 报 "Public Key Retrieval is not allowed" → 加 allowPublicKeyRetrieval=true（默认已带）。
+#    • 报 "Unknown character set" / 中文乱码 → 检查库字符集（要 utf8mb4）与连接字符集两处。
+#    • 报 "The server time zone value ... is unrecognized" → 加 serverTimezone=Asia/Shanghai（默认已带）。
+#
+# 4) 连接池：云库一般有连接数上限（如 1000）。默认池 10 条足够单实例；
+#    多实例部署时按「实例数 × 池大小 < 上限」下调，用 SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE 覆盖。
+#    默认 max-lifetime 30 分钟，短于云库的空闲回收时间（常见 8 小时），不用手改。
+#
+# 5) 备份交给云厂商的自动备份即可（本机只有媒体文件，用体积很小的卷备份）：
+#      docker run --rm -v xiezitai_data:/data -v "$PWD":/backup alpine \
+#        tar czf /backup/xiezitai-media-backup.tgz -C /data .
+#
+# 6) 从本地 MySQL / lite 模式迁到云库：文章正文就是 Markdown 原文，最稳的迁移是
+#    后台把文章导出再导入；表结构由应用启动时的 ddl-auto=update 自动建好，空库直接连即可。
+# ---------------------------------------------------------------------------

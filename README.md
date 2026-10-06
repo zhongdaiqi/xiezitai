@@ -10,10 +10,14 @@ SEO / AI 友好的自托管博客系统。官网：<https://xiezitai.cn>
 
 | 场景 | 用哪个 | 命令 |
 | --- | --- | --- |
-| 服务器部署（推荐） | 官方镜像 + MySQL | `docker compose -f docker-compose.hub.yml up -d` |
-| 个人 / NAS / 内网 | 官方镜像单容器（lite，无需数据库） | `docker compose -f docker-compose.lite.yml up -d` |
+| 服务器部署（数据库也一起起，推荐） | 官方镜像 + 官方 MySQL 容器 | `docker compose -f docker-compose.hub.yml up -d` |
+| **数据库在云端 / 已有 MySQL** | 官方镜像 + 你自己的库 | `docker compose -f docker-compose.external-db.yml up -d` |
+| 个人 / NAS / 内网（连数据库都不要） | 官方镜像单容器（lite，内置 H2 文件库） | `docker compose -f docker-compose.lite.yml up -d` |
 | 自己改代码 | 源码 compose（容器内编译） | `docker compose up -d --build` |
 | 无 Docker | JAR 直跑（`MYSQL_*` 环境变量指外部库） | `java -jar target/xiezitai.jar` |
+
+四份 compose 共用同一套环境变量，可在仓库根建一个 `.env` 集中填写（模板见 `.env.example`，
+`.env` 已被 git 忽略）：`cp .env.example .env` 后按注释改成自己的值即可。
 
 访问 `http://localhost:8080`，后台：`http://localhost:8080/admin.html`
 
@@ -44,7 +48,94 @@ docker compose -f docker-compose.hub.yml up -d
 
 升级：`docker compose -f docker-compose.hub.yml pull && docker compose -f docker-compose.hub.yml up -d`
 
-### 方式二：单容器精简模式（lite，无需 MySQL）
+> ⚠️ **一定要设 `XIEZITAI_JWT_SECRET`**：不设就会用镜像内置的默认值，任何人都能伪造登录令牌。
+> 这些变量也可以写在仓库根的 `.env` 里（模板见 `.env.example`），批量部署更省事。
+
+### 方式二：连接云端 / 外部 MySQL（数据库不在 Docker 里）
+
+适合：数据库已经存在——云厂商托管 MySQL（阿里云 RDS、腾讯云 CDB、华为云 RDS、AWS RDS、Azure Database for MySQL…）、
+公司内网的自建库、宿主机上已装好的 MySQL。这份编排**只起一个应用容器**，不再顺带起 `mysql:8.4`。
+配置文件是 `docker-compose.external-db.yml`。
+
+**第 1 步 · 数据库侧准备**（云控制台里建库，或让 DBA 执行）
+
+```sql
+-- 库必须是 utf8mb4，否则中文、emoji 会出错
+CREATE DATABASE xiezitai DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'xiezitai'@'%' IDENTIFIED BY '你的强密码';
+-- 首次启动要自动建表，需要 CREATE / ALTER / INDEX 权限
+GRANT ALL PRIVILEGES ON xiezitai.* TO 'xiezitai'@'%';
+FLUSH PRIVILEGES;
+```
+
+再把**这台服务器的公网出口 IP** 加进云库白名单（同 VPC 访问则放内网段）。
+出口 IP 可用 `curl -s ifconfig.me` 查。云库地址优先选控制台里的**内网地址**：更快，也不经公网。
+
+**第 2 步 · 填配置**
+
+```bash
+cp .env.example .env
+vi .env          # 最少填这三项：MYSQL_HOST、MYSQL_PASSWORD、XIEZITAI_JWT_SECRET
+```
+
+```ini
+# 数据库（必填）
+MYSQL_HOST=rm-xxxxxxxx.mysql.rds.aliyuncs.com
+MYSQL_PORT=3306
+MYSQL_DB=xiezitai
+MYSQL_USER=xiezitai
+MYSQL_PASSWORD=你的强密码
+# 站点（必填）
+XIEZITAI_JWT_SECRET=<openssl rand -hex 32 的输出>
+XIEZITAI_SITE_URL=https://你的域名
+APP_PORT=8080
+```
+
+> 这三项在编排里用的是「必填校验」写法：没填会直接报错退出并打印提示语，
+> 不会拿内置的弱口令/默认密钥把服务起起来。
+
+**第 3 步 · 起服务**
+
+```bash
+docker compose -f docker-compose.external-db.yml up -d
+docker compose -f docker-compose.external-db.yml logs -f app      # 出现 Started XiezitaiApplication 即成功
+```
+
+访问 `http://服务器IP:8080`，后台 `/admin.html`，默认管理员 `xiezitai / xiexiexie`（**登录后立即改密码**）。
+首次启动会自动在云库里建表，并写入 4 篇文章 + 关于/友链页面 + 几条评论作示例。
+
+升级到新版本 / 回滚到固定版本：
+
+```bash
+docker compose -f docker-compose.external-db.yml pull && docker compose -f docker-compose.external-db.yml up -d
+# 回滚：先在 .env 里指定 XIEZITAI_IMAGE=zhongdaiqi/xiezitai:1.2.3（或 :sha-abc1234），再执行上面两条
+```
+
+**连不上的话，对照排查**
+
+| 现象 | 原因与解决 |
+| --- | --- |
+| `Communications link failure` / `Connection timed out` | 白名单没放行该出口 IP，或填了内网地址但机器不在同一 VPC |
+| `Access denied for user 'xiezitai'@'1.2.3.4'` | 账号或密码错；或账号没授权给这个来源（要 `'xiezitai'@'%'`） |
+| `Public Key Retrieval is not allowed` | 加 `allowPublicKeyRetrieval=true`（默认 URL 已带） |
+| `Unknown character set` / 中文乱码 | 云的库不是 utf8mb4，或 `characterEncoding` 被改掉了 |
+| `The server time zone value ... is unrecognized` | URL 加 `serverTimezone=Asia/Shanghai`（默认 URL 已带） |
+| `SSL connection required` / TLS 握手失败 | 用 `SPRING_DATASOURCE_URL` 整条覆盖并把 `sslMode` 改成 `REQUIRED`，示例见 `docker-compose.external-db.yml` 末尾 |
+| `Too many connections` / 连接被打满 | 下调 `SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE`（见 `.env.example` 的 `DB_POOL_SIZE`） |
+
+**备份**：数据库的备份与恢复交给云厂商的自动备份即可；本机只有上传的媒体文件，把数据卷打包带走就行：
+
+```bash
+VOL=$(docker volume ls --format '{{.Name}}' | grep 'xiezitai_data' | head -1)   # compose 会给卷加项目名前缀
+docker compose -f docker-compose.external-db.yml stop
+docker run --rm -v "$VOL":/data -v "$PWD":/backup alpine tar czf /backup/xiezitai-media.tgz -C /data .
+docker compose -f docker-compose.external-db.yml start
+```
+
+> 想在生产再稳一点：把 `ports` 改成 `"127.0.0.1:8080:8080"`，只让本机 Nginx / Caddy 反代进来，
+> 应用就不必直接暴露在公网。
+
+### 方式三：单容器精简模式（lite，无需 MySQL）
 
 只想跑**一个**容器，数据用内置 H2 文件库落在卷里：
 
@@ -52,6 +143,8 @@ docker compose -f docker-compose.hub.yml up -d
 export XIEZITAI_JWT_SECRET='至少32位随机字符串'
 docker compose -f docker-compose.lite.yml up -d
 ```
+
+> ⚠️ 同样要设 `XIEZITAI_JWT_SECRET`，不设会用镜像内置默认值（可被伪造令牌）。
 
 数据（H2 库 + 上传的媒体）都在命名卷 `xiezitai_data` 的 `/app/data` 下：
 
@@ -65,7 +158,7 @@ docker run --rm -v xiezitai_data:/data -v "$PWD":/backup alpine \
 > 什么时候该换回 MySQL：需要多实例横向扩展、单库写入并发很高、或想用云数据库托管。
 > 届时改用方式一，文章正文本来就是 Markdown 原文，迁移成本很低。
 
-### 方式三：源码构建（本地改代码用）
+### 方式四：源码构建（本地改代码用）
 
 ```bash
 docker compose up -d --build
