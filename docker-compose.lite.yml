@@ -1,0 +1,47 @@
+# ---------------------------------------------------------------------------
+# 写字台 (xiezitai) — 单容器精简模式（lite，无需 MySQL）
+#
+# 只有一个容器：数据（H2 库 + 上传的媒体）全部落在命名卷 xiezitai_data 里，
+# 不占额外内存、不用维护数据库、不用配置账号密码。适合个人服务器 / NAS / 内网。
+#
+# 用法：
+#   export XIEZITAI_JWT_SECRET='至少32位随机字符串'
+#   docker compose -f docker-compose.lite.yml up -d
+#
+# 访问 http://localhost:8080 ，后台 /admin.html ，默认管理员 xiezitai / xiexiexie。
+#
+# 备份：docker compose -f docker-compose.lite.yml stop
+#       docker run --rm -v xiezitai_data:/data -v "$PWD":/backup alpine \
+#         tar czf /backup/xiezitai-backup.tgz -C /data .
+#
+# 何时该换回 MySQL：需要多实例横向扩展、单库写入并发很高、或想要主从/云数据库托管。
+# 那时用 docker-compose.hub.yml 即可，文章正文本来就是 Markdown 原文，迁移成本很低。
+#
+# 注：变量默认值必须写 `${VAR:-default}`（带横线）。写成 `${VAR:default}` 是非法插值，
+#     compose 会直接报 "invalid interpolation format" 而拒绝启动。
+# ---------------------------------------------------------------------------
+
+services:
+  app:
+    image: zhongdaiqi/xiezitai:latest
+    container_name: xiezitai
+    environment:
+      TZ: Asia/Shanghai
+      # 关键：切到 lite profile，走 H2 文件库
+      SPRING_PROFILES_ACTIVE: lite
+      XIEZITAI_DB_PATH: /app/data/db/xiezitai
+      XIEZITAI_UPLOAD_DIR: /app/data/uploads
+      XIEZITAI_JWT_SECRET: ${XIEZITAI_JWT_SECRET:-please-change-me-0123456789abcdef}
+      XIEZITAI_SITE_URL: ${XIEZITAI_SITE_URL:-https://xiezitai.cn}
+      XIEZITAI_AI_BASE_URL: ${XIEZITAI_AI_BASE_URL:-}
+      XIEZITAI_AI_API_KEY: ${XIEZITAI_AI_API_KEY:-}
+      XIEZITAI_AI_MODEL: ${XIEZITAI_AI_MODEL:-}
+      XIEZITAI_AI_IMAGE_MODEL: ${XIEZITAI_AI_IMAGE_MODEL:-}
+    ports:
+      - "8080:8080"
+    volumes:
+      - xiezitai_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  xiezitai_data:

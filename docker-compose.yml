@@ -5,10 +5,10 @@ services:
     image: mysql:8.4
     container_name: xiezitai-mysql
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:rootroot}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootroot}
       MYSQL_DATABASE: xiezitai
       MYSQL_USER: xiezitai
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:xiexiexie}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-xiexiexie}
     volumes:
       - mysql-data:/var/lib/mysql
     restart: unless-stopped
@@ -28,10 +28,10 @@ services:
       MYSQL_PORT: "3306"
       MYSQL_DB: xiezitai
       MYSQL_USER: xiezitai
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:xiexiexie}
-      XIEZITAI_JWT_SECRET: ${XIEZITAI_JWT_SECRET:please-change-me-0123456789abcdef}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-xiexiexie}
+      XIEZITAI_JWT_SECRET: ${XIEZITAI_JWT_SECRET:-please-change-me-0123456789abcdef}
       XIEZITAI_UPLOAD_DIR: /app/data/uploads
-      XIEZITAI_SITE_URL: ${XIEZITAI_SITE_URL:https://xiezitai.cn}
+      XIEZITAI_SITE_URL: ${XIEZITAI_SITE_URL:-https://xiezitai.cn}
     ports:
       - "8080:8080"
     volumes:

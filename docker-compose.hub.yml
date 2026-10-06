@@ -1,0 +1,78 @@
+# ---------------------------------------------------------------------------
+# 写字台 (xiezitai) — 使用官方镜像的编排（不本地编译）
+#
+# 和 docker-compose.yml 的区别：
+#   docker-compose.yml       app 用 `build: .`，从当前源码在容器里跑 Maven 编译，
+#                            适合开发者本地改代码后一把梭。
+#   本文件（hub）             app 用 `image: zhongdaiqi/xiezitai:latest`，直接拉
+#                            GitHub Actions 构建好的双架构镜像（amd64/arm64），
+#                            适合服务器部署：不用装 JDK、不用等编译、秒起。
+#
+# 用法：
+#   export MYSQL_PASSWORD='你的数据库密码'
+#   export XIEZITAI_JWT_SECRET='至少32位随机字符串'
+#   docker compose -f docker-compose.hub.yml up -d
+#
+# 升级到最新版：
+#   docker compose -f docker-compose.hub.yml pull && docker compose -f docker-compose.hub.yml up -d
+#
+# 想固定版本（便于回滚）：把下面 app.image 的 latest 换成 `1.2.3` 或 `sha-abc1234`。
+#
+# 注：变量默认值必须写 `${VAR:-default}`（带横线）。写成 `${VAR:default}` 是非法插值，
+#     compose 会直接报 "invalid interpolation format" 而拒绝启动。
+# ---------------------------------------------------------------------------
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: xiezitai-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootroot}
+      MYSQL_DATABASE: xiezitai
+      MYSQL_USER: xiezitai
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-xiexiexie}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  app:
+    image: zhongdaiqi/xiezitai:latest
+    container_name: xiezitai-app
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DB: xiezitai
+      MYSQL_USER: xiezitai
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-xiexiexie}
+      XIEZITAI_JWT_SECRET: ${XIEZITAI_JWT_SECRET:-please-change-me-0123456789abcdef}
+      XIEZITAI_UPLOAD_DIR: /app/data/uploads
+      XIEZITAI_SITE_URL: ${XIEZITAI_SITE_URL:-https://xiezitai.cn}
+      # 大模型（可选；留空则用镜像内置的魔搭默认 Key，首次启动写入 sys_configs）
+      XIEZITAI_AI_BASE_URL: ${XIEZITAI_AI_BASE_URL:-}
+      XIEZITAI_AI_API_KEY: ${XIEZITAI_AI_API_KEY:-}
+      XIEZITAI_AI_MODEL: ${XIEZITAI_AI_MODEL:-}
+      XIEZITAI_AI_IMAGE_MODEL: ${XIEZITAI_AI_IMAGE_MODEL:-}
+    ports:
+      - "8080:8080"
+    volumes:
+      # /app/data 里放上传的媒体文件，必须持久化，否则容器重建即丢
+      - app-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
+  app-data:

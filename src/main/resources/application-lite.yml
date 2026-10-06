@@ -1,0 +1,36 @@
+# ---------------------------------------------------------------------------
+# 精简模式（lite）：不依赖 MySQL，用 H2 文件库把数据落在本地磁盘。
+#
+# 适用场景：个人博客 / NAS / 单台小服务器，只想跑一个容器，不想额外维护数据库。
+# 数据文件位置由 XIEZITAI_DB_PATH 控制（不带 .mv.db 后缀）：
+#   容器里   /app/data/db/xiezitai   → 在数据卷里，跟着 /app/data 一起持久化
+#   本地直跑 ./data/db/xiezitai      → 项目根目录下
+#
+# 启用方式（三选一）：
+#   java -jar target/xiezitai.jar --spring.profiles.active=lite
+#   docker run -e SPRING_PROFILES_ACTIVE=lite ...
+#   docker compose -f docker-compose.lite.yml up -d
+#
+# 注意：
+#   1. H2 是嵌入式数据库，同一时刻只能有一个进程打开同一个库文件，
+#      所以**不要**同时起两个容器指向同一个卷。
+#   2. 备份 = 停容器后直接拷走 /app/data 整个目录（含 db 和 uploads）。
+#   3. 数据量超过几十万条或需要并发写入时，请改用 MySQL（默认 profile）。
+# ---------------------------------------------------------------------------
+spring:
+  datasource:
+    # MODE=MySQL 让 H2 用 MySQL 兼容语法建表，DATABASE_TO_LOWER 保证表名全小写，
+    # 与 MySQL 下的大小写行为一致（否则两套库的表名风格会打架）。
+    url: jdbc:h2:file:${XIEZITAI_DB_PATH:./data/db/xiezitai};MODE=MySQL;DATABASE_TO_LOWER=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+
+xiezitai:
+  upload-dir: ${XIEZITAI_UPLOAD_DIR:./data/uploads}

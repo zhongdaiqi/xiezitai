@@ -6,23 +6,61 @@ SEO / AI 友好的自托管博客系统。官网：<https://xiezitai.cn>
 - 仓库：<https://github.com/zhongdaiqi/xiezitai>
 - 镜像：<https://hub.docker.com/r/zhongdaiqi/xiezitai>（GitHub Actions 自动构建，支持 amd64 / arm64）
 
-## 快速开始（Docker）
+## 部署方式怎么选
 
-```bash
-# 建议先设置环境变量
-export MYSQL_PASSWORD=你的数据库密码
-export XIEZITAI_JWT_SECRET=一串足够长的随机字符串
-
-docker compose up -d --build
-```
+| 场景 | 用哪个 | 命令 |
+| --- | --- | --- |
+| 服务器部署（推荐） | 官方镜像 + MySQL | `docker compose -f docker-compose.hub.yml up -d` |
+| 个人 / NAS / 内网 | 官方镜像单容器（lite，无需数据库） | `docker compose -f docker-compose.lite.yml up -d` |
+| 自己改代码 | 源码 compose（容器内编译） | `docker compose up -d --build` |
+| 无 Docker | JAR 直跑（`MYSQL_*` 环境变量指外部库） | `java -jar target/xiezitai.jar` |
 
 访问 `http://localhost:8080`，后台：`http://localhost:8080/admin.html`
 
 默认管理员：`xiezitai / xiexiexie`（登录后请立即改密码并开启 TOTP）。
 
-## 使用官方镜像（Docker Hub）
+### 方式一：官方镜像 + MySQL（推荐服务器用）
 
-不想自己编译的话，直接拉官方构建好的镜像（amd64 / arm64 双架构）：
+不用装 JDK、不用等编译，直接拉 Actions 构建好的双架构镜像：
+
+```bash
+export MYSQL_PASSWORD='你的数据库密码'
+export XIEZITAI_JWT_SECRET='至少32位随机字符串'
+docker compose -f docker-compose.hub.yml up -d
+```
+
+升级：`docker compose -f docker-compose.hub.yml pull && docker compose -f docker-compose.hub.yml up -d`
+
+### 方式二：单容器精简模式（lite，无需 MySQL）
+
+只想跑**一个**容器，数据用内置 H2 文件库落在卷里：
+
+```bash
+export XIEZITAI_JWT_SECRET='至少32位随机字符串'
+docker compose -f docker-compose.lite.yml up -d
+```
+
+数据（H2 库 + 上传的媒体）都在命名卷 `xiezitai_data` 的 `/app/data` 下：
+
+```bash
+# 备份：停容器后把整个数据目录打包
+docker compose -f docker-compose.lite.yml stop
+docker run --rm -v xiezitai_data:/data -v "$PWD":/backup alpine \
+  tar czf /backup/xiezitai-backup.tgz -C /data .
+```
+
+> 什么时候该换回 MySQL：需要多实例横向扩展、单库写入并发很高、或想用云数据库托管。
+> 届时改用方式一，文章正文本来就是 Markdown 原文，迁移成本很低。
+
+### 方式三：源码构建（本地改代码用）
+
+```bash
+docker compose up -d --build
+```
+
+## 官方镜像标签与裸 docker run
+
+不想用 compose，直接单命令起（MySQL 部署在别处）：
 
 ```bash
 docker run -d --name xiezitai -p 8080:8080 \
@@ -30,6 +68,17 @@ docker run -d --name xiezitai -p 8080:8080 \
   -e MYSQL_USER=xiezitai -e MYSQL_PASSWORD=你的数据库密码 \
   -e XIEZITAI_JWT_SECRET=一串至少32位的随机字符串 \
   -e XIEZITAI_SITE_URL=https://你的域名 \
+  -v xiezitai_data:/app/data \
+  --restart unless-stopped \
+  zhongdaiqi/xiezitai:latest
+```
+
+连数据库都不想要，只要加一个环境变量就能切到内置 H2 文件库（数据仍在卷里）：
+
+```bash
+docker run -d --name xiezitai -p 8080:8080 \
+  -e SPRING_PROFILES_ACTIVE=lite \
+  -e XIEZITAI_JWT_SECRET=一串至少32位的随机字符串 \
   -v xiezitai_data:/app/data \
   --restart unless-stopped \
   zhongdaiqi/xiezitai:latest
