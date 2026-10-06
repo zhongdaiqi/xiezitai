@@ -1,0 +1,291 @@
+# ---------------------------------------------------------------------------
+# 写字台 (xiezitai) — MariaDB 11.4 + 应用容器，专为「1G 内存的小机器」调优
+#
+# 什么时候用这份：
+#   甲骨文云 Oracle Cloud 免费实例（E2.1.Micro 1 核 1G / A1 最低配）、1 核 1G 的 VPS、
+#   树莓派这类内存吃紧的机器 —— 数据库想跑在自己机器上（不买云数据库），但又不想用
+#   lite 单容器模式。编排里两个容器：mariadb:11.4 与 zhongdaiqi/xiezitai，
+#   两个容器的内存相关默认值全部按 1G 收敛过，照抄即可跑起来。
+#
+# 五份编排的分工：
+#   docker-compose.yml              app 从源码构建 + 本地 mysql:8.4    （改代码用）
+#   docker-compose.hub.yml          app 用官方镜像 + 本地 mysql:8.4    （服务器省事）
+#   docker-compose.lite.yml         app 单容器，内置 H2 文件库          （NAS / 最省资源）
+#   docker-compose.external-db.yml  app 用官方镜像 + 你自己的外部 MySQL （云数据库）
+#   docker-compose.mariadb.yml      app 用官方镜像 + 本地 MariaDB 11.4  ← 本文件（1G 调优）
+#
+# ── 为什么低配机选 MariaDB 而不是 MySQL 8 ──────────────────────────────────
+#   • performance_schema 在 MariaDB 默认就是 OFF；MySQL 8 默认 ON，光这一项常驻
+#     100~200MB，在 1G 机器上等于砍掉五分之一内存。
+#   • mysqld 进程本身的基础占用更小（后台线程、内存池、innodb 相关缓冲都比 MySQL 8 少）。
+#   • 11.4 是 LTS，官方镜像同时提供 amd64 与 arm64（甲骨文 A1 实例是 arm64）。
+#   • 连接协议与 MySQL 兼容，应用侧一行代码都不用改（JDBC 驱动仍是 Connector/J）。
+#
+# ── 1G 内存怎么分（本文件的取值依据，2026-10 实机实测）──────────────────────
+#   系统 + sshd + dockerd          ~200MB      不可避免的系统开销
+#   MariaDB 容器（上限 320m）        ~53MB      空闲实测；随数据增长会爬向 ~200MB 的天花板
+#   应用容器 JVM（上限 512m）       ~257MB      空闲实测 / 压测后 280MB（-Xmx320m + 元空间 112m）
+#   留给文件缓存 / 突发的余量        ~400MB      页面缓存、上传临时文件、构建缓存
+#   ────────────────────────────────────────
+#   空闲合计约 510MB，连打 300 次首页后约 540MB，离 1G 仍有约 460MB 余量。
+#   两个上限之和（832m）是「天花板」不是「预订量」——资源是惰性分配的。
+#   注：MariaDB 的空闲值偏低是因为 InnoDB buffer pool 按需分配（用到才占），
+#       数据涨到几百 MB 后会稳定在 150~200MB，仍在 320m 上限内。
+#
+# ⚠️ 动手前第一件事：加 swap（1G 机器最有效的一步，不加 swap 遇到瞬时高峰必被 OOM Killer 干掉）
+#   sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile
+#   sudo swapon /swapfile && echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+#   sudo sysctl -w vm.swappiness=10        # 平时别往下换，只在内存真紧时才用
+#
+# 快速开始：
+#   cp .env.example .env                   # 必填 3 项：MYSQL_ROOT_PASSWORD / MYSQL_PASSWORD / XIEZITAI_JWT_SECRET
+#   docker compose -f docker-compose.mariadb.yml up -d
+#   docker compose -f docker-compose.mariadb.yml logs -f app     # 见 "Started XiezitaiApplication" 即成功
+#   docker stats --no-stream                                     # 看两个容器真实占用
+#
+# 注 1：变量默认值必须写 `${VAR:-default}`（带横线）。`${VAR:default}` 是非法插值，compose 直接拒绝启动。
+# 注 2：`${VAR:?提示语}` 是必填校验 —— 没值时 compose 立刻报错并原样打印提示语。
+# 注 3：本文件是**单机**编排，别拿去做多实例扩展（那属于 external-db 那份的活）。
+# ---------------------------------------------------------------------------
+
+services:
+  # ===========================================================================
+  # MariaDB 11.4 —— 参数全部围绕「不把 1G 内存吃光」与「低 IOPS 磁盘」展开
+  # ===========================================================================
+  db:
+    image: ${MARIADB_IMAGE:-mariadb:11.4}
+    container_name: xiezitai-db
+    restart: unless-stopped
+    # InnoDB 需要时间刷脏页 + 归档日志收尾；给 60 秒，别让 SIGKILL 打断（下次启动要恢复）
+    stop_grace_period: 60s
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      MARIADB_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请设置数据库 root 密码，例如 export MYSQL_ROOT_PASSWORD=$(openssl rand -hex 16)}
+      MARIADB_DATABASE: ${MYSQL_DB:-xiezitai}
+      MARIADB_USER: ${MYSQL_USER:-xiezitai}
+      MARIADB_PASSWORD: ${MYSQL_PASSWORD:?请设置数据库密码，例如 export MYSQL_PASSWORD=$(openssl rand -hex 16)}
+    # -------------------------------------------------------------------------
+    # 调参正文。每一项都对应 MySQL/MariaDB 的一个「默认值太大」的点，
+    # 注释里写了默认值是多少、为什么要动它 —— 想再省内存就照注释往下压。
+    # -------------------------------------------------------------------------
+    command:
+      # ----- 字符集：中文 / emoji 的正确性，不能省 -----
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+
+      # ----- InnoDB 内存三件套（占内存的大头）-----
+      - --innodb-buffer-pool-size=96M          # 默认 128M。整个库才几十 MB，96M 足够；想更省可压到 64M
+      - --innodb-buffer-pool-chunk-size=32M    # 默认 128M，比上面的 pool 还大 → 不调会被自动降级，显式给 32M
+      - --innodb-buffer-pool-instances=1       # 单实例；多实例各有固定开销，小内存机器没意义
+      - --innodb-log-buffer-size=8M            # 默认 16M
+      - --innodb-log-file-size=48M             # 默认 100M（占磁盘，但影响启动与 checkpoint 频率）
+
+      # ----- 其它引擎的缓存（默认值按几 GB 内存的机器定的）-----
+      - --aria-pagecache-buffer-size=32M       # 默认 128M。系统表用 Aria，用不到这么大
+      - --key-buffer-size=8M                   # 默认 128M。本项目没有 MyISAM 表
+
+      # ----- 连接与线程 -----
+      - --max-connections=32                   # 默认 151。每条连接都要预留排序/网络缓冲
+      - --thread-cache-size=8                  # 默认 151。别一直养一堆空闲线程
+      - --table-open-cache=64                  # 默认 2000
+      - --table-definition-cache=256           # 默认 2000
+      - --tmp-table-size=16M                   # 与下面一项保持一致，避免小查询就落磁盘临时表
+      - --max-heap-table-size=16M
+      - --skip-name-resolve                    # 连接时不做反向 DNS 解析，省一次查询也省一个线程
+
+      # ----- 诊断组件：低配机上是纯浪费 -----
+      - --performance-schema=OFF               # MariaDB 默认即 OFF；显式写死，防止别处配置把它打开（可达 100~200MB）
+
+      # ----- 磁盘 IO：甲骨文免费机的块存储 IOPS 很低，控制刷盘节奏 -----
+      - --innodb-flush-method=O_DIRECT         # 绕过 OS page cache，避免同一份数据缓存两次（不支持时 InnoDB 会自动退回 fsync）
+      - --innodb-io-capacity=200               # 默认 200，保持低值让后台刷脏页更温和
+      - --innodb-io-capacity-max=400           # 突发上限也压住，避免刷盘把 1 核 CPU 和磁盘打满
+
+      # ----- 可选：更激进的一档（用「宕机可能丢最后 1 秒事务」换更少的 fsync）-----
+      # 个人博客可接受；介意数据安全就保持注释状态（默认 1 = 每次提交都刷盘）
+      # - --innodb-flush-log-at-trx-commit=2
+    volumes:
+      - xiezitai_db:/var/lib/mysql
+    # 内存硬上限：不设的话 MariaDB 会按宿主机总内存（1G）来算，能把自己撑爆并连累系统。
+    # 320m 对应上面那套参数：空闲实测 ~53MB，数据涨满后约 150~200MB，留有充足缓冲。
+    mem_limit: ${DB_MEM_LIMIT:-320m}
+    healthcheck:
+      # 官方镜像自带 healthcheck.sh，比手搓 /dev/tcp 更准（会真的检查 InnoDB 是否初始化完）
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      # ⚠️ 低配机必配：默认 json-file 不轮转，日志能把几十 G 的磁盘写满
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # 不映射 3306 到宿主机：应用走内部网络直连，数据库没必要暴露在公网
+    # （需要本机连进去调试时：docker compose -f docker-compose.mariadb.yml exec db mariadb -uroot -p）
+
+  # ===========================================================================
+  # 应用容器 —— 关键是 JVM 参数：默认按宿主机内存自动算堆，1G 机器上算出来的堆是灾难
+  # ===========================================================================
+  app:
+    image: ${XIEZITAI_IMAGE:-zhongdaiqi/xiezitai:latest}
+    container_name: xiezitai
+    restart: unless-stopped
+    depends_on:
+      db:
+        # 等到 MariaDB 真的能连上再启动应用，否则首次启动会连不上库而退出
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+
+      # ---------- JVM：1G 机器上最要命的一段配置 ----------
+      # 不显式限制的话，JVM 默认按「容器可用内存」算堆（1G 机器上 MaxHeap 会到 256M+，
+      # 再加上元空间、代码缓存、线程栈、直接内存，很容易把机器压死）。
+      # • -Xmx320m  堆上限，对博客足够；-Xms96m 让启动时不一次性提交全部堆
+      # • MaxMetaspaceSize  Spring Boot + JPA + Thymeleaf 的类元数据大约 90~110M，给 112m 封顶
+      # • ReservedCodeCacheSize  默认 240M 是给多核大内存机器的，1 核机器 48m 够用
+      # • MaxDirectMemorySize  文件/网络 NIO 用，24m 足够
+      # • UseSerialGC  单核场景下最省内存的收集器（没有 GC 线程池开销），1 核机器反而更快
+      # • ActiveProcessorCount=1  让 JVM 按 1 核来算各种默认线程数（否则可能按宿主机核数放大）
+      # • Xss512k  线程栈减半 —— Tomcat 线程池 + JVM 内部线程数量不小，积少成多
+      # • ExitOnOutOfMemoryError  真 OOM 就直接退出让 restart 策略拉起，别拖着半死不活
+      JAVA_OPTS: "${JAVA_OPTS:--Xmx320m -Xms96m -XX:MaxMetaspaceSize=112m -XX:ReservedCodeCacheSize=48m -XX:MaxDirectMemorySize=24m -XX:+UseSerialGC -XX:ActiveProcessorCount=1 -Xss512k -XX:+ExitOnOutOfMemoryError -Djava.security.egd=file:/dev/./urandom}"
+
+      # ---------- Web 容器：默认线程数是按大机器给的 ----------
+      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_MAX_THREADS:-20}   # 默认 200，每个线程 ~0.5M 栈
+      SERVER_TOMCAT_THREADS_MIN_SPARE: "2"                   # 默认 10，空闲时白占栈内存
+      SERVER_TOMCAT_ACCEPT_COUNT: "100"                      # 默认 100，等待队列
+      SERVER_TOMCAT_MAX_CONNECTIONS: "200"                   # 默认 8192，每连接都有内核缓冲
+
+      # ---------- 数据库 ----------
+      MYSQL_HOST: db                     # 同一个 compose 网络里直接用服务名
+      MYSQL_PORT: "3306"
+      MYSQL_DB: ${MYSQL_DB:-xiezitai}
+      MYSQL_USER: ${MYSQL_USER:-xiezitai}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请设置数据库密码，例如 export MYSQL_PASSWORD=$(openssl rand -hex 16)}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${DB_POOL_SIZE:-4}   # 默认 10；1 核机器 4 条足够，也压住 MariaDB 侧连接数
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "1"                       # 默认同 maximum；空闲时别养着 10 条连接
+
+      # ---------- 站点 ----------
+      XIEZITAI_JWT_SECRET: ${XIEZITAI_JWT_SECRET:?请设置至少 32 位随机字符串，例如 export XIEZITAI_JWT_SECRET=$(openssl rand -hex 32)}
+      XIEZITAI_SITE_URL: ${XIEZITAI_SITE_URL:-http://localhost:8080}
+      XIEZITAI_UPLOAD_DIR: /app/data/uploads
+      # 首次启动且库为空时写入示例内容（4 篇文章 + 关于/友链页面 + 几条评论）；已有数据的库不受影响
+      XIEZITAI_SEED_DEMO: ${XIEZITAI_SEED_DEMO:-true}
+
+      # ⚠️ 可选覆盖项不要写 ${VAR:-}：空字符串会被注入容器并顶掉镜像内置默认值。
+      #    需要时把下面几行取消注释并赋值（详见 docker-compose.external-db.yml 的同类说明）：
+      #
+      # XIEZITAI_AI_BASE_URL: ${XIEZITAI_AI_BASE_URL}
+      # XIEZITAI_AI_API_KEY: ${XIEZITAI_AI_API_KEY}
+      # XIEZITAI_AI_MODEL: ${XIEZITAI_AI_MODEL}
+      # XIEZITAI_AI_IMAGE_MODEL: ${XIEZITAI_AI_IMAGE_MODEL}
+    ports:
+      # 只让本机访问、由 Nginx 反代的话改成 "127.0.0.1:${APP_PORT:-8080}:8080"
+      - "${APP_PORT:-8080}:8080"
+    volumes:
+      - xiezitai_data:/app/data
+    mem_limit: ${APP_MEM_LIMIT:-512m}
+    healthcheck:
+      # 基础镜像自带 bash，用 bash 的 /dev/tcp 探活，不依赖 curl / wget
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s        # 1 核机器启动慢，给足 90 秒别被误判为失败
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  xiezitai_db:      # MariaDB 数据目录 /var/lib/mysql —— 换容器务必保留
+  xiezitai_data:    # 上传的图片 / 视频，容器内 /app/data
+
+# ---------------------------------------------------------------------------
+# 附 1：宿主机侧的优化（容器里改不到的，但要一起做才有效果）
+#
+# (1) swap —— 1G 机器必做，见文件顶部。查看：`free -h` / `swapon --show`
+#     想更快可以再叠一层 zram（压缩内存盘当 swap，比磁盘 swap 快得多）：
+#       sudo apt install zram-tools && echo -e "ALGO=zstd\nPERCENT=50" | sudo tee /etc/default/zramswap && sudo systemctl restart zramswap
+#
+# (2) 甲骨文云特有的坑：安全列表放行 ≠ 机器放行
+#     VCN 安全列表加了 80/443 之后，实例内的 iptables 还会拦一次（Ubuntu 镜像自带规则）：
+#       sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
+#       sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
+#       sudo netfilter-persistent save            # 持久化，重启不丢
+#     只有 22 能通、浏览器打不开时，八成就是这一步没做。
+#
+# (3) 架构：甲骨文 A1（Ampere）是 arm64，E2.1.Micro 是 amd64。
+#     `mariadb:11.4` 与 `zhongdaiqi/xiezitai` 都同时提供两种架构，compose 会自动挑对的，
+#     不用手写 platform。想确认：`docker image inspect ... --format '{{.Architecture}}'`
+#
+# (4) 内核参数（1G 内存 + 小站点，重点是别让内核太激进地回收）：
+#       sudo tee /etc/sysctl.d/99-xiezitai.conf <<'EOF'
+#       vm.swappiness=10
+#       vm.overcommit_memory=1        # 允许适度超额分配，避免 JVM 预留虚拟内存时失败
+#       net.core.somaxconn=512        # Tomcat 的 accept-count 受它限制，默认 128 偏小
+#       EOF
+#       sudo sysctl --system
+#
+# (5) 关掉用不上的常驻服务（Ubuntu 云镜像一般自带 snapd、unattended-upgrades 等）：
+#       systemctl list-units --type=service --state=running     # 先看有什么
+#       sudo systemctl disable --now snapd
+#
+# (6) 上线后还想更省？把应用换成 lite 单容器模式（内置 H2 文件库，省掉整个 MariaDB 的
+#     ~200MB），见 docker-compose.lite.yml。单机 + 单写者场景下它完全够用。
+#
+# 附 2：日常运维命令
+#
+#   看真实内存占用（最关键的一条，改完参数先用它验证）：
+#     docker stats --no-stream
+#   看容器是否被内存限制杀掉（OOMKilled）：
+#     docker inspect xiezitai --format '{{.State.OOMKilled}} {{.State.ExitCode}}'
+#     dmesg | grep -i 'killed process'
+#   等 InnoDB 刷完再停（避免下次启动做崩溃恢复）：
+#     docker compose -f docker-compose.mariadb.yml stop
+#   备份数据库 + 媒体文件：
+#     docker compose -f docker-compose.mariadb.yml exec -T db \
+#       mariadb-dump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction xiezitai | gzip > xiezitai-$(date +%F).sql.gz
+#     docker run --rm -v xiezitai_data:/data -v "$PWD":/backup alpine \
+#       tar czf /backup/xiezitai-media-$(date +%F).tgz -C /data .
+#   升级应用（数据库不受影响）：
+#     docker compose -f docker-compose.mariadb.yml pull app && docker compose -f docker-compose.mariadb.yml up -d app
+#
+# 附 3：排错对照表
+#
+#   | 现象 | 原因 / 处理 |
+#   | --- | --- |
+#   | 应用容器反复重启，ExitCode 137 | 被内存限制杀了。调大 APP_MEM_LIMIT，或把 -Xmx320m 降到 256m；先看 `docker inspect` 的 OOMKilled |
+#   | db 容器起不来，日志里有 unknown variable | 少见的 MariaDB 版本差异。把报错的那个 `--xxx` 参数注释掉再试 |
+#   | 应用报 Can't connect to MySQL / Communications link failure | 应用启动时数据库还没就绪。正常由 depends_on: service_healthy 兜住；若手动 `up app` 绕过，等 db healthy 再起 |
+#   | 应用报 Access denied for user | MYSQL_PASSWORD 与 db 的 MARIADB_PASSWORD 必须是同一个值（都取 .env 里的 MYSQL_PASSWORD） |
+#   | 报 Too many connections | 应用池（DB_POOL_SIZE）与 MariaDB 的 --max-connections 一起调，保持「池 < 上限」 |
+#   | 中文乱码 / 报 Incorrect string value | 库字符集与连接字符集两处都要 utf8mb4；JDBC URL 里 characterEncoding 只能写 UTF-8（写 utf8mb4 会启动失败） |
+#   | 磁盘莫名写满 | 日志没轮转。本文件已配 json-file 10m×3；另检查 /var/lib/docker 与上传目录 |
+#   | 数据库连不上但容器都 healthy | 本编排不暴露 3306，属预期。要调试用 `docker compose exec db mariadb -uroot -p` |
+#   | 启动日志有 Unknown column 'RESERVED' / Could not obtain connection metadata | Hibernate 用 MySQL 方言去探 MariaDB 元数据时的已知噪音（HHH000339）。表照建、功能正常，**可忽略** |
+#   | 启动日志有 MySQLDialect does not need to be specified explicitly | HHH90000025 提示。MariaDB 走 MySQL 方言是正确做法，同样**可忽略** |
+#
+# 附 4：本编排的实测数据（2026-10 实机跑出，供你对照）
+#
+#   环境：Docker + 本文件 + 空库首启（含示例内容 seed）
+#
+#   | 指标 | 空闲 | 压测后（300 次首页 + 60 次 API） |
+#   | --- | --- | --- |
+#   | app 容器内存 | 256.8 MiB | 280.3 MiB |
+#   | db 容器内存 | 52.7 MiB | 53.0 MiB |
+#   | app 启动耗时 | 14.9 秒（单核机器会更久，故 start_period 给 90 秒） | — |
+#   | OOMKilled / Restarts | false / 0 | false / 0 |
+#
+#   参数确认生效（`docker exec xiezitai-db mariadb -uroot -p -e "show variables like '...'"`）：
+#     innodb_buffer_pool_size = 100663296 (96M)   max_connections = 32
+#     performance_schema     = OFF                aria_pagecache_buffer_size = 32M
+#     key_buffer_size        = 8388608 (8M)
+#
+#   功能确认：库字符集 utf8mb4 / utf8mb4_unicode_ci；中文标题 char_length 精确；
+#   自动建表 7 张（articles / xiezitai_pages / comments / users / files / request_logs / sys_configs）；
+#   示例内容 4 篇文章 + 2 页面 + 5 评论全部就位。
+# ---------------------------------------------------------------------------

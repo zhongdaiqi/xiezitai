@@ -6,11 +6,12 @@
 #   AWS RDS、Azure Database for MySQL 等）、公司内网的自建库、或者宿主机上已有的 MySQL。
 #   本文件只起「一个应用容器」，不再顺带起 mysql:8.4 容器。
 #
-# 四份编排的分工：
+# 五份编排的分工：
 #   docker-compose.yml              app 从源码构建   + 本地 mysql:8.4 容器   （改代码用）
 #   docker-compose.hub.yml          app 用官方镜像   + 本地 mysql:8.4 容器   （服务器省事）
 #   docker-compose.lite.yml         app 单容器，内置 H2 文件库，完全不要数据库（NAS / 内网）
 #   docker-compose.external-db.yml  app 用官方镜像   + 你自己提供的外部 MySQL   ← 本文件
+#   docker-compose.mariadb.yml      app 用官方镜像   + 本地 MariaDB 11.4（1G 内存小机器调优）
 #
 # 快速开始：
 #   cp .env.example .env

@@ -11,6 +11,7 @@ SEO / AI 友好的自托管博客系统。官网：<https://xiezitai.cn>
 | 场景 | 用哪个 | 命令 |
 | --- | --- | --- |
 | 服务器部署（数据库也一起起，推荐） | 官方镜像 + 官方 MySQL 容器 | `docker compose -f docker-compose.hub.yml up -d` |
+| **小机器：1 核 1G（甲骨文免费实例 / 低配 VPS）** | 官方镜像 + 本地 **MariaDB 11.4**（已按 1G 调优） | `docker compose -f docker-compose.mariadb.yml up -d` |
 | **数据库在云端 / 已有 MySQL** | 官方镜像 + 你自己的库 | `docker compose -f docker-compose.external-db.yml up -d` |
 | 个人 / NAS / 内网（连数据库都不要） | 官方镜像单容器（lite，内置 H2 文件库） | `docker compose -f docker-compose.lite.yml up -d` |
 | 自己改代码 | 源码 compose（容器内编译） | `docker compose up -d --build` |
@@ -158,7 +159,103 @@ docker run --rm -v xiezitai_data:/data -v "$PWD":/backup alpine \
 > 什么时候该换回 MySQL：需要多实例横向扩展、单库写入并发很高、或想用云数据库托管。
 > 届时改用方式一，文章正文本来就是 Markdown 原文，迁移成本很低。
 
-### 方式四：源码构建（本地改代码用）
+### 方式四：低配小机器（1 核 1G，MariaDB 11.4）
+
+适合**甲骨文云免费实例**（E2.1.Micro 1 核 1G、A1 最低配）、1 核 1G 的 VPS、树莓派这类内存吃紧的机器：
+数据库想跑在自己机器上（不买云数据库），但又不想用 lite 单容器模式。配置文件是 `docker-compose.mariadb.yml`。
+
+**为什么低配机选 MariaDB 而不是 MySQL 8**
+
+- `performance_schema` 在 MariaDB **默认关闭**；MySQL 8 默认开启，光这一项常驻 100~200MB —— 在 1G 机器上等于砍掉五分之一内存
+- mysqld 进程基础占用更小（后台线程与内存池少得多）
+- 11.4 是 LTS，官方镜像同时提供 amd64 与 arm64（甲骨文 A1 实例是 arm64）
+- 连接协议与 MySQL 完全兼容，**应用侧一行代码都不用改**（JDBC 驱动仍是 Connector/J）
+
+```bash
+cp .env.example .env      # 必填 3 项：MYSQL_ROOT_PASSWORD、MYSQL_PASSWORD、XIEZITAI_JWT_SECRET
+docker compose -f docker-compose.mariadb.yml up -d
+docker compose -f docker-compose.mariadb.yml logs -f app      # 见 Started XiezitaiApplication 即成功
+docker stats --no-stream                                      # 看两个容器真实占用
+```
+
+**内存预算（实机实测，非估算）**
+
+| 组成 | 上限 | 空闲 | 压测后 |
+| --- | --- | --- | --- |
+| 系统 + sshd + dockerd | — | ~200MB | ~200MB |
+| `db`（MariaDB 11.4） | 320m | 52.7MB | 53.0MB |
+| `app`（JVM） | 512m | 256.8MB | 280.3MB |
+| **合计** | 832m（天花板） | **~510MB** | **~540MB** |
+
+压测 = 连打 300 次首页 + 60 次 API，全程 `OOMKilled=false`、重启 0 次。资源是惰性分配的，
+两个 `mem_limit` 之和只是天花板、不是预订量。MariaDB 空闲值偏低是因为 InnoDB buffer pool 按需分配，
+数据涨到几百 MB 后会稳定在 150~200MB，仍在 320m 之内。
+
+**调了哪些参数**（完整逐项注释见 `docker-compose.mariadb.yml`，每项都写了默认值与理由）
+
+| 位置 | 参数 | 默认 → 本编排 | 为什么 |
+| --- | --- | --- | --- |
+| MariaDB | `--innodb-buffer-pool-size` | 128M → **96M** | 整个库才几十 MB |
+| MariaDB | `--innodb-buffer-pool-chunk-size` | 128M → **32M** | 默认比 pool 还大，不调会被自动降级 |
+| MariaDB | `--innodb-buffer-pool-instances` | 8 → **1** | 多实例各有固定开销 |
+| MariaDB | `--aria-pagecache-buffer-size` | 128M → **32M** | 系统表用的 Aria 引擎用不到这么大 |
+| MariaDB | `--key-buffer-size` | 128M → **8M** | 本项目没有 MyISAM 表 |
+| MariaDB | `--max-connections` | 151 → **32** | 每条连接都预留排序/网络缓冲 |
+| MariaDB | `--thread-cache-size` | 151 → **8** | 别一直养一堆空闲线程 |
+| MariaDB | `--table-open-cache` | 2000 → **64** | 小库不需要 |
+| MariaDB | `--performance-schema` | 默认 OFF → **显式 OFF** | 防止别处配置把它重新打开 |
+| MariaDB | `--innodb-flush-method` | fsync → **O_DIRECT** | 甲骨文免费机块存储 IOPS 低，避免同一份数据缓存两次 |
+| MariaDB | `mem_limit` | 无 → **320m** | 不设会按宿主 1G 来算，能把自己撑爆并连累系统 |
+| JVM | `-Xmx` | 按宿主自动 → **320m** | 1G 机器上自动算出来的堆是灾难 |
+| JVM | `-XX:MaxMetaspaceSize` | 无限 → **112m** | Spring Boot + JPA + Thymeleaf 约 90~110M |
+| JVM | `-XX:ReservedCodeCacheSize` | 240M → **48m** | 默认是给多核大内存机器的 |
+| JVM | `-XX:+UseSerialGC` | G1 → **SerialGC** | 单核场景没有 GC 线程池开销，反而更快 |
+| JVM | `-XX:ActiveProcessorCount=1` | 按宿主核数 → **1** | 否则 JVM 可能按宿主机核数放大默认线程数 |
+| JVM | `-Xss512k` | 1m → **512k** | Tomcat 线程池 + JVM 内部线程，积少成多 |
+| Tomcat | `SERVER_TOMCAT_THREADS_MAX` | 200 → **20** | 每个线程约 0.5M 栈 |
+| 连接池 | Hikari `maximum-pool-size` | 10 → **4** | 1 核机器 4 条足够 |
+
+**宿主机侧还要做的事**（容器里改不到的）
+
+1. **加 swap** —— 1G 机器最有效的一步，不加 swap 遇到瞬时高峰必被 OOM Killer 干掉：
+
+   ```bash
+   sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile
+   sudo swapon /swapfile && echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+   sudo sysctl -w vm.swappiness=10          # 平时别往下换，只在内存真紧时才用
+   ```
+
+2. **甲骨文云特有的坑：安全列表放行 ≠ 机器放行**。VCN 安全列表加了 80/443 之后，
+   实例内的 iptables 还会再拦一次（Ubuntu 云镜像自带规则）：
+
+   ```bash
+   sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
+   sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
+   sudo netfilter-persistent save           # 持久化，重启不丢
+   ```
+
+   只有 22 端口能通、浏览器打不开，八成就是这一步没做。
+
+3. **内核参数**（1G 内存 + 小站点，重点是别让内核太激进地回收）：
+
+   ```bash
+   sudo tee /etc/sysctl.d/99-xiezitai.conf <<'EOF'
+   vm.swappiness=10
+   vm.overcommit_memory=1        # 允许适度超额分配，避免 JVM 预留虚拟内存时失败
+   net.core.somaxconn=512        # Tomcat 的 accept-count 受它限制，默认 128 偏小
+   EOF
+   sudo sysctl --system
+   ```
+
+4. **还嫌不够省**：换成 lite 单容器模式，省掉整个 MariaDB 的 ~50MB（见方式三）。
+
+> 日志轮转（json-file 10m×3）本编排已配死 —— 低配机上默认不轮转的日志能把磁盘写满。
+> 不映射 3306 到宿主机，数据库不暴露公网；要连进去调试用 `docker compose -f docker-compose.mariadb.yml exec db mariadb -uroot -p`。
+
+**运维 / 排错**：备份、OOM 排查（`docker inspect` 看 `OOMKilled`）、升级、以及一张常见报错对照表，
+都写在 `docker-compose.mariadb.yml` 文件末尾的「附 2」「附 3」「附 4」里。
+
+### 方式五：源码构建（本地改代码用）
 
 ```bash
 docker compose up -d --build
