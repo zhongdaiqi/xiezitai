@@ -145,7 +145,7 @@
         <p class="cmt-note">评论提交后需管理员审核通过才会公开展示。</p>
     </form>
 
-    <footer>© 2026 写字台 xiezitai.cn</footer>
+    <footer>© 2026 写字台 <span th:text="${siteHost}">xiezitai.cn</span></footer>
 </div>
 
 <!-- 登录 / 注册弹窗（复用后台同一套 JWT，token 存 localStorage 的 xz_token） -->

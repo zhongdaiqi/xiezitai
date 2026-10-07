@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <title th:text="${pageNo > 1 ? '写字台 - 首页 - 第 ' + pageNo + ' 页' : '写字台 - 首页'}">写字台</title>
-    <meta name="description" content="写字台 xiezitai.cn — 简洁、SEO 友好的自托管博客">
+    <meta name="description" th:content="'写字台 ' + ${siteHost} + ' — 简洁、SEO 友好的自托管博客'">
     <!-- SEO：翻页用真实链接，并声明 canonical / prev / next，避免重复内容 -->
     <link rel="canonical" th:if="${pageNo == 1}" th:href="@{/}">
     <link rel="canonical" th:if="${pageNo > 1}" th:href="@{/(page=${pageNo})}">
@@ -54,7 +54,7 @@
 <div class="wrap">
     <header>
         <h1><a href="/">写字台</a></h1>
-        <div class="sub">写字台 xiezitai.cn · 把想法摊开来写</div>
+        <div class="sub">写字台 <span th:text="${siteHost}">xiezitai.cn</span> · 把想法摊开来写</div>
         <nav>
             <a href="/">文章</a>
             <a th:each="p : ${navPages}" th:href="@{'/page/' + ${p.slug}}" th:text="${p.title}"></a>
@@ -88,7 +88,7 @@
         <span class="count" th:text="${'共 ' + totalArticles + ' 篇'}"></span>
     </nav>
 
-    <footer>© 2026 写字台 xiezitai.cn · Powered by Xiezitai</footer>
+    <footer>© 2026 写字台 <span th:text="${siteHost}">xiezitai.cn</span> · Powered by Xiezitai</footer>
 </div>
 </body>
 </html>

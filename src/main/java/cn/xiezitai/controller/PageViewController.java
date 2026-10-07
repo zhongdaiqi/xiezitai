@@ -71,6 +71,7 @@ public class PageViewController {
         int winStart = Math.max(1, Math.min(pageNo - 2, totalPages - 4));
         int winEnd = Math.min(totalPages, winStart + 4);
         model.addAttribute("pageNumbers", java.util.stream.IntStream.rangeClosed(winStart, winEnd).boxed().toList());
+        model.addAttribute("siteHost", siteHost());
         return "index";
     }
 
@@ -89,6 +90,7 @@ public class PageViewController {
         model.addAttribute("commentCount", cn.xiezitai.dto.CommentNode.count(threads));
         // 封面同时作为社交分享图（og:image）
         model.addAttribute("ogImage", absoluteUrl(a.getCover()));
+        model.addAttribute("siteHost", siteHost());
         return "article";
     }
 
@@ -96,8 +98,28 @@ public class PageViewController {
     private String absoluteUrl(String url) {
         if (url == null || url.isBlank()) return "";
         if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("//")) return url;
-        String base = siteUrl == null ? "" : siteUrl.replaceAll("/+$", "");
-        return base + (url.startsWith("/") ? url : "/" + url);
+        return siteRoot() + (url.startsWith("/") ? url : "/" + url);
+    }
+
+    /**
+     * 站点根地址（去掉结尾斜杠）。
+     * robots / sitemap / og:image 三处共用同一个出处，改域名只需改配置 xiezitai.site-url，
+     * 不再散落硬编码。
+     */
+    private String siteRoot() {
+        String base = siteUrl == null ? "" : siteUrl.trim();
+        return base.replaceAll("/+$", "");
+    }
+
+    /** 站点域名（只取主机名，用于页脚/副标题这类展示文案，不显示 https:// 前缀） */
+    private String siteHost() {
+        String root = siteRoot();
+        try {
+            String host = java.net.URI.create(root).getHost();
+            return host == null ? root.replaceAll("^https?://", "") : host;
+        } catch (RuntimeException e) {
+            return root.replaceAll("^https?://", "");
+        }
     }
 
     /** 文章访问来源通知（可通过后台 notify.visit 开关关闭） */
@@ -141,26 +163,25 @@ public class PageViewController {
     @GetMapping(value = "/robots.txt", produces = "text/plain")
     @ResponseBody
     public String robots() {
-        return """
-                User-agent: *
-                Allow: /
-                Disallow: /admin.html
-                Disallow: /api/
-                Sitemap: https://xiezitai.cn/sitemap.xml
-                """;
+        return "User-agent: *\n"
+                + "Allow: /\n"
+                + "Disallow: /admin.html\n"
+                + "Disallow: /api/\n"
+                + "Sitemap: " + siteRoot() + "/sitemap.xml\n";
     }
 
     @GetMapping(value = "/sitemap.xml", produces = "application/xml")
     @ResponseBody
     public String sitemap() {
+        String root = siteRoot();
         StringBuilder sb = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         sb.append("<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
-        sb.append("  <url><loc>https://xiezitai.cn/</loc></url>\n");
+        sb.append("  <url><loc>").append(root).append("/</loc></url>\n");
         articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(0, 500)).forEach(a ->
-                sb.append("  <url><loc>https://xiezitai.cn/article/").append(a.getSlug())
+                sb.append("  <url><loc>").append(root).append("/article/").append(a.getSlug())
                         .append("</loc><lastmod>").append(a.getUpdatedAt()).append("</lastmod></url>\n"));
         pages.findAll().stream().filter(PageEntity::isPublished).forEach(p ->
-                sb.append("  <url><loc>https://xiezitai.cn/page/").append(p.getSlug()).append("</loc></url>\n"));
+                sb.append("  <url><loc>").append(root).append("/page/").append(p.getSlug()).append("</loc></url>\n"));
         sb.append("</urlset>");
         return sb.toString();
     }

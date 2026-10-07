@@ -20,6 +20,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
@@ -72,11 +73,21 @@ class XiezitaiApplicationTests {
     @Autowired TotpService totp;
     @Autowired LoginAttemptService attempts;
 
+    /** 站点根地址取自配置 xiezitai.site-url：SEO 端点（robots/sitemap/og:image）与页脚都应由它驱动 */
+    @Value("${xiezitai.site-url:https://xiezitai.cn}")
+    String siteUrlRaw;
+    private String siteRoot;
+    private String siteHost;
+
     @BeforeEach
     void setUp() {
         // 测试期间关闭机器人通知，避免外发真实请求
         notify.set("notify.enabled", "false");
         attempts.onSuccess(ADMIN);
+
+        siteRoot = siteUrlRaw == null ? "" : siteUrlRaw.trim().replaceAll("/+$", "");
+        String h = java.net.URI.create(siteRoot).getHost();
+        siteHost = h == null ? siteRoot.replaceAll("^https?://", "") : h;
 
         User admin = users.findByUsername(ADMIN).orElse(null);
         if (admin == null) {
@@ -99,9 +110,15 @@ class XiezitaiApplicationTests {
     void homeAndSeoEndpoints() throws Exception {
         mvc.perform(get("/")).andExpect(status().isOk());
         mvc.perform(get("/robots.txt")).andExpect(status().isOk())
-                .andExpect(content().string(org.hamcrest.Matchers.containsString("Sitemap:")));
+                .andExpect(content().string(org.hamcrest.Matchers.containsString(
+                        "Sitemap: " + siteRoot + "/sitemap.xml")));
         mvc.perform(get("/sitemap.xml")).andExpect(status().isOk())
-                .andExpect(content().string(org.hamcrest.Matchers.containsString("<urlset")));
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("<urlset")))
+                // 站点根地址必须来自配置 xiezitai.site-url，不能再硬编码域名
+                .andExpect(content().string(org.hamcrest.Matchers.containsString(
+                        "<loc>" + siteRoot + "/</loc>")));
+        // 前台页脚 / 副标题显示的域名同样来自配置
+        mvc.perform(get("/")).andExpect(content().string(org.hamcrest.Matchers.containsString(siteHost)));
         mvc.perform(get("/admin.html")).andExpect(status().isOk());
     }
 
