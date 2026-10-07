@@ -1190,6 +1190,45 @@ class XiezitaiApplicationTests {
                 .andExpect(jsonPath("$.result").isNotEmpty());
     }
 
+    @Test
+    @DisplayName("页面：连续建「纯中文标题」也能成功（slug 去重查的是页面表）")
+    void pageSlugsDedupeAgainstPagesTable() throws Exception {
+        String token = loginToken(ADMIN, ADMIN_PWD);
+        String stamp = String.valueOf(System.currentTimeMillis());
+        // 两个标题 slugify 后只剩同一串数字（中文被剥掉）——
+        // 修之前第二个会撞 xiezitai_pages.slug 唯一索引，接口直接 500
+        long[] ids = new long[] { -1, -1 };
+        try {
+            String slug1 = createPage(token, "中文页面甲" + stamp, ids, 0);
+            String slug2 = createPage(token, "中文页面乙" + stamp, ids, 1);
+            assertThat(slug1).as("第一个页面的 slug").isNotBlank();
+            assertThat(slug2).as("同基础 slug 的第二个页面应被改成别的").isNotEqualTo(slug1);
+
+            // 显式指定一个已被占用的 slug → 409 + 可读文案，而不是 500
+            mvc.perform(post("/api/admin/pages").header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("title", "冲突页" + stamp, "slug", slug1,
+                                    "content", "x", "published", true))))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.error").isNotEmpty());
+        } finally {
+            for (long id : ids) {
+                if (id > 0) mvc.perform(delete("/api/admin/pages/" + id).header("Authorization", "Bearer " + token));
+            }
+        }
+    }
+
+    /** 建一个页面：返回服务端分配的 slug，并把 id 记进 ids 供用例收尾删除 */
+    private String createPage(String token, String title, long[] ids, int slot) throws Exception {
+        MvcResult r = mvc.perform(post("/api/admin/pages").header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("title", title, "slug", "", "content", "# " + title, "published", true))))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode node = om.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        ids[slot] = node.path("id").asLong();
+        return node.path("slug").asText();
+    }
+
     /* ==================== 工具方法 ==================== */
 
     private String json(Map<String, ?> map) throws Exception {

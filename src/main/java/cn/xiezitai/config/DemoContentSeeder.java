@@ -117,6 +117,9 @@ public class DemoContentSeeder {
         a.setViewCount(views);
         LocalDateTime t = LocalDateTime.now().minusDays(daysAgo).withHour(10).withMinute(30)
                 .withSecond(0).withNano(0);
+        // 演示内容不能落在「未来」：daysAgo=0 且当前时刻早于 10:30 时（凌晨首次启动），
+        // 这条「今天 10:30」的假数据会把真正新写的文章顶到后台列表/前台最新的后面。
+        if (t.isAfter(LocalDateTime.now())) t = LocalDateTime.now().minusMinutes(daysAgo + 1L);
         a.setCreatedAt(t);
         a.setPublishedAt(t);
         a.setUpdatedAt(t);

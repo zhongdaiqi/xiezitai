@@ -91,8 +91,8 @@
         .alist-filter { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
         .alist-filter input[type=text] { flex: 1 1 240px; max-width: 460px; min-width: 0; }
         .alist-filter select { flex: 0 0 auto; }
-        /* 空态一行：整宽表格里居中提示 */
-        #alist-empty { text-align: center; color: var(--muted); font-size: 13px; padding: 18px 4px; }
+        /* 空态一行：整宽表格里居中提示（文章列表 / 页面列表共用） */
+        #alist-empty, #pglist-empty { text-align: center; color: var(--muted); font-size: 13px; padding: 18px 4px; }
 
         /* ---------- 文章编辑视图头部：返回列表 / 当前模式 / 保存 ---------- */
         .edit-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -333,27 +333,59 @@
             </div>
         </div>
 
-    <!-- 页面 -->
+    <!-- 页面面板：与文章面板同一套交互 —— 两个互斥视图。
+         默认落在「列表」（搜索 / 状态筛选 / 分页），点「+ 新建页面」或行内「编辑」才进编辑视图，
+         保存成功后提示并自动回到列表。 -->
     <div class="panel" id="p-pages">
-        <div class="card">
-            <div class="row">
-                <input type="text" id="pg-title" placeholder="页面标题" style="flex:1;">
-                <input type="text" id="pg-slug" placeholder="slug" style="flex:1;">
-                <label class="muted"><input type="checkbox" id="pg-pub" checked> 发布</label>
-                <button class="primary" onclick="savePage()">保存页面</button>
-                <input type="hidden" id="pg-id">
+        <!-- ① 列表视图（默认）：全宽表格 + 搜索 + 状态筛选 + 分页 -->
+        <div id="pv-list">
+            <div class="card">
+                <div class="list-head">
+                    <h3>全部页面 <span class="count" id="pglist-count"></span></h3>
+                    <button class="primary" id="pg-new" onclick="newPage()">+ 新建页面</button>
+                </div>
+                <!-- 搜索：输入即查（防抖 260ms）、回车立即查；与下面的状态筛选叠加生效 -->
+                <div class="alist-filter">
+                    <input type="text" id="pg-search" placeholder="搜索标题 / slug / 正文…" autocomplete="off"
+                           oninput="onPageSearchInput()"
+                           onkeydown="if(event.key==='Enter'){event.preventDefault();onPageSearchInput(true);}">
+                    <select id="pg-filter-status" onchange="onPageStatusChange()">
+                        <option value="">全部状态</option>
+                        <option value="PUBLISHED">已发布</option>
+                        <option value="DRAFT">未发布</option>
+                    </select>
+                </div>
+                <div class="table-wrap">
+                    <table id="pglist"><thead><tr><th>标题</th><th>slug</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody></tbody></table>
+                </div>
+                <div class="pager" id="pglist-pager"></div>
             </div>
-            <div class="row">
-                <button class="ghost" onclick="openMedia('page')">插入媒体</button>
-                <span class="muted">插入位置＝光标所在处 · 工具栏菜单（标题 / 加粗 / 列表 / 图片 / 分屏 / 全屏）与文章编辑器一致</span>
-            </div>
-            <!-- 页面正文改用与文章同一套 ByteMD 编辑器：工具栏菜单、实时预览、粘贴/拖拽上传、video 白名单都一致。
-                 首次切到「页面」面板时才挂载（ByteMD 有开销，不必常驻）。 -->
-            <div id="pg-editor"></div>
         </div>
-        <div class="card">
-            <div class="table-wrap">
-                <table id="pglist"><thead><tr><th>标题</th><th>slug</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table>
+
+        <!-- ② 编辑视图：保存成功会自动回到列表 -->
+        <div id="pv-edit" style="display:none;">
+            <div class="card">
+                <div class="edit-head">
+                    <button class="ghost" id="pg-back" onclick="backToPageList()">← 返回列表</button>
+                    <h3 id="pg-mode">新建页面</h3>
+                    <span class="muted">保存后自动回到列表</span>
+                    <button class="primary" id="pg-save" onclick="savePage()">保存</button>
+                </div>
+                <div class="sec-title">基本信息</div>
+                <div class="row">
+                    <input type="text" id="pg-title" placeholder="页面标题" style="flex:1;">
+                    <input type="text" id="pg-slug" placeholder="slug（留空自动生成）" style="flex:1;">
+                    <label class="muted"><input type="checkbox" id="pg-pub" checked> 发布</label>
+                    <input type="hidden" id="pg-id">
+                </div>
+                <div class="sec-title">正文</div>
+                <div class="row">
+                    <button class="ghost" onclick="openMedia('page')">插入媒体</button>
+                    <span class="muted">插入位置＝光标所在处 · 工具栏菜单（标题 / 加粗 / 列表 / 图片 / 分屏 / 全屏）与文章编辑器一致</span>
+                </div>
+                <!-- 页面正文改为与文章同一套 ByteMD 编辑器：工具栏菜单、实时预览、粘贴/拖拽上传、video 白名单都一致。
+                     进编辑视图时才挂载（ByteMD 有开销，且隐藏态挂载量不到尺寸）。 -->
+                <div id="pg-editor"></div>
             </div>
         </div>
     </div>
@@ -1206,37 +1238,149 @@ async function aiAction(type) {
     }
 }
 
-/* ---------- 页面 ---------- */
+/* ---------- 页面：列表（搜索 + 状态筛选 + 分页）/ 编辑 两个互斥视图 ----------
+   与文章面板同一套交互：默认只看到列表，点「+ 新建页面」或行内「编辑」才进编辑视图，
+   保存成功后提示并自动回到列表（编辑时不再被列表挤在一边）。
+   页面数量少（关于 / 友链这类），搜索与分页放在前端做：一次拉全量，改关键词只重渲染、不再打接口。 */
+const PG_SIZE = 10;              // 一页几条
+let pgListPage = 0;              // 从 0 起
+let pgListKw = '';               // 关键词：标题 / slug / 正文
+let pgListStatus = '';           // ''=全部 / PUBLISHED / DRAFT（DRAFT 在页面上表现为「未发布」）
+let pgListTotal = 0, pgListPages = 1;
+let pgSearchTimer = null;
+let pagesAll = [];               // 最近一次拉到的全量页面（前端搜索/分页的数据源）
+let pagesCache = {};             // id -> 页面实体（含正文），点「编辑」直接取
+
+/** 搜索输入：防抖 260ms；回车立即查（immediate=true） */
+function onPageSearchInput(immediate) {
+    clearTimeout(pgSearchTimer);
+    const run = () => { pgListKw = ($('pg-search').value || '').trim(); renderPageList(0); };
+    if (immediate) run(); else pgSearchTimer = setTimeout(run, 260);
+}
+function onPageStatusChange() { pgListStatus = $('pg-filter-status').value || ''; renderPageList(0); }
+
 async function loadPages() {
-    const list = await jget('/api/admin/pages');
+    pagesAll = (await jget('/api/admin/pages')) || [];
+    renderPageList(pgListPage);
+}
+
+/** 是否命中当前筛选条件（标题 / slug / 正文 不区分大小写） */
+function pageMatches(p) {
+    if (pgListStatus === 'PUBLISHED' && !p.published) return false;
+    if (pgListStatus === 'DRAFT' && p.published) return false;
+    if (!pgListKw) return true;
+    const kw = pgListKw.toLowerCase();
+    return (p.title || '').toLowerCase().includes(kw)
+        || (p.slug || '').toLowerCase().includes(kw)
+        || (p.content || '').toLowerCase().includes(kw);
+}
+
+function renderPageList(page) {
+    if (typeof page === 'number') pgListPage = Math.max(page, 0);
+    const hit = pagesAll.filter(pageMatches);
+    pgListTotal = hit.length;
+    pgListPages = Math.max(Math.ceil(pgListTotal / PG_SIZE), 1);
+    // 筛选条件一变，当前页码可能越界（如原在第 3 页、搜索后只剩 1 页）→ 退回最后一页
+    if (pgListPage >= pgListPages) pgListPage = pgListPages - 1;
+    renderPageRows(hit.slice(pgListPage * PG_SIZE, pgListPage * PG_SIZE + PG_SIZE));
+    renderPagePager();
+}
+
+function renderPageRows(list) {
     const tb = document.querySelector('#pglist tbody');
     tb.innerHTML = '';
+    if (!list.length) {
+        const tip = (pgListKw || pgListStatus) ? '没有匹配的页面' : '还没有页面，点上方「+ 新建页面」开始写';
+        tb.innerHTML = '<tr><td colspan="5" id="pglist-empty">' + tip + '</td></tr>';
+        return;
+    }
     list.forEach(p => {
         pagesCache[p.id] = p;   // 正文含引号时不能再塞进 onclick 属性（会逃逸 → 存储型 XSS）
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${escapeHtml(p.title)}</td><td>${escapeHtml(p.slug)}</td><td>${p.published ? '已发布' : '未发布'}</td>
-            <td><button class="ghost" onclick="editPage(${p.id})">编辑</button>
+        tr.innerHTML = `<td><a href="/page/${encodeURIComponent(p.slug || '')}" target="_blank">${escapeHtml(p.title)}</a></td>
+            <td>${escapeHtml(p.slug || '')}</td>
+            <td>${p.published ? '<span class="badge b-pub">已发布</span>' : '<span class="badge b-draft">未发布</span>'}</td>
+            <td class="t-time">${fmtTime(p.updatedAt)}</td>
+            <td style="white-space:nowrap;"><button class="ghost" onclick="editPage(${p.id})">编辑</button>
                 <button class="ghost" onclick="delPage(${p.id})">删除</button></td>`;
         tb.appendChild(tr);
     });
 }
-let pagesCache = {};
+
+function renderPagePager() {
+    const box = $('pglist-pager');
+    if (!box) return;
+    const cnt = $('pglist-count');
+    if (cnt) cnt.textContent = pgListTotal ? '（' + pgListTotal + '）' : '';
+    const from = pgListTotal ? pgListPage * PG_SIZE + 1 : 0;
+    const to = Math.min((pgListPage + 1) * PG_SIZE, pgListTotal);
+    const first = pgListPage <= 0, last = pgListPage >= pgListPages - 1;
+    box.innerHTML = `<span class="pinfo">共 ${pgListTotal} 个 · 第 ${from}-${to} 条 · ${pgListPage + 1}/${pgListPages} 页</span>
+        <span class="pbtns">
+            <button class="ghost" onclick="renderPageList(0)" ${first ? 'disabled' : ''}>首页</button>
+            <button class="ghost" onclick="renderPageList(${pgListPage - 1})" ${first ? 'disabled' : ''}>上一页</button>
+            <button class="ghost" onclick="renderPageList(${pgListPage + 1})" ${last ? 'disabled' : ''}>下一页</button>
+            <button class="ghost" onclick="renderPageList(${pgListPages - 1})" ${last ? 'disabled' : ''}>末页</button>
+        </span>`;
+}
+
+/* ---------- 页面面板的两个视图：list（默认）/ edit ----------
+   只切 display、不销毁编辑器实例：切回来内容还在，二次编辑直接 $set 换 value 更快。 */
+function showPageView(view) {
+    const edit = view === 'edit';
+    $('pv-list').style.display = edit ? 'none' : '';
+    $('pv-edit').style.display = edit ? '' : 'none';
+    window.scrollTo({ top: 0, behavior: 'auto' });
+    if (edit) {
+        // 编辑器可能是「隐藏状态下挂载」的（CodeMirror 量不到尺寸）→ 显示后让它重新量一次
+        requestAnimationFrame(() => { const cm = codeMirrorInstance('page'); if (cm) cm.refresh(); });
+    }
+}
+/** 编辑视图「← 返回列表」：不弹确认框（半成品草稿留在表单里，回来还在），只切视图 */
+function backToPageList() { showPageView('list'); }
+
+/** 清空表单与编辑器，进入「写新页面」状态（id / slug 由后端在保存时分配） */
+function newPage() {
+    pgId.value = ''; pgTitle.value = ''; pgSlug.value = ''; pgPub.checked = true;
+    $('pg-mode').textContent = '新建页面';
+    showPageView('edit');     // 先切视图再挂编辑器：CodeMirror 挂载时要能量到真实尺寸
+    ensurePageEditor();       // 首次进编辑视图才真正挂载（有开销，也不必常驻）
+    initEditor('', 'page');
+    pgTitle.focus();
+}
+
 function editPage(id) {
     const p = pagesCache[id];
     if (!p) return;
-    ensurePageEditor();       // 编辑器可能还没挂载（没进过页面面板/首次点编辑）
-    pgId.value = p.id; pgTitle.value = p.title; pgSlug.value = p.slug;
+    pgId.value = p.id; pgTitle.value = p.title || ''; pgSlug.value = p.slug || '';
     pgPub.checked = p.published;
+    $('pg-mode').textContent = '编辑页面';
+    showPageView('edit');     // 先切视图再挂编辑器
+    ensurePageEditor();
     initEditor(p.content || '', 'page');
 }
+
 async function savePage() {
     const body = { title: pgTitle.value, slug: pgSlug.value, content: getPageValue(), published: pgPub.checked };
-    if (pgId.value) await jpost('/api/admin/pages/' + pgId.value, body, 'PUT');
-    else await jpost('/api/admin/pages', body);
-    toast('页面已保存');
+    const data = pgId.value
+        ? await jpost('/api/admin/pages/' + pgId.value, body, 'PUT')
+        : await jpost('/api/admin/pages', body);
+    // 后端对「slug 被别的页面占用」回 409 + {error}：不能当成保存成功，否则提示在骗人
+    if (data && data.error) { toast('保存失败：' + data.error); return; }
+    if (data && data.id) { pgId.value = data.id; pagesCache[data.id] = data; }
+    if (data && data.slug) pgSlug.value = data.slug;   // 回填服务端自动生成的 slug
+    toast('保存成功：' + ((data && data.title) || pgTitle.value));
+    showPageView('list');      // 保存完回列表（与文章面板一致）
     loadPages();
 }
-async function delPage(id) { if (confirm('确定删除？')) { await api('/api/admin/pages/' + id, { method: 'DELETE' }); loadPages(); } }
+async function delPage(id) {
+    if (!confirm('确定删除？')) return;
+    await api('/api/admin/pages/' + id, { method: 'DELETE' });
+    delete pagesCache[id];
+    // 删完当前页可能空了 → 退一页再渲染
+    if (pgListPage > 0 && (pgListTotal - 1) <= pgListPage * PG_SIZE) pgListPage -= 1;
+    loadPages();
+}
 
 /* ---------- 文件 ---------- */
 async function uploadFile() {
@@ -1453,11 +1597,8 @@ function switchTab(btn) {
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('p-' + btn.dataset.p).classList.add('active');
-    // 页面面板的 ByteMD 编辑器首次进入才挂载（有开销，且隐藏时挂载量不到尺寸）
-    if (btn.dataset.p === 'pages') {
-        ensurePageEditor();
-        requestAnimationFrame(() => { const cm = codeMirrorInstance('page'); if (cm) cm.refresh(); });
-    }
+    // 页面面板与文章面板一样默认落在「列表」视图，编辑器等点「新建 / 编辑」时再挂
+    // （ByteMD 有开销，隐藏态挂载还量不到尺寸 → 现在不在这里预挂）。
     // hash 记录当前面板：刷新/分享链接都能落回原处（replaceState 不产生历史记录）
     history.replaceState(null, '', '#' + btn.dataset.p);
 }

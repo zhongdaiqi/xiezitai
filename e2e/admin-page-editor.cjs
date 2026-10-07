@@ -1,15 +1,16 @@
-/* 后台「页面」编辑改用与文章一致的 ByteMD 编辑器 —— 端到端验证（2026-10-07 改版）
+/* 后台「页面」编辑改用与文章一致的 ByteMD 编辑器 —— 端到端验证（2026-10-07 改版，2026-10-08 适配视图拆分）
  *
  * 背景：页面正文以前是纯 <textarea>（#pg-content），**没有编辑器菜单** —— 标题/加粗/列表/
- *       图片/分屏/全屏都用不上。现在与文章共用 ByteMD 组件（挂载点 #pg-editor），
- *       且只在首次进「页面」面板时才挂载（ByteMD 有开销，不必常驻两个实例）。
+ *       图片/分屏/全屏都用不上。现在与文章共用 ByteMD 组件（挂载点 #pg-editor）。
+ *       2026-10-08 起页面面板也拆成「列表 / 编辑」两个互斥视图（默认列表），
+ *       编辑器改为**进编辑视图时**才挂载（ByteMD 有开销，隐藏态挂载还量不到尺寸）。
  *
  * 覆盖：
- *   ① 切到「页面」面板 → #pg-editor 内挂出 ByteMD，工具栏菜单存在
+ *   ① 点「+ 新建页面」进编辑视图 → #pg-editor 内挂出 ByteMD，工具栏菜单存在
  *   ② 工具栏按钮数 >= 8，且含「图片」「全屏」（与文章编辑器同一套默认工具栏）
  *   ③ 通过 CodeMirror 写入 markdown → 预览区真的渲染（标题/表格）
  *   ④ 「插入媒体」按钮走 openMedia('page')，目标指向页面编辑器（mediaTarget='page'）
- *   ⑤ 保存页面 → 提示「页面已保存」→ 页面出现在列表；再点「编辑」正文能回填
+ *   ⑤ 保存页面 → 提示「保存成功：<标题>」并回到列表；再点「编辑」正文能回填
  *   ⑥ 0 JS 错误、0 意外 HTTP>=400
  *
  * 会建 1 个页面（标题带时间戳），跑完按 id 删掉。
@@ -77,15 +78,22 @@ let madeId = null;
     await page.waitForSelector('#app', { state: 'visible', timeout: 15000 });
     log('WHO=' + (await page.textContent('#who')));
 
-    // 进页面面板之前，页面编辑器还不该挂载
-    check('进「页面」面板前页面编辑器未挂载（按需挂载）', !(await pageEditorMounted()));
+    // 进编辑视图之前，页面编辑器还不该挂载
+    check('进编辑视图前页面编辑器未挂载（按需挂载）', !(await pageEditorMounted()));
 
-    // ---------- ① 切到「页面」面板 → 编辑器挂载 ----------
+    // ---------- ① 切到「页面」面板（默认列表）→ 点「+ 新建页面」进编辑视图 → 编辑器挂载 ----------
     await page.click('.tab[data-p="pages"]');
     await page.waitForSelector('#p-pages.active', { timeout: 8000 });
+    await page.waitForSelector('#pv-list', { state: 'visible', timeout: 10000 });
+    check('① 页面面板默认落在列表视图（#pv-list 可见、#pv-edit 隐藏）',
+      (await page.isVisible('#pv-list')) && !(await page.isVisible('#pv-edit')));
+    check('① 此时仍未挂载编辑器（列表视图不预加载）', !(await pageEditorMounted()));
+
+    await page.click('#pg-new');
+    await page.waitForSelector('#pv-edit', { state: 'visible', timeout: 10000 });
     await page.waitForSelector('#pg-editor .CodeMirror', { timeout: 15000 });
     await page.waitForTimeout(400);
-    check('① 切到「页面」面板后编辑器已挂载（#pg-editor 内有 ByteMD）', await pageEditorMounted());
+    check('① 点「+ 新建页面」进编辑视图后编辑器已挂载（#pg-editor 内有 ByteMD）', await pageEditorMounted());
     check('① 页面编辑器带工具栏（.bytemd-toolbar 存在）',
       await page.evaluate(() => !!document.querySelector('#pg-editor .bytemd-toolbar')));
 
@@ -126,22 +134,25 @@ let madeId = null;
     await page.waitForFunction(() => !document.getElementById('media-modal').classList.contains('open'),
       { timeout: 5000 }).catch(() => log('WAIT_CLOSE_TIMEOUT'));
 
-    // ---------- ⑤ 保存页面 ----------
-    await page.click('button[onclick="savePage()"]');
+    // ---------- ⑤ 保存页面 → 提示「保存成功：<标题>」+ 回到列表 ----------
+    await page.click('#pg-save');
     await page.waitForFunction(() => {
       const el = document.getElementById('toast');
-      return !!el && el.classList.contains('show') && /页面已保存/.test(el.textContent);
+      return !!el && el.classList.contains('show') && /保存成功/.test(el.textContent);
     }, { timeout: 15000 }).catch(() => log('WAIT_TOAST_TIMEOUT'));
-    check('⑤ 保存后提示「页面已保存」', /页面已保存/.test(await toastText()), await toastText());
+    check('⑤ 保存后提示「保存成功」', /保存成功/.test(await toastText()), await toastText());
+    check('⑤ 提示里带上刚保存的标题', (await toastText()).includes(title), await toastText());
 
-    await page.waitForFunction(t => {
+    await page.waitForSelector('#pv-list', { state: 'visible', timeout: 15000 });
+    check('⑤ 保存后自动回到列表视图（编辑视图隐藏）',
+      (await page.isVisible('#pv-list')) && !(await page.isVisible('#pv-edit')));
+
+    // 新页面在列表里（列表按库内顺序，刚建的通常在末页；用搜索定位最稳）
+    await page.fill('#pg-search', title);
+    await page.waitForTimeout(600);
+    const listed = await page.evaluate(t => {
       return [...document.querySelectorAll('#pglist tbody tr td:first-child')]
         .some(td => td.textContent.trim() === t);
-    }, title, { timeout: 15000 }).catch(() => log('WAIT_PAGE_ROW_TIMEOUT'));
-    const listed = await page.evaluate(t => {
-      const tr = [...document.querySelectorAll('#pglist tbody tr')]
-        .find(x => x.querySelector('td:first-child').textContent.trim() === t);
-      return !!tr;
     }, title);
     check('⑤ 新页面出现在页面列表', listed);
 
@@ -152,12 +163,13 @@ let madeId = null;
     }, title);
     log('PAGE_ID=' + madeId);
 
-    // 再点「编辑」→ 正文回填到编辑器（验证落库内容完整）
+    // 再点「编辑」→ 进编辑视图，正文回填到编辑器（验证落库内容完整）
     await page.evaluate(t => {
       const tr = [...document.querySelectorAll('#pglist tbody tr')]
         .find(x => x.querySelector('td:first-child').textContent.trim() === t);
       tr.querySelector('td:last-child button').click();
     }, title);
+    await page.waitForSelector('#pv-edit', { state: 'visible', timeout: 8000 });
     await page.waitForTimeout(800);
     check('⑤ 点「编辑」回填标题', (await page.inputValue('#pg-title')) === title, await page.inputValue('#pg-title'));
     check('⑤ 点「编辑」回填正文到页面编辑器', (await pgText()).includes(title), (await pgText()).slice(0, 40));
