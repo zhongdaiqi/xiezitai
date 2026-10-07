@@ -1,7 +1,7 @@
 /*!
- * 写字台 · 文章代码块增强：语法高亮 + 一键复制
+ * 写字台 · 代码块增强：语法高亮 + 一键复制
  *
- * 服务端（commonmark）渲染 fenced code 时输出的是：
+ * 渲染方（前台 commonmark / 后台 ByteMD 预览）输出的都是：
  *     <pre><code class="language-java">…</code></pre>
  * 本脚本把它变成：
  *     <div class="code-block">
@@ -21,6 +21,12 @@
  *     作者写的原文，不含任何标签。
  *  5. 复制优先用 Clipboard API（https / localhost 才可用），失败或非安全上下文时回退
  *     execCommand('copy')。
+ *  6. 【动态场景】后台编辑器的实时预览是「每次输入整段重渲染」的，所以本脚本必须可重入：
+ *     enhancePre 用内容指纹去重（同一块内容没变就直接跳过），内容变了则先还原成裸 <pre>
+ *     再重做（否则会把新的 span 套进上一次的 span 里）。boot() 时挂一个 MutationObserver
+ *     监听 #editor，预览一变就防抖重扫一遍；我们自己的插入操作会再触发一次回调，
+ *     但那一轮全部命中「内容没变」而空转，不会形成死循环。
+ *     外部若在别处动态渲染了 markdown，可手动调 window.__xzCodeBlockRefresh()。
  *
  * 无 JS 时：页面就是服务端渲染的 <pre><code>，纯文本可读、可手动选中复制（SEO 与可访问性不受影响）。
  */
@@ -53,6 +59,9 @@
     'docker-compose': 'yaml',
     k8s: 'yaml'
   };
+
+  /** 单块超过这个字符数就不高亮：后台输入时每敲一下都要重扫，别让超大文件拖慢打字 */
+  var MAX_HIGHLIGHT_LENGTH = 120000;
 
   /** 取代码块的语言标记（作者写的信息串原文），如 language-java / lang-Java / language-c# */
   function readLang(code) {
@@ -140,21 +149,69 @@
     return tools;
   }
 
+  /** 内容指纹：动态重渲染时用来判断这块还是不是上次那块内容 */
+  function fingerprint(text) {
+    var h = 5381;
+    for (var i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+    return text.length + ':' + h;
+  }
+
+  function codeOf(pre) {
+    var first = pre.firstElementChild;
+    return first && first.tagName === 'CODE' ? first : pre;
+  }
+
+  function wrapperOf(pre) {
+    var p = pre.parentNode;
+    return (p && p.classList && p.classList.contains('code-block')) ? p : null;
+  }
+
+  /** 还原成裸 <pre>：删掉工具条、把高亮 span 退回纯文本（文本内容不变，只丢标记） */
+  function restore(pre) {
+    var wrap = wrapperOf(pre);
+    if (wrap) {
+      for (var i = wrap.children.length - 1; i >= 0; i--) {
+        var child = wrap.children[i];
+        if (child !== pre && child.classList && child.classList.contains('code-tools')) {
+          wrap.removeChild(child);
+        }
+      }
+      if (wrap.parentNode) {
+        wrap.parentNode.insertBefore(pre, wrap);
+        wrap.parentNode.removeChild(wrap);
+      }
+    }
+    if (pre.dataset.cbHi === '1') {
+      var code = codeOf(pre);
+      code.textContent = code.textContent || '';   // 赋值 textContent 即丢弃内部 span
+      code.classList.remove('hljs');
+      delete pre.dataset.cbHi;
+    }
+  }
+
   function enhancePre(pre) {
-    if (pre.dataset.cbDone) return;
-    var code = pre.firstElementChild && pre.firstElementChild.tagName === 'CODE'
-      ? pre.firstElementChild : pre;
+    var code = codeOf(pre);
+    var text = code.textContent || '';
+    var sig = fingerprint(text);
+
+    // 已处理过且内容没变 → 跳过（动态重渲染会反复调用同一批节点）
+    if (pre.dataset.cbDone === '1' && pre.dataset.cbSig === sig) return;
+    // 已处理过但内容变了（元素被复用）→ 先还原再重做，避免 span 套 span
+    if (pre.dataset.cbDone === '1') restore(pre);
+
     pre.dataset.cbDone = '1';
+    pre.dataset.cbSig = sig;
 
     var raw = readLang(code);
     var lang = resolveLang(raw);
 
-    // 1) 高亮（只有认得出语法名时才做）
-    if (lang && window.hljs) {
+    // 1) 高亮（只有认得出语法名、且块不算太大时才做）
+    if (lang && window.hljs && text.length <= MAX_HIGHLIGHT_LENGTH) {
       try {
-        var res = window.hljs.highlight(code.textContent || '', { language: lang, ignoreIllegals: true });
+        var res = window.hljs.highlight(text, { language: lang, ignoreIllegals: true });
         code.innerHTML = res.value;
         code.classList.add('hljs');
+        pre.dataset.cbHi = '1';
       } catch (e) {
         // 高亮失败不影响阅读与复制，静默降级
       }
@@ -162,10 +219,8 @@
 
     // 2) 工具栏：包一层 div，把工具栏放在不滚动的那一层
     var host = pre.parentNode;
-    var wrap;
-    if (host && host.classList && host.classList.contains('code-block')) {
-      wrap = host;
-    } else {
+    var wrap = wrapperOf(pre);
+    if (!wrap) {
       wrap = document.createElement('div');
       wrap.className = 'code-block';
       host.insertBefore(wrap, pre);
@@ -179,9 +234,35 @@
     for (var i = 0; i < blocks.length; i++) enhancePre(blocks[i]);
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', run);
-  } else {
+  /* ---------------- 动态内容（后台编辑器实时预览） ---------------- */
+
+  var timer = null;
+
+  function schedule(delay) {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(function () { timer = null; run(); }, delay || 160);
+  }
+
+  function watchDynamic() {
+    if (!window.MutationObserver) return;
+    var root = document.getElementById('editor');   // 后台文章编辑器的挂载点
+    if (!root || root.__xzCbWatched) return;
+    root.__xzCbWatched = true;
+    new MutationObserver(function () { schedule(160); })
+      .observe(root, { childList: true, subtree: true });
+  }
+
+  /** 手动刷新：外部若往别处动态插入了 markdown 渲染结果，可调它补一次增强 */
+  window.__xzCodeBlockRefresh = run;
+
+  function boot() {
     run();
+    watchDynamic();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
   }
 })();

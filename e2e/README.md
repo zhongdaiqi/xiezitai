@@ -44,7 +44,8 @@ $env:E2E_BASE='http://127.0.0.1:8099'
 | `cover.cjs` | 封面三种来源：本地上传 / 从媒体库选择 / 清除；放大预览灯箱（点缩略图、按钮、ESC / 遮罩关闭）；AI 封面只允许站内 `/media/` 地址、绝不返回第三方链接；发布后前台封面 + `og:image` 绝对地址 |
 | `ai-seo.cjs` | AI 写作辅助：优化标题 / 提取 SEO 关键词 / 提取 SEO 描述 三个按钮 → 接口 → 字段回填；模型脏输出被洗净；**AI 不可用时只提示、不覆盖用户内容**；保存后落库并在前台 `meta keywords/description` 生效 |
 | `video-insert.cjs` | 编辑器工具栏插入 `<video>` |
-| `codeblock.cjs` | 文章代码块：语法高亮（标注语言才着色、dockerfile 走补充语言包）、语言标签、复制按钮（Clipboard API 与 execCommand 回退）、代码内 HTML 被转义不 XSS |
+| `codeblock.cjs` | 文章代码块（前台）：语法高亮（标注语言才着色、dockerfile 走补充语言包）、语言标签、复制按钮（Clipboard API 与 execCommand 回退）、代码内 HTML 被转义不 XSS |
+| `admin-codeblock.cjs` | 后台编辑器**实时预览**里的代码块：与前台同一套观感；重点验「边打字边重渲染」下的可重入性 —— 改内容后重新着色、工具条不重复堆叠、删掉语言标记退回纯文本、编辑区 CodeMirror 不受影响 |
 | `password.cjs` | 修改密码流程 |
 | `user-audit.cjs` | 注册审核：待审核拦截 → 后台「用户」页通过/驳回（含备注）→ 通过后可用、驳回后令牌立即失效 |
 | `remember.cjs` | 记住登录（localStorage vs sessionStorage） |

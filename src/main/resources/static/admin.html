@@ -7,6 +7,7 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/vendor/bytemd/index.min.css">
     <link rel="stylesheet" href="/vendor/github-markdown-css/github-markdown-light.min.css">
+    <link rel="stylesheet" href="/vendor/highlight/github.min.css">
     <style>
         :root { --ink: #1a1a1a; --muted: #6b7280; --line: #e5e7eb; --accent: #2563eb; --bg: #f9fafb; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -32,6 +33,29 @@
         .row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
         /* 预览区里的媒体（github-markdown-css 只管 img，video 要自己兜） */
         .markdown-body video { max-width: 100%; height: auto; border-radius: 6px; display: block; margin: 12px 0; background: #000; }
+
+        /* 代码块：预览区里的语法高亮 + 右上角「语言标签 / 复制」工具条（js/codeblock.js 注入）。
+           与 article.html / page.html 同一套类名和观感，只是后台的样式变量在本页已定义、直接用。
+           ① 主题里的 pre code.hljs{padding:1em} 与 github-markdown-css 的 .markdown-body pre>code{padding:0}
+              特异度相同、靠加载顺序分胜负，这里显式定死，避免升级 vendor 后代码块突然多出一圈内边距；
+           ② 工具条挂在包裹层 .code-block 上（不是 <pre> 里），<pre> 横滚时它不会跟着滚走；
+           ③ 后台是「边打字边重渲染」的实时预览，这个工具条会随预览反复重建 —— 这是预期行为，
+              复制按钮的「已复制」反馈是短时状态，重建后自然回到「复制」。 */
+        .markdown-body .code-block { position: relative; }
+        .markdown-body .code-block pre { margin-bottom: 16px; }
+        .markdown-body pre code.hljs { padding: 0; background: transparent; }
+        .markdown-body .code-tools { position: absolute; top: 8px; right: 8px; display: flex;
+            align-items: center; gap: 6px; user-select: none; }
+        .markdown-body .code-lang { font-size: 12px; line-height: 18px; color: var(--muted);
+            background: rgba(246, 248, 250, .92); border: 1px solid var(--line);
+            border-radius: 4px; padding: 0 6px; }
+        .markdown-body .code-copy { font-size: 12px; line-height: 18px; margin: 0; padding: 0 8px;
+            color: var(--muted); background: rgba(246, 248, 250, .92); border: 1px solid var(--line);
+            border-radius: 4px; cursor: pointer; opacity: .8;
+            transition: opacity .15s, color .15s, border-color .15s; }
+        .markdown-body .code-copy:hover { opacity: 1; color: var(--accent); border-color: var(--accent); }
+        .markdown-body .code-copy.ok { opacity: 1; color: #16a34a; border-color: #16a34a; }
+        .markdown-body .code-copy.err { opacity: 1; color: #b91c1c; border-color: #b91c1c; }
 
         /* ---------- 媒体选择弹窗 ---------- */
         .modal { display: none; position: fixed; inset: 0; background: rgba(15,23,42,.45); z-index: 999; }
@@ -328,6 +352,11 @@
 <script src="/vendor/bytemd/plugin-gfm.umd.js"></script>
 <script src="/vendor/bytemd/plugin-frontmatter.umd.js"></script>
 <script src="/vendor/mermaid/mermaid.min.js"></script>
+<!-- 代码块高亮 / 复制：hljs 必须排在 codeblock.js 之前；脚本自带 MutationObserver，
+     会跟着 ByteMD 的实时预览重扫，无需在这里额外挂钩子 -->
+<script src="/vendor/highlight/highlight.min.js"></script>
+<script src="/vendor/highlight/highlight-langs.min.js"></script>
+<script src="/js/codeblock.js"></script>
 <script>
 /* 记住登录：勾选 → token 存 localStorage（配合后端 30 天 JWT）；
    未勾选 → 只存 sessionStorage，关浏览器即失效 */
