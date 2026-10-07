@@ -24,6 +24,9 @@ import java.util.Map;
 @RequestMapping("/api/admin")
 public class AdminController {
 
+    /** 后台列表里的时间展示格式（yyyy-MM-dd HH:mm:ss） */
+    private static final DateTimeFormatter DT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
     private final NotifyService notify;
     private final AiService ai;
     private final FileScanService scanner;
@@ -93,11 +96,56 @@ public class AdminController {
         if (!isAdmin(auth)) return ResponseEntity.status(403).body(Map.of("error", "需要管理员权限"));
         List<Map<String, Object>> out = new ArrayList<>();
         for (User u : users.findAll()) {
-            out.add(Map.of("id", u.getId(), "username", u.getUsername(), "email", u.getEmail() == null ? "" : u.getEmail(),
-                    "role", u.getRole(), "enabled", u.isEnabled(), "totpEnabled", u.isTotpEnabled(),
-                    "allowedFileTypes", u.getAllowedFileTypes() == null ? "" : u.getAllowedFileTypes()));
+            Map<String, Object> m = new java.util.HashMap<>();
+            m.put("id", u.getId());
+            m.put("username", u.getUsername());
+            m.put("email", u.getEmail() == null ? "" : u.getEmail());
+            m.put("role", u.getRole());
+            m.put("status", u.getStatus() == null ? "APPROVED" : u.getStatus());
+            m.put("reviewNote", u.getReviewNote() == null ? "" : u.getReviewNote());
+            m.put("createdAt", u.getCreatedAt() == null ? "" : u.getCreatedAt().format(DT));
+            m.put("enabled", u.isEnabled());
+            m.put("totpEnabled", u.isTotpEnabled());
+            m.put("allowedFileTypes", u.getAllowedFileTypes() == null ? "" : u.getAllowedFileTypes());
+            out.add(m);
         }
+        // 待审核的排最前面：管理员打开列表就能直接处理，不用在几百行里翻
+        out.sort((a, b) -> {
+            int sa = "PENDING".equals(a.get("status")) ? 0 : 1;
+            int sb = "PENDING".equals(b.get("status")) ? 0 : 1;
+            return sa != sb ? Integer.compare(sa, sb) : Long.compare((Long) a.get("id"), (Long) b.get("id"));
+        });
         return ResponseEntity.ok(out);
+    }
+
+    /**
+     * 注册审核：PENDING / APPROVED / REJECTED。
+     * 用独立端点而不是塞进 updateUser，是因为只有这条路径要发通知、也只该由管理员显式触发。
+     */
+    @PutMapping("/users/{id}/audit")
+    public ResponseEntity<?> auditUser(@PathVariable Long id, @RequestBody Map<String, String> body, Authentication auth) {
+        if (!isAdmin(auth)) return ResponseEntity.status(403).body(Map.of("error", "需要管理员权限"));
+        User u = users.findById(id).orElse(null);
+        if (u == null) return ResponseEntity.notFound().build();
+        String status = body.getOrDefault("status", "").trim().toUpperCase();
+        if (!List.of("APPROVED", "REJECTED", "PENDING").contains(status)) {
+            return ResponseEntity.badRequest().body(Map.of("error", "status 只能是 APPROVED / REJECTED / PENDING"));
+        }
+        String note = body.get("note");
+        if (note != null && note.length() > 200) note = note.substring(0, 200);
+        // 防呆：管理员账号不走审核闸门，否则一次误操作就可能把唯一的 ADMIN 锁在门外
+        if ("ADMIN".equals(u.getRole()) && !"APPROVED".equals(status)) {
+            return ResponseEntity.badRequest().body(Map.of("error", "管理员账号无需审核；要停用请取消「启用」"));
+        }
+        u.setStatus(status);
+        u.setReviewNote(status.equals("REJECTED") ? note : null);
+        users.save(u);
+        if (!"PENDING".equals(status)) {
+            notify.notifyEvent("register", "**写字台注册审核**\n> 用户: " + u.getUsername()
+                    + "\n> 结果: " + ("APPROVED".equals(status) ? "已通过" : "已驳回")
+                    + (status.equals("REJECTED") && note != null && !note.isBlank() ? "\n> 备注: " + note : ""));
+        }
+        return ResponseEntity.ok(Map.of("message", "已更新", "status", status));
     }
 
     @PutMapping("/users/{id}")

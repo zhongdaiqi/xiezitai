@@ -58,6 +58,19 @@ public class AuthController {
             attempts.onFailure(username);
             return ResponseEntity.status(401).body(Map.of("error", "用户名或密码错误"));
         }
+        // 审核状态放在密码校验**之后**判断：否则不知道密码的人也能靠状态码探出
+        // 「这个用户名存不存在 / 有没有在等审核」。密码对了就不算爆破，顺手清掉失败计数。
+        if (!user.isApproved()) {
+            attempts.onSuccess(username);
+            if (user.isRejected()) {
+                String note = user.getReviewNote() == null || user.getReviewNote().isBlank()
+                        ? "，如有疑问请联系管理员" : "：" + user.getReviewNote();
+                return ResponseEntity.status(403).body(Map.of(
+                        "error", "REJECTED", "message", "注册申请未通过审核" + note));
+            }
+            return ResponseEntity.status(403).body(Map.of(
+                    "error", "PENDING_REVIEW", "message", "账号正在等待管理员审核，通过后即可登录"));
+        }
         if (user.isTotpEnabled()) {
             if (totpCode == null || totpCode.isBlank()) {
                 return ResponseEntity.status(401).body(Map.of("error", "NEED_TOTP", "message", "已开启两步验证，请输入动态码"));
@@ -104,10 +117,13 @@ public class AuthController {
         String email = body.get("email");
         user.setEmail(email == null ? null : (email.trim().length() > 100 ? email.trim().substring(0, 100) : email.trim()));
         user.setRole("USER");
+        // 自助注册一律进待审核队列：审核通过前登录会被 403 挡下（见 login）
+        user.setStatus("PENDING");
         user.setApiToken(randomToken());
         users.save(user);
-        notify.notifyEvent("register", "**写字台新用户注册**\n> 用户: " + username);
-        return ResponseEntity.ok(Map.of("message", "注册成功"));
+        notify.notifyEvent("register", "**写字台新用户注册（待审核）**\n> 用户: " + username
+                + "\n> 请到后台「用户」里通过或驳回");
+        return ResponseEntity.ok(Map.of("message", "注册成功，请等待管理员审核后登录", "status", "PENDING"));
     }
 
     @GetMapping("/me")

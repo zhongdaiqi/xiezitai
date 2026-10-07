@@ -180,6 +180,8 @@ public class OpenApiController {
 
     private User authByToken(String token) {
         if (token == null || token.isBlank()) return null;
-        return users.findByApiToken(token).orElse(null);
+        User user = users.findByApiToken(token).orElse(null);
+        // 与登录同一套口径：账号被停用 / 注册被驳回，已签发的 API Token 一并失效
+        return (user != null && user.isEnabled() && user.isApproved()) ? user : null;
     }
 }

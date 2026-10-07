@@ -167,8 +167,9 @@
     <!-- 用户 -->
     <div class="panel" id="p-users">
         <div class="card">
+            <p class="muted" id="pendingTip">新注册用户默认为「待审核」状态，通过审核后才能登录；驳回可填写原因，用户在登录时会看到。</p>
             <p class="muted">角色、启用状态、允许上传的文件类型（逗号分隔，如 jpg,png,mp4；留空则用默认"仅图片/视频"）。</p>
-            <table id="ulist"><thead><tr><th>用户名</th><th>邮箱</th><th>角色</th><th>启用</th><th>TOTP</th><th>允许上传类型</th><th>操作</th></tr></thead><tbody></tbody></table>
+            <table id="ulist"><thead><tr><th>用户名</th><th>邮箱</th><th>角色</th><th>审核状态</th><th>注册时间</th><th>启用</th><th>TOTP</th><th>允许上传类型</th><th>操作</th></tr></thead><tbody></tbody></table>
         </div>
     </div>
 
@@ -753,23 +754,44 @@ async function setComment(id, status) { await jpost('/api/admin/comments/' + id 
 async function delComment(id) { await api('/api/admin/comments/' + id, { method: 'DELETE' }); loadComments(); }
 
 /* ---------- 用户 ---------- */
+const USER_STATUS_TEXT = { PENDING: '待审核', APPROVED: '已通过', REJECTED: '已驳回' };
 async function loadUsers() {
     const list = await jget('/api/admin/users');
     const tb = document.querySelector('#ulist tbody');
     tb.innerHTML = '';
+    const pending = list.filter(u => u.status === 'PENDING').length;
+    document.getElementById('pendingTip').textContent = pending
+        ? `有 ${pending} 个账号等待审核（已排在列表最前面）。通过后才能登录；驳回可填写原因，用户在登录时会看到。`
+        : '新注册用户默认为「待审核」状态，通过审核后才能登录；驳回可填写原因，用户在登录时会看到。';
     list.forEach(u => {
         const tr = document.createElement('tr');
+        if (u.status === 'PENDING') tr.style.background = '#fffbeb';
+        // 待审核/已驳回 才需要填备注；驳回后仍可改判为通过
+        const noteBox = (u.status === 'PENDING' || u.status === 'REJECTED')
+            ? `<input type="text" id="u-note-${u.id}" value="${escapeHtml(u.reviewNote)}" placeholder="驳回原因（可空）" style="width:150px;margin-top:4px;">`
+            : '';
+        const auditBtns = [];
+        if (u.status !== 'APPROVED') auditBtns.push(`<button class="ghost" onclick="auditUser(${u.id}, 'APPROVED')">通过</button>`);
+        if (u.status !== 'REJECTED') auditBtns.push(`<button class="ghost" onclick="auditUser(${u.id}, 'REJECTED')">驳回</button>`);
         tr.innerHTML = `<td>${escapeHtml(u.username)}</td><td>${escapeHtml(u.email)}</td>
             <td><select id="u-role-${u.id}">
                 <option value="USER" ${u.role === 'USER' ? 'selected' : ''}>USER</option>
                 <option value="ADMIN" ${u.role === 'ADMIN' ? 'selected' : ''}>ADMIN</option>
             </select></td>
+            <td style="${u.status === 'PENDING' ? 'color:#b45309;font-weight:600;' : (u.status === 'REJECTED' ? 'color:#b91c1c;' : '')}">
+                ${USER_STATUS_TEXT[u.status] || escapeHtml(u.status)}${noteBox}</td>
+            <td class="muted">${escapeHtml(u.createdAt || '')}</td>
             <td><input type="checkbox" id="u-en-${u.id}" ${u.enabled ? 'checked' : ''}></td>
             <td>${u.totpEnabled ? '已开启' : '-'}</td>
             <td><input type="text" id="u-ft-${u.id}" value="${escapeHtml(u.allowedFileTypes)}" placeholder="如 jpg,png,mp4" style="width:180px;"></td>
-            <td><button class="ghost" onclick="saveUser(${u.id})">保存</button></td>`;
+            <td>${auditBtns.join('')}<button class="ghost" onclick="saveUser(${u.id})">保存</button></td>`;
         tb.appendChild(tr);
     });
+}
+async function auditUser(id, status) {
+    const noteEl = document.getElementById('u-note-' + id);
+    await jpost('/api/admin/users/' + id + '/audit', { status, note: noteEl ? noteEl.value : '' }, 'PUT');
+    loadUsers();
 }
 async function saveUser(id) {
     await jpost('/api/admin/users/' + id, {

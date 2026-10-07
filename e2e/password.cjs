@@ -3,6 +3,7 @@
 // ② 后台 admin.html「安全」页有修改密码表单且可用
 // ③ 修改密码后旧 token 仍有效（JWT 无吊销，属预期），旧密码登录 401、新密码登录 200
 const { chromium } = require('playwright');
+const { auditUser } = require('./lib/audit.cjs');
 const BASE = process.env.E2E_BASE || 'http://localhost:8080';
 
 const checks = [];
@@ -40,6 +41,8 @@ const uname = 'pwduser' + stamp;
   // 找一篇已发布文章（没有就造一篇）
   const al = await post('/api/auth/login', { username: 'xiezitai', password: 'xiexiexie' });
   const admin = al.d.token;
+  // 新注册用户是「待审核」，先用管理员放行才能登录
+  await auditUser(BASE, admin, uname);
   let slug = '';
   const arts = await req('GET', '/api/articles?size=5');
   if (arts.d && arts.d.content && arts.d.content.length) slug = arts.d.content[0].slug;

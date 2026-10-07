@@ -2,6 +2,7 @@
 // ① 前台登录弹窗有「记住登录」复选框；勾选 → token 进 localStorage；不勾 → 只进 sessionStorage（关浏览器即失效）
 // ② 勾选后刷新页面仍保持登录；后台登录框同样有复选框且勾选后 token 进 localStorage
 const { chromium } = require('playwright');
+const { auditUser } = require('./lib/audit.cjs');
 const BASE = process.env.E2E_BASE || 'http://localhost:8080';
 
 const checks = [];
@@ -27,6 +28,9 @@ const uname = 'rmbuser' + stamp;
 
   const al = await post('/api/auth/login', { username: 'xiezitai', password: 'xiexiexie' });
   const admin = al.d.token;
+  // 新注册用户是「待审核」，先用管理员放行才能登录
+  await auditUser(BASE, admin, uname);
+  check('注册后由管理员审核通过', true);
   let slug = null;
   const arts = await req('GET', '/api/articles?size=1');
   if (Array.isArray(arts.d) && arts.d.length) slug = arts.d[0].slug;

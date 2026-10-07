@@ -1,6 +1,7 @@
 // 验证评论层级：① 服务端渲染出 一级 + 缩进回复（「回复 @某人」）② 登录后点「回复」内联表单提交
 // ③ 回复的回复被收敛到同一根评论下 ④ 缩进阶梯真实存在 ⑤ 0 JS 错误
 const { chromium } = require('playwright');
+const { auditUser } = require('./lib/audit.cjs');
 const BASE = process.env.E2E_BASE || 'http://localhost:8080';
 
 const checks = [];
@@ -36,6 +37,8 @@ const suffix = Date.now() % 100000;
   async function mkUser(prefix) {
     const u = prefix + suffix;
     await post('/api/auth/register', { username: u, password: 'lv123456' });
+    // 新注册用户是「待审核」，登录前先用管理员放行
+    await auditUser(BASE, admin, u);
     const l = await post('/api/auth/login', { username: u, password: 'lv123456' });
     return { name: u, token: l.d.token };
   }

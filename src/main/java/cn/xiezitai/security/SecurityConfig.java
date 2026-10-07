@@ -1,6 +1,7 @@
 package cn.xiezitai.security;
 
 import cn.xiezitai.repository.RequestLogRepository;
+import cn.xiezitai.repository.UserRepository;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -24,8 +25,8 @@ public class SecurityConfig {
     private final JwtAuthFilter jwtAuthFilter;
     private final RequestLogFilter requestLogFilter;
 
-    public SecurityConfig(JwtUtil jwtUtil, RequestLogRepository requestLogRepository) {
-        this.jwtAuthFilter = new JwtAuthFilter(jwtUtil);
+    public SecurityConfig(JwtUtil jwtUtil, RequestLogRepository requestLogRepository, UserRepository userRepository) {
+        this.jwtAuthFilter = new JwtAuthFilter(jwtUtil, userRepository);
         this.requestLogFilter = new RequestLogFilter(requestLogRepository);
     }
 

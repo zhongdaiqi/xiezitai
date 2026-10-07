@@ -1,10 +1,11 @@
 // 验证：评论仅限登录用户（禁止匿名）
 //  ① 匿名访问文章页 -> 无评论输入框，只有登录/注册入口
 //  ② 匿名直接调评论接口 -> 401
-//  ③ 弹窗注册并登录 -> 出现评论框，显示「以 xxx 的身份评论」
+//  ③ 弹窗注册 -> 提示等待审核（不再自动登录）；管理员放行后再弹窗登录 -> 出现评论框，显示「以 xxx 的身份评论」
 //  ④ 提交评论 -> 提示待审；公开评论列表仍为空（未审核）
 //  ⑤ 全程 0 JS 错误、0 HTTP>=400（除预期的 401）
 const { chromium } = require('playwright');
+const { auditUser } = require('./lib/audit.cjs');
 
 const BASE = process.env.E2E_BASE || 'http://localhost:8080';
 const ADMIN = { u: 'xiezitai', p: 'xiexiexie' };
@@ -68,7 +69,7 @@ async function jpost(path, body, token) {
   }, slug);
   check('匿名调评论接口被拒（401）', anonPost === 401, 'status=' + anonPost);
 
-  // ---------- ③ 弹窗注册并登录 ----------
+  // ---------- ③ 弹窗注册 → 待审核提示 → 管理员放行 → 弹窗登录 ----------
   await page.click('#loginHint button');            // 第一个是「登录」
   await page.waitForSelector('#authModal.open', { timeout: 5000 });
   await page.click('#tabReg');
@@ -76,7 +77,19 @@ async function jpost(path, body, token) {
   await page.fill('#ar-pass', upass);
   await page.fill('#ar-email', uname + '@test.local');
   await page.click('button[onclick="doAuthRegister()"]');
-  // 注册后自动登录；若失败把弹窗里的错误信息带出来，便于定位
+  // 注册后不再自动登录：账号是待审核状态，先给出提示
+  await page.waitForFunction(() => /审核/.test(document.getElementById('authMsg').textContent),
+    null, { timeout: 15000 });
+  const regMsg = (await page.textContent('#authMsg')).trim();
+  check('注册后提示等待审核（不再自动登录）', /审核/.test(regMsg), regMsg);
+  check('注册后仍是未登录态', !(await page.isVisible('#commentForm').catch(() => false)));
+
+  // 管理员放行（真实调后台审核接口，顺带覆盖审核链路）
+  await auditUser(BASE, adminToken, uname);
+
+  // 弹窗此时已切到登录页签并填好用户名，补上密码登录
+  await page.fill('#au-pass', upass);
+  await page.click('button[onclick="doAuthLogin()"]');
   const loggedIn = await page.waitForFunction(() => {
     const b = document.getElementById('userBox');
     return b && /👤/.test(b.textContent || '');

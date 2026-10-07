@@ -49,8 +49,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * 写字台端到端功能自测（MockMvc + H2）。
- * 覆盖：SEO 页面、登录与锁定策略、TOTP 两步验证、文章/页面/评论、媒体访问留痕、
- *      上传类型限制与魔数扫描、开放 API、MCP 服务、请求日志。
+ * 覆盖：SEO 页面、登录与锁定策略、TOTP 两步验证、注册审核（待审/通过/驳回与令牌失效）、
+ *      文章/页面/评论、媒体访问留痕、上传类型限制与魔数扫描、开放 API、MCP 服务、请求日志。
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -193,6 +193,117 @@ class XiezitaiApplicationTests {
         }
     }
 
+    /* ==================== 注册审核 ==================== */
+
+    @Test
+    @DisplayName("注册后为待审核：密码对也登录不了，管理员通过后才能登录")
+    void registerRequiresAdminApproval() throws Exception {
+        String uname = "rev" + (System.currentTimeMillis() % 100000);
+        String pwd = "rev123456";
+        mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("username", uname, "password", pwd))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("PENDING"));
+
+        // 待审核：密码正确也进不去。用 403 而不是 401 —— 401 会让用户以为密码错了反复重试
+        mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("username", uname, "password", pwd))))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("PENDING_REVIEW"));
+
+        // 关键回归：待审核被拒不能计入爆破失败，否则用户等审核期间点几次就被锁号
+        for (int i = 0; i < 5; i++) {
+            mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("username", uname, "password", pwd))))
+                    .andExpect(status().isForbidden());
+        }
+
+        String admin = loginToken(ADMIN, ADMIN_PWD);
+        long id = userIdByName(admin, uname);
+
+        // 后台列表里状态与注册时间都要有（前端审核列依赖它）
+        MvcResult listed = mvc.perform(get("/api/admin/users").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode list = om.readTree(listed.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(list.get(0).path("status").asText())
+                .as("待审核用户应排在列表最前面")
+                .isEqualTo("PENDING");
+        for (JsonNode u : list) {
+            if (uname.equals(u.path("username").asText())) {
+                assertThat(u.path("createdAt").asText()).isNotBlank();
+            }
+        }
+
+        // 管理员通过 → 可以登录
+        mvc.perform(put("/api/admin/users/" + id + "/audit").header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON).content(json(Map.of("status", "APPROVED"))))
+                .andExpect(status().isOk());
+
+        // 通过之后即可登录
+        assertThat(loginToken(uname, pwd)).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("驳回：登录提示带原因，且驳回前签发的 token 与 API Token 立即失效")
+    void rejectedUserBlockedAndTokensRevoked() throws Exception {
+        String uname = "rej" + (System.currentTimeMillis() % 100000);
+        String pwd = "rej123456";
+        String userToken = registerAndApprove(uname, pwd);
+        String userApiToken = apiToken(userToken);
+
+        // 前置确认：此时 token / API Token 都是通的
+        mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/publish").header("X-API-Token", userApiToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("title", "驳回前发布-" + uname, "content", "正文"))))
+                .andExpect(status().isOk());
+
+        String admin = loginToken(ADMIN, ADMIN_PWD);
+        long id = userIdByName(admin, uname);
+        mvc.perform(put("/api/admin/users/" + id + "/audit").header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("status", "REJECTED", "note", "内容不合规"))))
+                .andExpect(status().isOk());
+
+        // 已签发的 JWT 立刻失效，不必等它自然过期（否则驳回形同虚设）
+        mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isUnauthorized());
+        // API Token 同一套口径
+        mvc.perform(post("/api/v1/publish").header("X-API-Token", userApiToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("title", "驳回后发布-" + uname, "content", "正文"))))
+                .andExpect(status().isUnauthorized());
+
+        // 重新登录：403 + 驳回原因透传给用户
+        mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("username", uname, "password", pwd))))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("REJECTED"))
+                .andExpect(jsonPath("$.message", org.hamcrest.Matchers.containsString("内容不合规")));
+
+        // 改判为通过 → 又能登录了
+        mvc.perform(put("/api/admin/users/" + id + "/audit").header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON).content(json(Map.of("status", "APPROVED"))))
+                .andExpect(status().isOk());
+        assertThat(loginToken(uname, pwd)).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("审核接口：管理员账号不可被驳回，非法状态被拒")
+    void auditGuards() throws Exception {
+        String admin = loginToken(ADMIN, ADMIN_PWD);
+        long adminId = userIdByName(admin, ADMIN);
+        // 防呆：把唯一的 ADMIN 驳回等于把自己锁在门外
+        mvc.perform(put("/api/admin/users/" + adminId + "/audit").header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON).content(json(Map.of("status", "REJECTED"))))
+                .andExpect(status().isBadRequest());
+        // 状态值白名单
+        mvc.perform(put("/api/admin/users/" + adminId + "/audit").header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON).content(json(Map.of("status", "WHATEVER"))))
+                .andExpect(status().isBadRequest());
+    }
+
     /* ==================== 文章 ==================== */
 
     @Test
@@ -323,12 +434,9 @@ class XiezitaiApplicationTests {
                         .content(json(Map.of("content", "匿名灌水", "authorName", "路人甲"))))
                 .andExpect(status().isUnauthorized());
 
-        // 注册一个普通用户并登录
+        // 注册一个普通用户，审核通过后登录
         String uname = "cmt" + (System.currentTimeMillis() % 100000);
-        mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
-                        .content(json(Map.of("username", uname, "password", "cmt123456"))))
-                .andExpect(status().isOk());
-        String userToken = loginToken(uname, "cmt123456");
+        String userToken = registerAndApprove(uname, "cmt123456");
 
         // 登录用户评论：请求体里塞 authorName 冒充他人应被忽略，服务端按登录账号取名
         mvc.perform(post("/api/articles/" + slug + "/comments")
@@ -385,10 +493,7 @@ class XiezitaiApplicationTests {
         String[] tokens = new String[3];
         for (int i = 0; i < 3; i++) {
             names[i] = "lv" + i + (System.currentTimeMillis() % 100000);
-            mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
-                            .content(json(Map.of("username", names[i], "password", "lv123456"))))
-                    .andExpect(status().isOk());
-            tokens[i] = loginToken(names[i], "lv123456");
+            tokens[i] = registerAndApprove(names[i], "lv123456");
         }
 
         long rootId = postComment(slug, tokens[0], "一级评论：正文写得不错", null);
@@ -535,10 +640,7 @@ class XiezitaiApplicationTests {
     @DisplayName("普通用户仅允许图片/视频，伪装文件被标记为危险")
     void userUploadRulesAndScan() throws Exception {
         String uname = "tester" + (System.currentTimeMillis() % 100000);
-        mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
-                        .content(json(Map.of("username", uname, "password", "tester123"))))
-                .andExpect(status().isOk());
-        String token = loginToken(uname, "tester123");
+        String token = registerAndApprove(uname, "tester123");
 
         // 真 JPEG：应通过且扫描为 SAFE
         byte[] jpeg = new byte[]{(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 0x00, 0x10,
@@ -703,10 +805,7 @@ class XiezitaiApplicationTests {
     @DisplayName("非管理员访问管理接口返回 403")
     void nonAdminGets403() throws Exception {
         String uname = "normal" + (System.currentTimeMillis() % 100000);
-        mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
-                        .content(json(Map.of("username", uname, "password", "normal123"))))
-                .andExpect(status().isOk());
-        String token = loginToken(uname, "normal123");
+        String token = registerAndApprove(uname, "normal123");
         mvc.perform(get("/api/admin/settings").header("Authorization", "Bearer " + token))
                 .andExpect(status().isForbidden());
     }
@@ -715,10 +814,7 @@ class XiezitaiApplicationTests {
     @DisplayName("登录用户可修改密码：旧密码校验 + 新密码生效")
     void changePassword() throws Exception {
         String uname = "pwdchg" + (System.currentTimeMillis() % 100000);
-        mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
-                        .content(json(Map.of("username", uname, "password", "oldpass66"))))
-                .andExpect(status().isOk());
-        String token = loginToken(uname, "oldpass66");
+        String token = registerAndApprove(uname, "oldpass66");
 
         // 未登录不能改密码
         mvc.perform(post("/api/auth/password").contentType(MediaType.APPLICATION_JSON)
@@ -757,9 +853,7 @@ class XiezitaiApplicationTests {
     @DisplayName("记住登录：勾选后签发 30 天 token，未勾选为默认 72 小时")
     void rememberMeTokenTtl() throws Exception {
         String uname = "remember" + (System.currentTimeMillis() % 100000);
-        mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
-                        .content(json(Map.of("username", uname, "password", "pass123456"))))
-                .andExpect(status().isOk());
+        registerAndApprove(uname, "pass123456");
 
         // 未勾选 → 默认（测试环境 1 小时）
         MvcResult r1 = mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
@@ -847,6 +941,32 @@ class XiezitaiApplicationTests {
                 .andExpect(status().isOk())
                 .andReturn();
         return om.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8)).path("token").asText();
+    }
+
+    /**
+     * 注册一个普通用户并置为「审核通过」，返回登录 token。
+     * 走 /api/auth/register 注册的用户默认是 PENDING、登录会被 403 拦下；
+     * 除审核专项用例外，其它用例要的是「能正常使用的普通用户」，所以这里直接放行。
+     */
+    private String registerAndApprove(String username, String password) throws Exception {
+        mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("username", username, "password", password))))
+                .andExpect(status().isOk());
+        User u = users.findByUsername(username).orElseThrow();
+        u.setStatus("APPROVED");
+        users.save(u);
+        return loginToken(username, password);
+    }
+
+    /** 用管理员 token 按用户名查用户 id（后台列表接口） */
+    private long userIdByName(String adminToken, String username) throws Exception {
+        MvcResult r = mvc.perform(get("/api/admin/users").header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode list = om.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        for (JsonNode u : list) {
+            if (username.equals(u.path("username").asText())) return u.path("id").asLong();
+        }
+        throw new IllegalArgumentException("后台列表里找不到用户: " + username);
     }
 
     private String apiToken(String jwt) throws Exception {

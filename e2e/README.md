@@ -43,6 +43,7 @@ $env:E2E_BASE='http://127.0.0.1:8099'
 | `media.cjs` | 图片 / 视频上传与前台展示 |
 | `video-insert.cjs` | 编辑器工具栏插入 `<video>` |
 | `password.cjs` | 修改密码流程 |
+| `user-audit.cjs` | 注册审核：待审核拦截 → 后台「用户」页通过/驳回（含备注）→ 通过后可用、驳回后令牌立即失效 |
 | `remember.cjs` | 记住登录（localStorage vs sessionStorage） |
 | `totp.cjs` | TOTP 绑定 |
 | `demo-seed.cjs` | 空库首启示例内容（4 文章 / 2 页面 / 5 评论） |
@@ -53,3 +54,12 @@ $env:E2E_BASE='http://127.0.0.1:8099'
 - 被测服务需为**空态可控**的实例；`demo-seed.cjs` 要求空库（H2 文件库用 `XIEZITAI_DB_PATH` 指到临时目录即可）
 - 截图输出目录 `e2e/out/` 已在 `.gitignore` 中忽略
 - 默认管理员 `xiezitai / xiexiexie`
+- **自助注册的用户是「待审核」状态，登录会被 403 挡下**：脚本里注册完普通用户后，
+  必须先用管理员调一次审核接口放行才能登录 —— 统一走 `lib/audit.cjs` 的 `auditUser()`，
+  它调的是真实后台接口，顺带把审核链路本身也覆盖了：
+
+  ```js
+  const { auditUser } = require('./lib/audit.cjs');
+  await auditUser(BASE, adminToken, username);                       // 通过
+  await auditUser(BASE, adminToken, username, 'REJECTED', '原因');    // 驳回
+  ```

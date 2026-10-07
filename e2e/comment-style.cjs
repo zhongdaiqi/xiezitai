@@ -1,5 +1,6 @@
 // 评论排版（参考小红书）截图验证：造 3 条已审核评论 + 1 条长评论，截图评论区
 const { chromium } = require('playwright');
+const { auditUser } = require('./lib/audit.cjs');
 const BASE = process.env.E2E_BASE || 'http://localhost:8080';
 
 async function post(path, body, token) {
@@ -41,6 +42,8 @@ async function put(path, body, token) {
   for (const [u, content] of seeds) {
     const uname = u + (Date.now() % 1000) + Math.floor(Math.random() * 90 + 10);
     await post('/api/auth/register', { username: uname, password: 'test123456' });
+    // 新注册用户是「待审核」，登录前先用管理员放行
+    await auditUser(BASE, adminToken, uname);
     const l = await post('/api/auth/login', { username: uname, password: 'test123456' });
     if (l.status !== 200) { console.log('LOGIN_FAIL', uname, l); continue; }
     const s = await post('/api/articles/' + slug + '/comments', { content }, l.d.token);
