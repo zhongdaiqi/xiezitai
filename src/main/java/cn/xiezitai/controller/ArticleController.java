@@ -57,10 +57,35 @@ public class ArticleController {
 
     /* ================= 管理接口 ================= */
 
+    /**
+     * 后台文章列表：分页 + 关键词搜索 + 状态筛选。
+     *
+     * <p>不传 {@code q} / {@code status} 时等价于「全部文章按更新时间倒序」，与旧行为一致
+     * —— e2e 与外部脚本仍在用 {@code ?size=100} 这种裸调用。
+     */
     @GetMapping("/admin/articles")
     public Page<Article> listAdmin(@RequestParam(defaultValue = "0") int page,
-                                   @RequestParam(defaultValue = "10") int size) {
-        return articles.findAllByOrderByUpdatedAtDesc(PageRequest.of(page, size));
+                                   @RequestParam(defaultValue = "10") int size,
+                                   @RequestParam(required = false) String q,
+                                   @RequestParam(required = false) String status) {
+        String kw = q == null ? "" : q.trim();
+        String st = status == null ? "" : status.trim();
+        if ("ALL".equalsIgnoreCase(st)) st = "";
+        int p = Math.max(page, 0);
+        int s = Math.min(Math.max(size, 1), 200);   // 兜住 size=100000 那种一把捞库的调用
+        return articles.searchAdmin(kw, st,
+                PageRequest.of(p, s, Sort.by(Sort.Order.desc("updatedAt"), Sort.Order.desc("id"))));
+    }
+
+    /**
+     * 后台按 id 取单篇。
+     *
+     * <p>列表分页之后，点「编辑」的那篇**不一定**在已加载的页里（也可能被搜索结果过滤掉），
+     * 前端不能只靠列表缓存拼数据，需要一个明确的单篇入口。
+     */
+    @GetMapping("/admin/articles/{id}")
+    public ResponseEntity<Article> getAdmin(@PathVariable Long id) {
+        return articles.findById(id).map(ResponseEntity::ok).orElse(ResponseEntity.notFound().build());
     }
 
     @PostMapping("/admin/articles")

@@ -89,6 +89,29 @@
         .split-side h3 { margin-bottom: 8px; }
         .split-side .t-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
+        /* ---------- 文章列表工具栏：标题计数 + 新建 / 搜索 + 状态筛选 ---------- */
+        .list-head { display: flex; align-items: center; justify-content: space-between;
+                     gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+        .list-head h3 { margin: 0; white-space: nowrap; }
+        .list-head .count { color: var(--muted); font-weight: 400; font-size: 13px; }
+        .list-head .primary { padding: 6px 12px; font-size: 13px; white-space: nowrap; }
+        /* 不用 .row：那个类在窄屏有 !important 的 flex 规则，会把搜索框拉成整行 */
+        .alist-filter { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+        .alist-filter input[type=text] { flex: 1 1 130px; min-width: 0; }
+        .alist-filter select { flex: 0 0 auto; }
+        /* 空态一行：ID 选择器压过侧栏那套「td:last-child 右浮动 / td 变 inline」的变形规则 */
+        .split-side tbody td#alist-empty { float: none; display: block; padding: 18px 4px;
+                                           text-align: center; color: var(--muted); font-size: 13px; }
+
+        /* ---------- 分页条：信息在左、按钮在右，窄屏自动折行 ---------- */
+        .pager { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+                 flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+        .pager .pinfo { color: var(--muted); font-size: 12px; }
+        .pager .pbtns { display: flex; gap: 6px; }
+        .pager button { font-size: 12px; padding: 5px 10px; }
+        .pager button:disabled { opacity: .45; cursor: not-allowed; }
+        .pager button:disabled:hover { border-color: var(--line); color: inherit; }
+
         /* ---------- 表格横向滚动兜底：窄屏里表格式内容自己滚，不再撑破页面 ---------- */
         .table-wrap { overflow-x: auto; }
 
@@ -280,10 +303,25 @@
             </div>
             <aside class="split-side">
                 <div class="card">
-                    <h3>全部文章</h3>
+                    <div class="list-head">
+                        <h3>全部文章 <span class="count" id="alist-count"></span></h3>
+                        <button class="primary" onclick="newArticle()">+ 新建文章</button>
+                    </div>
+                    <!-- 搜索：输入即查（防抖 260ms）、回车立即查；与下面的状态筛选叠加生效 -->
+                    <div class="alist-filter">
+                        <input type="text" id="a-search" placeholder="搜索标题 / 摘要 / 正文…" autocomplete="off"
+                               oninput="onArticleSearchInput()"
+                               onkeydown="if(event.key==='Enter'){event.preventDefault();onArticleSearchInput(true);}">
+                        <select id="a-filter-status" onchange="onArticleStatusChange()">
+                            <option value="">全部状态</option>
+                            <option value="PUBLISHED">已发布</option>
+                            <option value="DRAFT">草稿</option>
+                        </select>
+                    </div>
                     <div class="table-wrap">
                         <table id="alist"><thead><tr><th>标题</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody></tbody></table>
                     </div>
+                    <div class="pager" id="alist-pager"></div>
                 </div>
             </aside>
         </div>
@@ -939,13 +977,53 @@ async function boot() {
     loadArticles(); loadPages(); loadFiles(); loadComments(); loadUsers(); loadLogs(); loadSettings();
 }
 
-/* ---------- 文章 ---------- */
-async function loadArticles() {
-    const page = await jget('/api/admin/articles?size=100');
+/* ---------- 文章列表：搜索 + 分页 ---------- */
+const ALIST_SIZE = 10;      // 侧栏一页几条（行卡片式，10 条大约一屏）
+let aListPage = 0;          // 从 0 起，与后端 Page 的 page 参数一致
+let aListKw = '';           // 关键词：标题 / 摘要 / 正文
+let aListStatus = '';       // ''=全部 / PUBLISHED / DRAFT
+let aListTotal = 0, aListPages = 1;
+let aSearchTimer = null;
+let articlesCache = {};
+
+/** 搜索输入：防抖 260ms；回车立即查（immediate=true） */
+function onArticleSearchInput(immediate) {
+    clearTimeout(aSearchTimer);
+    const run = () => { aListKw = ($('a-search').value || '').trim(); loadArticles(0); };
+    if (immediate) run(); else aSearchTimer = setTimeout(run, 260);
+}
+function onArticleStatusChange() {
+    aListStatus = $('a-filter-status').value || '';
+    loadArticles(0);
+}
+
+async function loadArticles(page) {
+    if (typeof page === 'number') aListPage = Math.max(page, 0);
+    const qs = new URLSearchParams({ page: aListPage, size: ALIST_SIZE });
+    if (aListKw) qs.set('q', aListKw);
+    if (aListStatus) qs.set('status', aListStatus);
+    const p = await jget('/api/admin/articles?' + qs.toString());
+    const totalPages = Math.max(p.totalPages || 0, 1);
+    // 筛选条件一变，当前页码可能越界（如原在第 3 页、搜索后只剩 1 页）→ 退回最后一页重查
+    if (aListPage >= totalPages) return loadArticles(totalPages - 1);
+    aListTotal = p.totalElements || 0;
+    aListPages = totalPages;
+    renderArticleRows(p.content || []);
+    renderArticlePager();
+}
+
+function renderArticleRows(list) {
     const tb = document.querySelector('#alist tbody');
     tb.innerHTML = '';
     const BADGE = { PUBLISHED: '<span class="badge b-pub">已发布</span>', DRAFT: '<span class="badge b-draft">草稿</span>' };
-    page.content.forEach(a => {
+    if (!list.length) {
+        const tip = (aListKw || aListStatus) ? '没有匹配的文章' : '还没有文章，点上方「+ 新建文章」开始写';
+        tb.innerHTML = '<tr><td colspan="4" id="alist-empty">' + tip + '</td></tr>';
+        return;
+    }
+    list.forEach(a => {
+        // 列表接口返回的是完整实体（含正文），顺手进缓存 —— 点「编辑」时就不必再请求一次
+        articlesCache[a.id] = a;
         const tr = document.createElement('tr');
         tr.innerHTML = `<td><a href="/article/${a.slug}" target="_blank">${escapeHtml(a.title)}</a></td>
             <td>${BADGE[a.status] || escapeHtml(a.status)}</td><td class="t-time">${fmtTime(a.updatedAt)}</td>
@@ -954,13 +1032,45 @@ async function loadArticles() {
         tb.appendChild(tr);
     });
 }
-let articlesCache = {};
+
+function renderArticlePager() {
+    const box = $('alist-pager');
+    if (!box) return;
+    const cnt = $('alist-count');
+    if (cnt) cnt.textContent = aListTotal ? '（' + aListTotal + '）' : '';
+    const from = aListTotal ? aListPage * ALIST_SIZE + 1 : 0;
+    const to = Math.min((aListPage + 1) * ALIST_SIZE, aListTotal);
+    const first = aListPage <= 0, last = aListPage >= aListPages - 1;
+    box.innerHTML = `<span class="pinfo">共 ${aListTotal} 篇 · 第 ${from}-${to} 条 · ${aListPage + 1}/${aListPages} 页</span>
+        <span class="pbtns">
+            <button class="ghost" onclick="loadArticles(0)" ${first ? 'disabled' : ''}>首页</button>
+            <button class="ghost" onclick="loadArticles(${aListPage - 1})" ${first ? 'disabled' : ''}>上一页</button>
+            <button class="ghost" onclick="loadArticles(${aListPage + 1})" ${last ? 'disabled' : ''}>下一页</button>
+            <button class="ghost" onclick="loadArticles(${aListPages - 1})" ${last ? 'disabled' : ''}>末页</button>
+        </span>`;
+}
+
+/** 清空表单与编辑器，进入「写新文章」状态（id / slug 由后端在保存时分配） */
+function newArticle() {
+    aId.value = ''; aTitle.value = ''; aSlug.value = '';
+    aStatus.value = 'DRAFT'; aKeywords.value = ''; aDesc.value = '';
+    aSummary.value = ''; clearCover();
+    initEditor('');
+    aimsg.textContent = '';
+    toast('已新建一篇，写完点「保存」');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    aTitle.focus();
+}
+
 async function editArticle(id) {
-    if (!articlesCache[id]) {
-        const all = await jget('/api/admin/articles?size=100');
-        all.content.forEach(a => articlesCache[a.id] = a);
+    let a = articlesCache[id];
+    if (!a) {
+        // 缓存未命中（页面刷新后直接点、或文章被别处改过）→ 按 id 取单篇
+        const res = await api('/api/admin/articles/' + id);
+        if (!res.ok) { toast('这篇文章已不存在，已刷新列表'); loadArticles(); return; }
+        a = await res.json();
+        articlesCache[id] = a;
     }
-    const a = articlesCache[id];
     aId.value = a.id; aTitle.value = a.title; aSlug.value = a.slug;
     aStatus.value = a.status; aKeywords.value = a.seoKeywords || '';
     aDesc.value = a.seoDescription || ''; aSummary.value = a.summary || '';
@@ -982,11 +1092,12 @@ async function saveArticle() {
     if (data.status === 'PUBLISHED') aStatus.value = 'PUBLISHED';
     aimsg.textContent = '已保存：' + data.slug;
     toast('文章已保存：' + data.title);
-    loadArticles();
+    loadArticles(0);   // 列表按更新时间倒序，刚保存的一定在第 1 页
 }
 async function delArticle(id) {
     if (!confirm('确定删除？')) return;
     await api('/api/admin/articles/' + id, { method: 'DELETE' });
+    delete articlesCache[id];
     loadArticles();
 }
 

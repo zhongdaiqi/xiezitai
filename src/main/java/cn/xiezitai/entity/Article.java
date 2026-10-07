@@ -19,8 +19,15 @@ public class Article {
     @Column(unique = true, nullable = false, length = 220)
     private String slug;
 
-    /** Markdown 正文（ByteMD 编辑产出） */
-    @Lob
+    /**
+     * Markdown 正文（ByteMD 编辑产出）。
+     *
+     * <p>这里刻意**不加** {@code @Lob}：它会把字段按 CLOB 处理，而 HQL 的 {@code lower()} / {@code like}
+     * 不接受 CLOB 类型的参数（Hibernate 6 直接抛
+     * {@code Parameter 1 of function 'lower()' has type 'STRING', but argument is of type '...' mapped to 'CLOB'}），
+     * 后台「按正文搜索」就没法写。列定义仍是 LONGTEXT，读写走 setString/getString ——
+     * 对 Markdown 这种纯文本反而更合适，也省掉一层流式读取。
+     */
     @Column(columnDefinition = "LONGTEXT")
     private String content;
 
