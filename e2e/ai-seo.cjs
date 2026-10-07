@@ -11,6 +11,7 @@
  *   ④ 保存后 SEO 关键词/描述真的落库，且出现在前台文章页的 meta 里
  */
 const { chromium } = require('playwright');
+const { enterNewArticle } = require('./lib/admin-ui.cjs');
 
 const BASE = process.env.E2E_BASE || 'http://localhost:8080';
 const MD = ['# 写字台', '', '写字台是一套开箱即用的自托管博客系统，支持文章、评论与媒体管理。'].join('\n');
@@ -57,8 +58,8 @@ const errors = [], httpBad = [];
       await page.click('#login button');
     }
     await page.waitForSelector('#app', { state: 'visible', timeout: 15000 });
-    await page.waitForSelector('#editor .CodeMirror', { timeout: 10000 });
-    await page.waitForTimeout(400);
+    // 文章面板默认落在列表视图 → 先进「+ 新建文章」的编辑视图，编辑器与表单项才存在
+    await enterNewArticle(page);
   }
 
   await login();

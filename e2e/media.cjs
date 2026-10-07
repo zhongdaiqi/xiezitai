@@ -1,5 +1,6 @@
 // 文章编辑器「插入媒体」端到端验证：上传图片/视频 → 插入正文 → 预览 → 发布 → 前台播放
 const { chromium } = require('playwright');
+const { enterNewArticle } = require('./lib/admin-ui.cjs');
 
 const BASE = process.env.E2E_BASE || 'http://localhost:8080';
 const PNG = 'e2e/fixtures/e2e-shot.png';
@@ -24,8 +25,12 @@ const MP4 = 'e2e/fixtures/sample.mp4';
   await page.waitForSelector('#app', { state: 'visible', timeout: 15000 });
   log('WHO=' + (await page.textContent('#who')));
 
+  // 文章面板默认落在列表视图 → 先进「+ 新建文章」的编辑视图，编辑器与工具栏才存在
+  await enterNewArticle(page);
+
   // ---------- 插入媒体：打开弹窗 ----------
-  await page.click('text=插入媒体');
+  // 用 onclick 精确定位文章编辑器的「插入媒体」按钮（页面面板也有同名按钮，text= 会歧义）
+  await page.click('button[onclick="openMedia(\'editor\')"]');
   await page.waitForSelector('#media-modal.open', { timeout: 5000 });
   await page.waitForTimeout(600);
   log('MODAL_OPEN=true  COUNT=' + (await page.textContent('#m-media-count')));
@@ -67,7 +72,7 @@ const MP4 = 'e2e/fixtures/sample.mp4';
   const title = 'E2E 媒体插入 ' + Date.now();
   await page.fill('#a-title', title);
   await page.selectOption('#a-status', 'PUBLISHED');
-  await page.click('text=保存');
+  await page.click('#a-save');   // 文章编辑视图的保存按钮（页面面板的「保存页面」是另一个）
   await page.waitForTimeout(1200);
   const slug = await page.inputValue('#a-slug');
   log('SLUG=' + slug);

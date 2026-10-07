@@ -4,8 +4,8 @@
  *   ① 分页条渲染（共 N 篇 / 第 x/y 页）与首页/上一页/下一页/末页的禁用态、翻页后的行数
  *   ② 关键词搜索：命中数正确、无结果时的空态、清空后恢复
  *   ③ 状态筛选：草稿 / 已发布 各只出对应状态
- *   ④ 「+ 新建文章」清空表单与编辑器
- *   ⑤ 点「编辑」能把正文载入编辑区（分页之后仍然可用）
+ *   ④ 「+ 新建文章」进入编辑视图并清空表单与编辑器；返回列表后搜索条件不受影响
+ *   ⑤ 点「编辑」能把正文载入编辑区；列表视图与编辑视图互斥（进编辑隐藏列表、返回恢复）
  *   ⑥ 全程 0 JS 错误、0 意外 HTTP>=400
  *
  * 会临时建 12 篇文章（标题带 stamp），跑完按 id 删掉，不留垃圾。
@@ -195,18 +195,33 @@ async function req(method, path, body, token) {
     check('编辑载入正文（含关键词）', loadedText.includes(TAG), loadedText.slice(0, 40).replace(/\n/g, '⏎'));
     check('编辑载入后带上了 id', !!(await page.inputValue('#a-id')));
 
+    /* ---------- ⑦b 列表视图与编辑视图互斥（本次改版核心） ---------- */
+    check('点「编辑」→ 进入编辑视图（列表同时隐藏）',
+      (await page.isVisible('#ev-edit')) && !(await page.isVisible('#av-list')));
+    await page.click('#a-back');
+    await page.waitForSelector('#av-list', { state: 'visible', timeout: 8000 });
+    await settle();
+    check('「← 返回列表」→ 回到列表视图（编辑区隐藏）',
+      (await page.isVisible('#av-list')) && !(await page.isVisible('#ev-edit')));
+    check('返回列表后搜索条件仍在', (await page.inputValue('#a-search')) === TAG, await page.inputValue('#a-search'));
+
     /* ---------- ⑧ 新建文章按钮 ---------- */
     await page.click('.list-head button.primary');
     await page.waitForTimeout(900);
+    check('新建 -> 进入编辑视图', (await page.isVisible('#ev-edit')) && !(await page.isVisible('#av-list')));
     check('新建 -> 清空标题', (await page.inputValue('#a-title')) === '', await page.inputValue('#a-title'));
     check('新建 -> 清空 id（保存时走新增而非覆盖）', (await page.inputValue('#a-id')) === '');
     const emptyBody = await editorText();
     check('新建 -> 清空正文', emptyBody === '', JSON.stringify(emptyBody.slice(0, 30)));
     check('新建 -> 状态回落到草稿', (await page.inputValue('#a-status')) === 'DRAFT');
     check('新建 -> 仍在文章面板', await page.isVisible('#p-articles'));
-    // 新建后列表/搜索条件不受影响（不该把用户的搜索词也清掉）
-    check('新建 -> 不影响已有搜索条件', (await rows()) === 2, await rows());
     await page.screenshot({ path: OUT + '/list-new.png', fullPage: true });
+
+    // 返回列表：新建不该把用户的搜索词也清掉
+    await page.click('#a-back');
+    await page.waitForSelector('#av-list', { state: 'visible', timeout: 8000 });
+    await settle();
+    check('新建 -> 不影响已有搜索条件', (await rows()) === 2, await rows());
 
     /* ---------- ⑨ 窄屏不横向溢出（列表头是新增的 flex 行，窄屏最容易撑破） ---------- */
     await page.setViewportSize({ width: 390, height: 844 });

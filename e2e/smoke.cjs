@@ -47,7 +47,13 @@ const consoleMsgs = [];
     const who = await page.textContent('#who');
     console.log('WHO=' + who);
 
-    step('editor mounted');
+    step('默认落在列表视图');
+    await page.waitForSelector('#av-list', { state: 'visible', timeout: 15000 });
+    const editHidden = await page.isHidden('#ev-edit');
+    console.log('LIST_FIRST=' + editHidden + ' EDITOR_MOUNTED_BEFORE=' + (await page.$('#editor')));
+
+    step('点「+ 新建文章」进编辑视图');
+    await page.click('#a-new');
     await page.waitForSelector('#editor .CodeMirror', { timeout: 15000 });
     const hasVendor = await page.evaluate(() =>
       typeof bytemd !== 'undefined' && typeof bytemd.Editor === 'function');
@@ -72,12 +78,13 @@ const consoleMsgs = [];
     await page.screenshot({ path: OUT + '/1-admin-editor.png', fullPage: true });
 
     step('save/publish');
-    await page.click('#p-articles button.primary');
+    await page.click('#a-save');
     await page.waitForFunction((t) => {
       return [...document.querySelectorAll('#alist tbody tr td:first-child')]
         .some(td => td.textContent.includes(t));
     }, title, { timeout: 15000 });
     console.log('LISTED=OK');
+    console.log('BACK_TO_LIST=' + (await page.isVisible('#av-list')));
 
     const slug = await page.evaluate((t) => {
       const a = [...document.querySelectorAll('#alist tbody tr')]

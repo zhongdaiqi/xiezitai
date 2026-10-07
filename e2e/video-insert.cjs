@@ -1,6 +1,7 @@
 // 复现并验证：编辑器里插入视频不能变成 ![xxx.mp4](/media/xxx.mp4)
 // 三条路径都要验证：① 工具栏「图片」按钮选 mp4（用户报的那条）② 拖 mp4 进编辑器 ③ 图片+视频混选
 const { chromium } = require('playwright');
+const { enterNewArticle } = require('./lib/admin-ui.cjs');
 
 const BASE = process.env.E2E_BASE || 'http://localhost:8080';
 const PNG = 'e2e/fixtures/e2e-shot.png';
@@ -32,8 +33,8 @@ function check(name, ok, extra) {
       await page.click('#login button');
     }
     await page.waitForSelector('#app', { state: 'visible', timeout: 15000 });
-    await page.waitForSelector('#editor .CodeMirror', { timeout: 10000 });
-    await page.waitForTimeout(400);
+    // 文章面板默认落在列表视图 → 先进「+ 新建文章」的编辑视图，编辑器与表单项才存在
+    await enterNewArticle(page);
   }
 
   const mdValue = () => page.evaluate(() => getEditorValue());
@@ -116,8 +117,7 @@ function check(name, ok, extra) {
   // ---------- 场景 ③：一次混选 图片 + 视频 ----------
   await page.reload({ waitUntil: 'networkidle' });
   await page.waitForSelector('#app', { state: 'visible', timeout: 15000 });
-  await page.waitForSelector('#editor .CodeMirror', { timeout: 10000 });
-  await page.waitForTimeout(500);
+  await enterNewArticle(page);   // 刷新后回到列表视图，重新进编辑视图
   const [chooser2] = await Promise.all([
     page.waitForEvent('filechooser', { timeout: 10000 }),
     page.locator('.bytemd-toolbar-icon').nth(imgBtnIndex).click()

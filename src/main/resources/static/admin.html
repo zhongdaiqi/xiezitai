@@ -57,7 +57,12 @@
         .muted { color: var(--muted); font-size: 13px; }
         .row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
         #editor { min-height: 420px; }
-        #pg-content { min-height: 280px; }
+        #pg-editor { min-height: 280px; }
+        /* ByteMD 全屏态（.bytemd-fullscreen）自带 inset:0，但**没写 z-index**，
+           而吸顶 #topbar 是 z-index:100 → 全屏后编辑器被顶栏压住，顶部一条（正好是工具栏）被挡。
+           这里显式给全屏态一个更高层级；弹窗/灯箱/toast 再排在它上面，
+           这样全屏时打开媒体弹窗、弹提示也不会被盖住。 */
+        .bytemd-fullscreen.bytemd { z-index: 1100; }
 
         /* ---------- 表单小节：把「一排排裸 input」归组，输入框不再只有 placeholder ---------- */
         .sec-title { font-size: 13px; font-weight: 700; color: var(--muted); letter-spacing: .02em;
@@ -71,23 +76,10 @@
         .b-pub { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
         .b-draft { background: #f3f4f6; color: #6b7280; border: 1px solid var(--line); }
 
-        /* ---------- 文章面板：宽屏「编辑 | 列表」两栏，列表吸侧边跟随 ---------- */
-        @media (min-width: 1080px) {
-            #p-articles .split { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
-            #p-articles .split-side { position: sticky; top: 72px; }
-            #p-articles .split-side .card { margin-bottom: 0; }
-            /* 侧栏只有 360px，四列表格挤不下：变形为「标题一行 + 徽章/时间/操作一行」的行卡片式。
-               纯 CSS 变形 —— DOM 仍是 <table>，e2e 依赖的 #alist tbody tr td 结构原样不动。 */
-            .split-side thead { display: none; }
-            .split-side table, .split-side tbody { display: block; }
-            .split-side tbody tr { display: block; border-bottom: 1px solid var(--line); padding: 9px 2px; }
-            .split-side tbody tr:last-child { border-bottom: 0; }
-            .split-side td { display: inline; border-bottom: 0; padding: 0 8px 0 0; }
-            .split-side td:first-child { display: block; margin: 0 0 5px; word-break: break-all; }
-            .split-side td:last-child { float: right; padding: 0; }
-        }
-        .split-side h3 { margin-bottom: 8px; }
-        .split-side .t-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
+        /* ---------- 文章面板：列表视图（默认）/ 编辑视图，两者互斥显示 ----------
+           以前是「左编辑 + 右列表」两栏同屏，写文章时列表一直在旁边挤着；
+           现在拆成两个视图，进编辑视图才挂编辑器（ByteMD 有开销，不必常驻）。 */
+        .t-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
         /* ---------- 文章列表工具栏：标题计数 + 新建 / 搜索 + 状态筛选 ---------- */
         .list-head { display: flex; align-items: center; justify-content: space-between;
@@ -97,11 +89,17 @@
         .list-head .primary { padding: 6px 12px; font-size: 13px; white-space: nowrap; }
         /* 不用 .row：那个类在窄屏有 !important 的 flex 规则，会把搜索框拉成整行 */
         .alist-filter { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
-        .alist-filter input[type=text] { flex: 1 1 130px; min-width: 0; }
+        .alist-filter input[type=text] { flex: 1 1 240px; max-width: 460px; min-width: 0; }
         .alist-filter select { flex: 0 0 auto; }
-        /* 空态一行：ID 选择器压过侧栏那套「td:last-child 右浮动 / td 变 inline」的变形规则 */
-        .split-side tbody td#alist-empty { float: none; display: block; padding: 18px 4px;
-                                           text-align: center; color: var(--muted); font-size: 13px; }
+        /* 空态一行：整宽表格里居中提示 */
+        #alist-empty { text-align: center; color: var(--muted); font-size: 13px; padding: 18px 4px; }
+
+        /* ---------- 文章编辑视图头部：返回列表 / 当前模式 / 保存 ---------- */
+        .edit-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+                     padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
+        .edit-head h3 { margin: 0; font-size: 16px; }
+        .edit-head .muted { flex: 1 1 auto; }      /* 把「保存」顶到最右 */
+        .edit-head button.primary { padding: 6px 16px; white-space: nowrap; }
 
         /* ---------- 分页条：信息在左、按钮在右，窄屏自动折行 ---------- */
         .pager { display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -115,14 +113,15 @@
         /* ---------- 表格横向滚动兜底：窄屏里表格式内容自己滚，不再撑破页面 ---------- */
         .table-wrap { overflow-x: auto; }
 
-        /* ---------- 轻量 toast：保存/复制这类操作反馈固定右上角，滚到哪都看得见 ---------- */
-        #toast { position: fixed; top: 64px; right: 18px; z-index: 1200; background: #111827; color: #fff;
+        /* ---------- 轻量 toast：保存/复制这类操作反馈固定右上角，滚到哪都看得见 ----------
+           层级要压过编辑器全屏态（1100），否则全屏时保存提示看不见 */
+        #toast { position: fixed; top: 64px; right: 18px; z-index: 1500; background: #111827; color: #fff;
                  font-size: 13px; padding: 9px 14px; border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,.22);
                  opacity: 0; transform: translateY(-6px); pointer-events: none; transition: opacity .18s, transform .18s; }
         #toast.show { opacity: 1; transform: none; }
 
         /* ---------- 媒体选择弹窗 ---------- */
-        .modal { display: none; position: fixed; inset: 0; background: rgba(15,23,42,.45); z-index: 999; }
+        .modal { display: none; position: fixed; inset: 0; background: rgba(15,23,42,.45); z-index: 1300; }
         .modal.open { display: flex; align-items: center; justify-content: center; padding: 24px; }
         .modal-box { background: #fff; border-radius: 12px; width: 100%; max-width: 900px; max-height: 86vh;
                      display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,.2); }
@@ -156,7 +155,7 @@
                                color: var(--muted); line-height: 1.5; max-width: 340px; word-break: break-all; }
 
         /* ---------- 封面大图预览（灯箱） ---------- */
-        .lightbox { display: none; position: fixed; inset: 0; z-index: 1000; background: rgba(15,23,42,.86);
+        .lightbox { display: none; position: fixed; inset: 0; z-index: 1400; background: rgba(15,23,42,.86);
                     align-items: center; justify-content: center; padding: 32px; cursor: zoom-out; }
         .lightbox.open { display: flex; }
         .lightbox img { max-width: 92vw; max-height: 84vh; border-radius: 8px; background: #fff;
@@ -240,23 +239,54 @@
 <div id="app">
     <div id="toast"></div>
 
-    <!-- 文章：宽屏时左编辑右列表（列表吸边跟随），窄屏上下堆叠 -->
+    <!-- 文章面板：两个互斥视图 —— 默认落在「列表」，点「+ 新建文章」或行内「编辑」才进「编辑」视图，
+         保存成功后提示并自动回到列表（写文章时不再被列表挤在一边）。 -->
     <div class="panel active" id="p-articles">
-        <div class="split">
-            <div class="split-main">
-                <div class="card">
-                    <div class="sec-title">基本信息</div>
-                    <div class="row">
-                        <input type="text" id="a-title" placeholder="文章标题" style="flex:2; min-width:200px;">
-                        <input type="text" id="a-slug" placeholder="slug（留空自动生成）" style="flex:1; min-width:160px;">
-                        <select id="a-status">
-                            <option value="DRAFT">草稿</option>
-                            <option value="PUBLISHED">发布</option>
-                        </select>
-                        <button class="primary" onclick="saveArticle()">保存</button>
-                        <input type="hidden" id="a-id">
-                    </div>
-                    <input type="text" id="a-summary" placeholder="摘要" style="width:100%; margin-bottom:8px;">
+        <!-- ① 列表视图（默认）：全宽表格 + 搜索 + 状态筛选 + 分页 -->
+        <div id="av-list">
+            <div class="card">
+                <div class="list-head">
+                    <h3>全部文章 <span class="count" id="alist-count"></span></h3>
+                    <button class="primary" id="a-new" onclick="newArticle()">+ 新建文章</button>
+                </div>
+                <!-- 搜索：输入即查（防抖 260ms）、回车立即查；与下面的状态筛选叠加生效 -->
+                <div class="alist-filter">
+                    <input type="text" id="a-search" placeholder="搜索标题 / 摘要 / 正文…" autocomplete="off"
+                           oninput="onArticleSearchInput()"
+                           onkeydown="if(event.key==='Enter'){event.preventDefault();onArticleSearchInput(true);}">
+                    <select id="a-filter-status" onchange="onArticleStatusChange()">
+                        <option value="">全部状态</option>
+                        <option value="PUBLISHED">已发布</option>
+                        <option value="DRAFT">草稿</option>
+                    </select>
+                </div>
+                <div class="table-wrap">
+                    <table id="alist"><thead><tr><th>标题</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody></tbody></table>
+                </div>
+                <div class="pager" id="alist-pager"></div>
+            </div>
+        </div>
+
+        <!-- ② 编辑视图：保存成功会自动回到列表 -->
+        <div id="ev-edit" style="display:none;">
+            <div class="card">
+                <div class="edit-head">
+                    <button class="ghost" id="a-back" onclick="backToList()">← 返回列表</button>
+                    <h3 id="a-mode">新建文章</h3>
+                    <span class="muted">保存后自动回到列表</span>
+                    <button class="primary" id="a-save" onclick="saveArticle()">保存</button>
+                </div>
+                <div class="sec-title">基本信息</div>
+                <div class="row">
+                    <input type="text" id="a-title" placeholder="文章标题" style="flex:2; min-width:200px;">
+                    <input type="text" id="a-slug" placeholder="slug（留空自动生成）" style="flex:1; min-width:160px;">
+                    <select id="a-status">
+                        <option value="DRAFT">草稿</option>
+                        <option value="PUBLISHED">发布</option>
+                    </select>
+                    <input type="hidden" id="a-id">
+                </div>
+                <input type="text" id="a-summary" placeholder="摘要" style="width:100%; margin-bottom:8px;">
 
                     <div class="sec-title">SEO</div>
                     <div class="row">
@@ -301,31 +331,7 @@
                     <div id="editor"></div>
                 </div>
             </div>
-            <aside class="split-side">
-                <div class="card">
-                    <div class="list-head">
-                        <h3>全部文章 <span class="count" id="alist-count"></span></h3>
-                        <button class="primary" onclick="newArticle()">+ 新建文章</button>
-                    </div>
-                    <!-- 搜索：输入即查（防抖 260ms）、回车立即查；与下面的状态筛选叠加生效 -->
-                    <div class="alist-filter">
-                        <input type="text" id="a-search" placeholder="搜索标题 / 摘要 / 正文…" autocomplete="off"
-                               oninput="onArticleSearchInput()"
-                               onkeydown="if(event.key==='Enter'){event.preventDefault();onArticleSearchInput(true);}">
-                        <select id="a-filter-status" onchange="onArticleStatusChange()">
-                            <option value="">全部状态</option>
-                            <option value="PUBLISHED">已发布</option>
-                            <option value="DRAFT">草稿</option>
-                        </select>
-                    </div>
-                    <div class="table-wrap">
-                        <table id="alist"><thead><tr><th>标题</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody></tbody></table>
-                    </div>
-                    <div class="pager" id="alist-pager"></div>
-                </div>
-            </aside>
         </div>
-    </div>
 
     <!-- 页面 -->
     <div class="panel" id="p-pages">
@@ -339,9 +345,11 @@
             </div>
             <div class="row">
                 <button class="ghost" onclick="openMedia('page')">插入媒体</button>
-                <span class="muted">插入位置＝光标所在处</span>
+                <span class="muted">插入位置＝光标所在处 · 工具栏菜单（标题 / 加粗 / 列表 / 图片 / 分屏 / 全屏）与文章编辑器一致</span>
             </div>
-            <textarea id="pg-content" placeholder="Markdown 内容" style="width:100%; min-height:280px;"></textarea>
+            <!-- 页面正文改用与文章同一套 ByteMD 编辑器：工具栏菜单、实时预览、粘贴/拖拽上传、video 白名单都一致。
+                 首次切到「页面」面板时才挂载（ByteMD 有开销，不必常驻）。 -->
+            <div id="pg-editor"></div>
         </div>
         <div class="card">
             <div class="table-wrap">
@@ -522,8 +530,7 @@ function saveToken(t, remember) {
     else sessionStorage.setItem(TOKEN_KEY, token);
 }
 function clearToken() { localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); }
-let mdEditor = null;   // ByteMD 实例（禁用变量名 bytemd：会遮蔽 UMD 全局命名空间）
-let mdValue = '';
+// ByteMD 实例统一放在 EDITORS 里（见 initEditor）；变量名不要用 bytemd，会遮蔽 UMD 全局命名空间
 
 /* HTML 的 id 只有在【不含连字符】时才会生成隐式全局变量（可用 aTitle 直接访问 a-title）。
    本项目 id 大多带连字符，因此必须显式绑定，否则调用即 ReferenceError。 */
@@ -531,9 +538,8 @@ const $ = id => document.getElementById(id);
 // 文章
 const aId = $('a-id'), aTitle = $('a-title'), aSlug = $('a-slug'), aStatus = $('a-status'),
       aKeywords = $('a-keywords'), aDesc = $('a-desc'), aSummary = $('a-summary'), aCover = $('a-cover');
-// 页面
-const pgId = $('pg-id'), pgTitle = $('pg-title'), pgSlug = $('pg-slug'),
-      pgContent = $('pg-content'), pgPub = $('pg-pub');
+// 页面（正文改用 ByteMD 编辑器 #pg-editor，不再有 textarea）
+const pgId = $('pg-id'), pgTitle = $('pg-title'), pgSlug = $('pg-slug'), pgPub = $('pg-pub');
 // 设置
 const sWebhook = $('s-webhook'), sAiurl = $('s-aiurl'), sAikey = $('s-aikey'),
       sAimodel = $('s-aimodel'), sAiimage = $('s-aiimage');
@@ -554,29 +560,52 @@ async function api(path, opts = {}) {
 async function jget(p) { return (await api(p)).json(); }
 async function jpost(p, body, method = 'POST') { const r = await api(p, { method, body: JSON.stringify(body) }); return r.json(); }
 
-function initEditor(v) {
-    mdValue = v || '';
-    if (mdEditor) { mdEditor.$set({ value: mdValue }); return; }
+/* ==================== 编辑器（ByteMD）====================
+   文章与页面各挂一个实例：#editor / #pg-editor。
+   插件、图片上传、sanitize 完全一致，只有挂载点与各自的 value 分开存 ——
+   页面面板以前是纯 textarea，没有工具栏菜单（标题/加粗/图片/分屏/全屏都用不上）。 */
+const BYTEMD_SEL = { article: '#editor', page: '#pg-editor' };
+const EDITORS = {
+    article: { mountId: 'editor',    inst: null, value: '' },
+    page:    { mountId: 'pg-editor', inst: null, value: '' }
+};
+
+/** 挂载或更新某个编辑器；已挂载则只更新 value（ByteMD 是受控组件） */
+function initEditor(v, which = 'article') {
+    const cfg = EDITORS[which];
+    if (!cfg) return;
+    cfg.value = v || '';
+    if (cfg.inst) { cfg.inst.$set({ value: cfg.value }); return; }
+    const mount = document.getElementById(cfg.mountId);
+    if (!mount) return;
     if (typeof bytemd === 'undefined' || typeof bytemdPluginGfm === 'undefined' || typeof bytemdPluginFrontmatter === 'undefined') {
-        document.getElementById('editor').innerHTML =
+        mount.innerHTML =
             '<p style="padding:16px;color:#b91c1c">编辑器资源加载失败：请确认 /vendor/bytemd/ 下静态资源可访问。</p>';
         return;
     }
     const plugins = [bytemdPluginGfm(), bytemdPluginFrontmatter()];
-    mdEditor = new bytemd.Editor({
-        target: document.getElementById('editor'),
+    cfg.inst = new bytemd.Editor({
+        target: mount,
         props: {
-            value: mdValue, plugins,
+            value: cfg.value, plugins,
             editorConfig: { lineNumbers: true },
-            uploadImages: editorUploadImages, // 粘贴截图 / 拖图片进来 / 工具栏图片按钮 → 自动入库并插入
+            // 粘贴截图 / 拖图片进来 / 工具栏图片按钮 → 自动入库并插入（按实例分流）
+            uploadImages: files => editorUploadImages(files, which),
             sanitize: extendSanitize          // 放行 video/source/audio/iframe，否则预览会把 <video> 净化掉
         }
     });
     // ByteMD 是受控组件：预览与字数统计只跟随 value 属性，change 后必须把新值回写
-    mdEditor.$on('change', e => { mdValue = e.detail.value; mdEditor.$set({ value: mdValue }); });
-    setupEditorDrop();
+    cfg.inst.$on('change', e => { cfg.value = e.detail.value; cfg.inst.$set({ value: cfg.value }); });
+    setupEditorDrop(which);
 }
-function getEditorValue() { return mdValue; }
+function getEditorValue() { return EDITORS.article.value; }
+function getPageValue() { return EDITORS.page.value; }
+
+/** 页面编辑器：首次进「页面」面板或点「编辑」时才挂载（ByteMD 有开销，不必常驻两个） */
+function ensurePageEditor() {
+    if (!EDITORS.page.inst) initEditor(EDITORS.page.value, 'page');
+    return EDITORS.page.inst;
+}
 
 /* ==================== 媒体插入（图片 / 视频） ====================
    - 「插入媒体」按钮 → 媒体库弹窗：上传（点击/拖拽）或从已有文件里挑，插入到光标处
@@ -618,30 +647,25 @@ function mediaSnippet(f) {
 }
 
 /** ByteMD 内部是 CodeMirror5，实例挂在 .CodeMirror 包裹元素上（wrapper.CodeMirror = cm） */
-function codeMirrorInstance() {
-    const el = document.querySelector('#editor .CodeMirror');
+function codeMirrorInstance(which = 'article') {
+    const el = document.querySelector(BYTEMD_SEL[which] + ' .CodeMirror');
     return el && el.CodeMirror ? el.CodeMirror : null;
 }
-/** 把片段直接插进文章编辑器（明确针对文章编辑器，不受 mediaTarget 影响） */
-function insertIntoArticleEditor(text) {
-    const cm = codeMirrorInstance();
+/** 把片段插到指定编辑器的光标处；replaceSelection 会触发 change，ByteMD 的 value 自动同步 */
+function insertIntoEditor(text, which = 'article') {
+    const cm = codeMirrorInstance(which);
     if (cm) { cm.replaceSelection(text); cm.focus(); return true; }
-    mdValue = mdValue ? mdValue + '\n\n' + text : text;   // 编辑器未就绪时兜底
-    if (mdEditor) mdEditor.$set({ value: mdValue });
+    const cfg = EDITORS[which];                           // 编辑器未就绪时兜底：直接改 value
+    if (!cfg) return false;
+    cfg.value = cfg.value ? cfg.value + '\n\n' + text : text;
+    if (cfg.inst) cfg.inst.$set({ value: cfg.value });
     return false;
 }
-/** 在光标处插入文本；replaceSelection 会触发 change，ByteMD 的 value 自动同步 */
+/** 明确针对文章编辑器（不受 mediaTarget 影响） */
+function insertIntoArticleEditor(text) { return insertIntoEditor(text, 'article'); }
+/** 「插入媒体」弹窗里点选/上传时用：按 mediaTarget 决定插到文章还是页面编辑器 */
 function insertAtCursor(text) {
-    if (mediaTarget === 'page') {
-        const ta = pgContent;
-        const s = ta.selectionStart == null ? ta.value.length : ta.selectionStart;
-        const e = ta.selectionEnd == null ? ta.value.length : ta.selectionEnd;
-        ta.value = ta.value.slice(0, s) + text + ta.value.slice(e);
-        ta.selectionStart = ta.selectionEnd = s + text.length;
-        ta.focus();
-        return true;
-    }
-    return insertIntoArticleEditor(text);
+    return insertIntoEditor(text, mediaTarget === 'page' ? 'page' : 'article');
 }
 
 function escapeHtml(s) {
@@ -678,7 +702,7 @@ async function uploadMediaFiles(files) {
 /** ByteMD uploadImages 契约：入参 File[]，返回 [{ url, alt?, title? }]。
     注意 ByteMD 会把返回的每一项**一律**渲染成 `![alt](url)`（是 url 不是 src），
     所以只有图片可以出现在返回值里；视频/音频/其他文件自己插入 HTML 片段，不进返回值。 */
-async function editorUploadImages(files) {
+async function editorUploadImages(files, which = 'article') {
     const arr = Array.from(files || []);
     const images = arr.filter(f => (f.type || '').startsWith('image/'));
     const others = arr.filter(f => !(f.type || '').startsWith('image/'));
@@ -691,7 +715,7 @@ async function editorUploadImages(files) {
     if (others.length) {
         // 视频/音频等：Markdown 没有原生语法，由我们自己在光标处插 <video>/<audio>/链接
         const up = await uploadMediaFiles(others);
-        if (up.length) insertIntoArticleEditor(up.map(mediaSnippet).join('\n\n'));
+        if (up.length) insertIntoEditor(up.map(mediaSnippet).join('\n\n'), which);
     }
     if (out.length || others.length) loadMediaLibrary();
     return out;
@@ -710,8 +734,8 @@ function extendSanitize(schema) {
 
 /** 拖拽进编辑器：捕获阶段先拦「非图片」文件（视频/音频/其他）自行入库并插入，
     图片（image/*）留给 ByteMD 的 drop 处理，避免重复上传与插入。 */
-function setupEditorDrop() {
-    const host = $('editor');
+function setupEditorDrop(which = 'article') {
+    const host = $(EDITORS[which].mountId);
     if (!host || host.dataset.dropBound) return;
     host.dataset.dropBound = '1';
     const dropped = dt => Array.from((dt && dt.files) || []);
@@ -729,7 +753,7 @@ function setupEditorDrop() {
         e.preventDefault();
         e.stopPropagation();
         const up = await uploadMediaFiles(files);
-        if (up.length) { insertIntoArticleEditor(up.map(mediaSnippet).join('\n\n')); loadMediaLibrary(); }
+        if (up.length) { insertIntoEditor(up.map(mediaSnippet).join('\n\n'), which); loadMediaLibrary(); }
     }, true);
 }
 
@@ -973,7 +997,8 @@ async function boot() {
     const h = (location.hash || '').replace('#', '');
     const tab = h && document.querySelector('.tab[data-p="' + h + '"]');
     if (tab) switchTab(tab);
-    initEditor('');
+    // 注意：这里不再预挂文章编辑器 —— 文章面板默认是「列表」视图，
+    // 编辑器等点「新建/编辑」时再挂（隐藏状态下挂载量不到尺寸，也有开销）。
     loadArticles(); loadPages(); loadFiles(); loadComments(); loadUsers(); loadLogs(); loadSettings();
 }
 
@@ -1050,15 +1075,33 @@ function renderArticlePager() {
         </span>`;
 }
 
+/* ---------- 文章面板的两个视图：list（默认）/ edit ----------
+   需求：列表与「发布/编辑文章」不要混在一个界面 —— 默认只看到列表，
+   点「+ 新建文章」或行内「编辑」才进编辑视图，保存成功后提示并自动回到列表。
+   只切 display、不销毁编辑器实例：回来后内容还在，再次编辑直接 $set 换 value 更快。 */
+function showArticleView(view) {
+    const edit = view === 'edit';
+    $('av-list').style.display = edit ? 'none' : '';
+    $('ev-edit').style.display = edit ? '' : 'none';
+    window.scrollTo({ top: 0, behavior: 'auto' });
+    if (edit) {
+        // 编辑器可能是「隐藏状态下挂载」的（CodeMirror 量不到尺寸）→ 显示后让它重新量一次
+        requestAnimationFrame(() => { const cm = codeMirrorInstance('article'); if (cm) cm.refresh(); });
+    }
+}
+/** 编辑视图「← 返回列表」：不弹确认框（半成品草稿留在表单里，回来还在），只切视图 */
+function backToList() { showArticleView('list'); }
+
 /** 清空表单与编辑器，进入「写新文章」状态（id / slug 由后端在保存时分配） */
 function newArticle() {
     aId.value = ''; aTitle.value = ''; aSlug.value = '';
     aStatus.value = 'DRAFT'; aKeywords.value = ''; aDesc.value = '';
     aSummary.value = ''; clearCover();
+    $('a-mode').textContent = '新建文章';
+    showArticleView('edit');   // 先切视图再挂编辑器：CodeMirror 挂载时要能量到真实尺寸
     initEditor('');
     aimsg.textContent = '';
     toast('已新建一篇，写完点「保存」');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
     aTitle.focus();
 }
 
@@ -1075,9 +1118,10 @@ async function editArticle(id) {
     aStatus.value = a.status; aKeywords.value = a.seoKeywords || '';
     aDesc.value = a.seoDescription || ''; aSummary.value = a.summary || '';
     setCover(a.cover || '');
-    initEditor(a.content || '');
     aimsg.textContent = '';   // 换文章时清掉上一篇的 AI 提示，免得误读
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    $('a-mode').textContent = '编辑文章';
+    showArticleView('edit');   // 先切视图再挂编辑器：CodeMirror 挂载时要能量到真实尺寸
+    initEditor(a.content || '');
 }
 async function saveArticle() {
     const body = {
@@ -1091,8 +1135,9 @@ async function saveArticle() {
     if (data.slug) aSlug.value = data.slug;   // 回填服务端自动生成的 slug
     if (data.status === 'PUBLISHED') aStatus.value = 'PUBLISHED';
     aimsg.textContent = '已保存：' + data.slug;
-    toast('文章已保存：' + data.title);
-    loadArticles(0);   // 列表按更新时间倒序，刚保存的一定在第 1 页
+    toast('保存成功：' + data.title);
+    showArticleView('list');   // 保存完回列表（用户要求：保存后提示保存成功并回到文章列表）
+    loadArticles(0);           // 列表按更新时间倒序，刚保存的一定在第 1 页
 }
 async function delArticle(id) {
     if (!confirm('确定删除？')) return;
@@ -1179,10 +1224,13 @@ let pagesCache = {};
 function editPage(id) {
     const p = pagesCache[id];
     if (!p) return;
-    pgId.value = p.id; pgTitle.value = p.title; pgSlug.value = p.slug; pgContent.value = p.content; pgPub.checked = p.published;
+    ensurePageEditor();       // 编辑器可能还没挂载（没进过页面面板/首次点编辑）
+    pgId.value = p.id; pgTitle.value = p.title; pgSlug.value = p.slug;
+    pgPub.checked = p.published;
+    initEditor(p.content || '', 'page');
 }
 async function savePage() {
-    const body = { title: pgTitle.value, slug: pgSlug.value, content: pgContent.value, published: pgPub.checked };
+    const body = { title: pgTitle.value, slug: pgSlug.value, content: getPageValue(), published: pgPub.checked };
     if (pgId.value) await jpost('/api/admin/pages/' + pgId.value, body, 'PUT');
     else await jpost('/api/admin/pages', body);
     toast('页面已保存');
@@ -1405,6 +1453,11 @@ function switchTab(btn) {
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('p-' + btn.dataset.p).classList.add('active');
+    // 页面面板的 ByteMD 编辑器首次进入才挂载（有开销，且隐藏时挂载量不到尺寸）
+    if (btn.dataset.p === 'pages') {
+        ensurePageEditor();
+        requestAnimationFrame(() => { const cm = codeMirrorInstance('page'); if (cm) cm.refresh(); });
+    }
     // hash 记录当前面板：刷新/分享链接都能落回原处（replaceState 不产生历史记录）
     history.replaceState(null, '', '#' + btn.dataset.p);
 }

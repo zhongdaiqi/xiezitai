@@ -14,6 +14,7 @@
 //   ⑦ 复制到的是原文，不是高亮后的 HTML
 //   ⑧ 全程无 JS 报错、无 HTTP >= 400
 const { chromium } = require('playwright');
+const { enterNewArticle } = require('./lib/admin-ui.cjs');
 
 const BASE = process.env.E2E_BASE || 'http://localhost:8080';
 
@@ -93,8 +94,8 @@ const MD_NO_LANG = buildMd(JAVA_1).replace('```java', '```');
     await page.click('#login button');
   }
   await page.waitForSelector('#app', { state: 'visible', timeout: 15000 });
-  await page.waitForSelector('#editor .CodeMirror', { timeout: 10000 });
-  await page.waitForTimeout(400);
+  // 文章面板默认落在列表视图 → 先进「+ 新建文章」的编辑视图，编辑器才存在
+  await enterNewArticle(page);
 
   /** 把 markdown 写进编辑器（走 CodeMirror，等价于用户粘贴全文） */
   async function setMd(md, mustContain) {

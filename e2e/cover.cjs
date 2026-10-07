@@ -1,6 +1,7 @@
 // 封面三种来源端到端验证：① 本地上传 ② 从媒体库选择 ③ 清除 ④ 封面放大预览（灯箱）
 // 并验证发布后前台文章页显示封面、og:image 输出绝对地址（封面＝分享图）
 const { chromium } = require('playwright');
+const { enterNewArticle } = require('./lib/admin-ui.cjs');
 
 const BASE = process.env.E2E_BASE || 'http://localhost:8080';
 const PNG = 'e2e/fixtures/e2e-shot.png';
@@ -41,8 +42,8 @@ const errors = [], httpBad = [];
       await page.click('#login button');
     }
     await page.waitForSelector('#app', { state: 'visible', timeout: 15000 });
-    await page.waitForSelector('#editor .CodeMirror', { timeout: 10000 });
-    await page.waitForTimeout(400);
+    // 文章面板默认落在列表视图 → 先进「+ 新建文章」的编辑视图，编辑器与表单项才存在
+    await enterNewArticle(page);
   }
 
   const coverVal = () => page.inputValue('#a-cover');
