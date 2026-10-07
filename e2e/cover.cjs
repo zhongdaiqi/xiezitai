@@ -1,4 +1,4 @@
-// 封面三种来源端到端验证：① 本地上传 ② 从媒体库选择 ③ 清除
+// 封面三种来源端到端验证：① 本地上传 ② 从媒体库选择 ③ 清除 ④ 封面放大预览（灯箱）
 // 并验证发布后前台文章页显示封面、og:image 输出绝对地址（封面＝分享图）
 const { chromium } = require('playwright');
 
@@ -106,6 +106,44 @@ const errors = [], httpBad = [];
   check('① 封面预览显示且图片加载成功', pv1.visible && pv1.w > 0, 'display=' + pv1.visible + ' naturalWidth=' + pv1.w);
   await page.screenshot({ path: 'e2e/out/13-cover-upload.png' });
 
+  // ---------- ①b 封面放大预览（灯箱） ----------
+  const lightbox = () => page.evaluate(() => {
+    const box = document.getElementById('cover-lightbox');
+    const big = document.getElementById('cover-lightbox-img');
+    const cap = document.getElementById('cover-lightbox-cap');
+    return {
+      open: !!box && box.classList.contains('open'),
+      display: box ? getComputedStyle(box).display : '',
+      src: big ? (big.getAttribute('src') || '') : '',
+      w: big ? big.naturalWidth : 0,
+      cap: cap ? (cap.textContent || '') : ''
+    };
+  });
+  const waitLightboxClosed = () => page.waitForFunction(
+    () => !document.getElementById('cover-lightbox').classList.contains('open'), { timeout: 5000 });
+
+  await page.click('#cover-preview-img');                      // 点缩略图应弹出大图
+  await page.waitForSelector('#cover-lightbox.open', { timeout: 5000 });
+  await page.waitForFunction(() => document.getElementById('cover-lightbox-img').naturalWidth > 0,
+    { timeout: 10000 }).catch(() => log('WAIT_LIGHTBOX_IMG_TIMEOUT'));
+  const lb1 = await lightbox();
+  log('LIGHTBOX=' + JSON.stringify(lb1));
+  check('①b 点缩略图打开大图预览', lb1.open && lb1.display === 'flex', 'display=' + lb1.display);
+  check('①b 大图 src 与封面一致', lb1.src === upCover, lb1.src);
+  check('①b 大图加载成功', lb1.w > 0, 'naturalWidth=' + lb1.w);
+  check('①b 大图说明含原始尺寸', /×/.test(lb1.cap), lb1.cap);
+  await page.screenshot({ path: 'e2e/out/16-cover-lightbox.png' });
+  await page.keyboard.press('Escape');
+  await waitLightboxClosed();
+  check('①b ESC 关闭大图预览', !(await lightbox()).open);
+
+  await page.getByRole('button', { name: '放大预览', exact: true }).click();
+  await page.waitForSelector('#cover-lightbox.open', { timeout: 5000 });
+  check('①b 「放大预览」按钮同样可打开', (await lightbox()).open);
+  await page.mouse.click(20, 20);                              // 点遮罩空白处关闭
+  await waitLightboxClosed();
+  check('①b 点遮罩空白处关闭大图预览', !(await lightbox()).open);
+
   // ---------- ② 从媒体库选择 ----------
   await openCoverPicker();
   const modalTitle = (await page.textContent('#media-modal .modal-head h3') || '').trim();
@@ -137,6 +175,10 @@ const errors = [], httpBad = [];
   const pv3 = await coverPreview();
   check('③ 「清除」清空封面输入框', (await coverVal()) === '', await coverVal());
   check('③ 「清除」隐藏封面预览', !pv3.visible);
+  check('③ 无封面时调用放大不弹大图', await page.evaluate(() => {
+    zoomCover();
+    return !document.getElementById('cover-lightbox').classList.contains('open');
+  }));
 
   // ---------- ④ 重新选择封面 → 发布 → 前台校验 ----------
   const cover4 = await pickFirstFromLibrary();
