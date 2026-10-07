@@ -469,6 +469,12 @@
                 <input type="text" id="wp-search" placeholder="搜索 WP 站点文章标题…" autocomplete="off"
                        oninput="onWpSearchInput()"
                        onkeydown="if(event.key==='Enter'){event.preventDefault();onWpSearchInput(true);}">
+                <label class="muted" style="font-size:13px; white-space:nowrap; display:inline-flex; align-items:center; gap:6px;">发布时间
+                    <select id="wp-date-mode" style="padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--card, #fff);">
+                        <option value="wp" selected>用 WP 原发布时间</option>
+                        <option value="now">用当前时间</option>
+                    </select>
+                </label>
                 <button class="ghost" onclick="wpTestSite()">测试连接</button>
             </div>
             <div class="table-wrap">
@@ -1864,15 +1870,19 @@ function onWpSearchInput(immediate) {
 }
 
 /* ---------- 单篇导入 ---------- */
+function wpUseWpDate() { return $('wp-date-mode').value !== 'now'; }
+
 async function wpImportOne(postId) {
     toast('正在导入，媒体较多时可能需要几十秒…');
     const res = await api('/api/admin/wp/sites/' + wpSiteId + '/import', {
-        method: 'POST', body: JSON.stringify({ postId })
+        method: 'POST', body: JSON.stringify({ postId, useWpDate: wpUseWpDate() })
     });
     const data = await res.json();
     if (!res.ok) { toast(data.error || '导入失败'); return; }
     if (data.imported) {
-        toast('导入成功：《' + (data.title || '') + '》' + (data.warnings && data.warnings.length ? '（' + data.warnings.length + ' 条媒体警告，详见控制台）' : ''));
+        const tagNote = data.tags ? ' · 标签：' + data.tags : '';
+        toast('导入成功：《' + (data.title || '') + '》' + tagNote
+            + (data.warnings && data.warnings.length ? '（' + data.warnings.length + ' 条媒体警告，详见控制台）' : ''));
         if (data.warnings && data.warnings.length) console.warn('WP 导入媒体警告：', data.warnings);
     } else {
         toast(data.message || '该文章已存在，已跳过');
@@ -1882,8 +1892,12 @@ async function wpImportOne(postId) {
 /* ---------- 整站导入 + 进度轮询 ---------- */
 async function wpImportAll() {
     if (!wpSiteId) return;
-    if (!confirm('开始整站导入？将把该站点全部文章导入本站（本地已存在同 slug 的文章会自动跳过）。')) return;
-    const res = await api('/api/admin/wp/sites/' + wpSiteId + '/import-all', { method: 'POST' });
+    const dateNote = wpUseWpDate() ? '发布时间沿用 WP 原发布时间' : '发布时间统一改为当前时间';
+    if (!confirm('开始整站导入？将把该站点全部文章导入本站，' + dateNote
+        + '（本地已存在同 slug 的文章会自动跳过）。')) return;
+    const res = await api('/api/admin/wp/sites/' + wpSiteId + '/import-all', {
+        method: 'POST', body: JSON.stringify({ useWpDate: wpUseWpDate() })
+    });
     const data = await res.json();
     if (!res.ok) { toast(data.error || '启动失败'); return; }
     toast('整站导入已启动');

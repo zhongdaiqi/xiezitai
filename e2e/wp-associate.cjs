@@ -139,6 +139,10 @@ function startMockWp() {
     check('③ 浏览到 mock 站点文章（共 12 篇）', /共 12 篇/.test(pagerInfo), pagerInfo.trim());
     check('③ 每行有「导入」按钮', await page.evaluate(() =>
       document.querySelectorAll('#wpposts tbody button').length === 10));
+    check('③ 发布时间选择器存在且默认「WP 原发布时间」', await page.evaluate(() => {
+      const s = document.getElementById('wp-date-mode');
+      return !!s && s.value === 'wp' && s.options.length === 2;
+    }));
     await page.screenshot({ path: OUT + '/40-wp-browse.png', fullPage: true });
 
     // ---------- ④ 单篇导入 ----------
@@ -147,6 +151,9 @@ function startMockWp() {
     await page.locator('#wpposts tbody tr').first().getByRole('button', { name: '导入', exact: true }).click();
     const importResp = await importRespPromise;
     const importData = await importResp.json();
+    check('④ 导入请求体默认带 useWpDate=true',
+      importResp.request().postDataJSON() && importResp.request().postDataJSON().useWpDate === true,
+      importResp.request().postData());
     check('④ 单篇导入接口 imported=true', importData.imported === true, JSON.stringify(importData).slice(0, 120));
     if (importData.articleId) importedIds.push(importData.articleId);
     await page.waitForFunction(() =>
@@ -164,6 +171,25 @@ function startMockWp() {
     check('④ 外站图片保留外链', art.content.includes('http://cdn.external-wp-e2e.test/x.png'));
     check('④ 标签来自 WP 分类/标签', (art.tags || '').includes('E2ETag'), art.tags);
 
+    // ---------- ④b 发布时间选「当前时间」导入第二篇 ----------
+    await page.selectOption('#wp-date-mode', 'now');
+    const impNowPromise = page.waitForResponse(
+      r => r.url().includes('/import') && r.request().method() === 'POST', { timeout: 60000 });
+    await page.locator('#wpposts tbody tr').nth(1).getByRole('button', { name: '导入', exact: true }).click();
+    const impNow = await (await impNowPromise).json();
+    check('④b 切换「当前时间」后导入成功', impNow.imported === true, JSON.stringify(impNow).slice(0, 120));
+    if (impNow.articleId) importedIds.push(impNow.articleId);
+    const artNow = await page.evaluate(async id => {
+      const r = await fetch('/api/admin/articles/' + id, { headers: { Authorization: 'Bearer ' + token } });
+      return await r.json();
+    }, impNow.articleId);
+    const d = new Date();
+    const today = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');  // 本地时区日期（toISOString 是 UTC，会差一天）
+    check('④b useWpDate=false 时发布时间=今天（非 WP 的 2026-01-01）',
+      (artNow.publishedAt || '').startsWith(today) && !artNow.publishedAt.startsWith('2026-01-01'),
+      artNow.publishedAt);
+    await page.selectOption('#wp-date-mode', 'wp');   // 还原默认，避免影响后续整站导入
+
     // ---------- ⑤ 重复导入 → 跳过 ----------
     const againPromise = page.waitForResponse(
       r => r.url().includes('/import') && r.request().method() === 'POST', { timeout: 60000 });
@@ -180,8 +206,8 @@ function startMockWp() {
     const logText = await page.textContent('#wp-progress-log');
     check('⑥ 进度日志出现「整站导入完成」', logText.includes('整站导入完成'), logText.split('\n').pop());
     const doneLine = logText.split('\n').find(l => l.includes('整站导入完成')) || '';
-    // 12 篇里 1 篇已导入（跳过 1），其余 11 篇成功
-    check('⑥ 成功 11 篇、跳过 1 篇', /成功 11，跳过 1/.test(doneLine), doneLine);
+    // 12 篇里 2 篇已导入（跳过 2），其余 10 篇成功
+    check('⑥ 成功 10 篇、跳过 2 篇', /成功 10，跳过 2/.test(doneLine), doneLine);
     await page.screenshot({ path: OUT + '/41-wp-progress-done.png', fullPage: true });
 
     // 清点导入的文章数（slug 前缀 e2e-wp-）

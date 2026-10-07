@@ -1404,6 +1404,17 @@ class XiezitaiApplicationTests {
                 + "\"content\":{\"rendered\":\"<p>body two</p>\"},\"excerpt\":{\"rendered\":\"\"}}";
         server.createContext("/wp-json/wp/v2/posts/102", ex ->
                 respond(ex, 200, "application/json", post102.getBytes(StandardCharsets.UTF_8)));
+        // 103：不带 _embedded —— 标签/分类走 id 兜底接口（/tags、/categories）；发布时间可选当前时间
+        String post103 = "{\"id\":103,\"title\":{\"rendered\":\"Third Post\"},\"slug\":\"wp-third-103\","
+                + "\"status\":\"publish\",\"date_gmt\":\"2025-06-01T08:30:00\","
+                + "\"content\":{\"rendered\":\"<p>body three</p>\"},\"excerpt\":{\"rendered\":\"\"},"
+                + "\"categories\":[3],\"tags\":[7,8]}";
+        server.createContext("/wp-json/wp/v2/posts/103", ex ->
+                respond(ex, 200, "application/json", post103.getBytes(StandardCharsets.UTF_8)));
+        server.createContext("/wp-json/wp/v2/categories", ex ->
+                respond(ex, 200, "application/json", "[{\"id\":3,\"name\":\"随笔\"}]".getBytes(StandardCharsets.UTF_8)));
+        server.createContext("/wp-json/wp/v2/tags", ex ->
+                respond(ex, 200, "application/json", "[{\"id\":7,\"name\":\"PHP\"},{\"id\":8,\"name\":\"AI\"}]".getBytes(StandardCharsets.UTF_8)));
         server.createContext("/wp-content/uploads/2026/01/pic.png", ex -> respond(ex, 200, "image/png", PNG_1X1));
         server.createContext("/wp-content/uploads/2026/01/cover.png", ex -> respond(ex, 200, "image/png", PNG_1X1));
         server.createContext("/wp-content/uploads/2026/01/doc.pdf", ex ->
@@ -1509,6 +1520,30 @@ class XiezitaiApplicationTests {
             Long secondId = articles.findBySlug("wp-second-102").orElseThrow().getId();
             madeArticles.add(secondId);
             assertThat(articles.findBySlug("wp-second-102").orElseThrow().getStatus()).isEqualTo("DRAFT");
+
+            // ⑥ 单篇导入（useWpDate=false + 无 _embedded 的文章）：
+            //    发布时间用当前时间而非 WP 的 2025-06-01；标签按 id 走 /categories、/tags 兜底接口换名称
+            MvcResult imp3 = mvc.perform(post("/api/admin/wp/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", 103, "useWpDate", false)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.imported").value(true))
+                    .andReturn();
+            long articleId3 = om.readTree(imp3.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path("articleId").asLong();
+            madeArticles.add(articleId3);
+            JsonNode art3 = om.readTree(mvc.perform(get("/api/admin/articles/" + articleId3)
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn().getResponse()
+                    .getContentAsString(StandardCharsets.UTF_8));
+            assertThat(art3.path("status").asText()).isEqualTo("PUBLISHED");
+            assertThat(art3.path("tags").asText())
+                    .as("分类+标签兜底换名（分类在前，与 _embedded 顺序一致）: " + art3.path("tags").asText())
+                    .isEqualTo("随笔,PHP,AI");
+            String pub3 = art3.path("publishedAt").asText();
+            assertThat(pub3).as("useWpDate=false 应为当前时间，而非 WP 的 2025-06-01").startsWith(java.time.LocalDate.now().toString());
+            assertThat(pub3).doesNotStartWith("2025-06-01");
         } finally {
             server.stop(0);
             for (Long id : madeArticles) articles.deleteById(id);
