@@ -12,50 +12,91 @@
         :root { --ink: #1a1a1a; --muted: #6b7280; --line: #e5e7eb; --accent: #2563eb; --bg: #f9fafb; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--ink); background: var(--bg); }
-        #login { max-width: 360px; margin: 120px auto; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 32px; }
+
+        /* ---------- 登录 ---------- */
+        #login { max-width: 360px; margin: 110px auto; background: #fff; border: 1px solid var(--line);
+                 border-radius: 14px; padding: 34px 32px; box-shadow: 0 10px 34px rgba(15,23,42,.07); }
+        #login h2 { font-size: 20px; }
+        #login .sub { color: var(--muted); font-size: 13px; margin: 4px 0 20px; }
         #login input { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 12px; font: inherit; }
+        #login input:focus { outline: 2px solid rgba(37,99,235,.25); border-color: var(--accent); }
         #login button { width: 100%; background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 10px; font: inherit; cursor: pointer; }
-        #app { display: none; max-width: 1200px; margin: 0 auto; padding: 16px; }
-        .bar { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; }
-        .bar .tabs { display: flex; gap: 8px; flex-wrap: wrap; }
-        .bar button.tab { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 8px 16px; cursor: pointer; font: inherit; }
+        #login button:hover { background: #1d4ed8; }
+
+        /* ---------- 顶栏（吸顶）：bar 移出 #app 独立全宽，滚动到哪都能切面板 ---------- */
+        #topbar { display: none; position: sticky; top: 0; z-index: 100;
+                  background: rgba(255,255,255,.92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+        .bar-inner { max-width: 1280px; margin: 0 auto; padding: 9px 16px;
+                     display: flex; align-items: center; gap: 14px; }
+        .brand { font-weight: 700; font-size: 15px; white-space: nowrap; }
+        .brand small { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 4px; }
+        /* 窄屏 tabs 横向滑动而不是折成三行 */
+        .tabs { display: flex; gap: 8px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; flex: 1; }
+        .tabs::-webkit-scrollbar { display: none; }
+        .bar button.tab { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 7px 14px;
+                          cursor: pointer; font: inherit; white-space: nowrap; transition: border-color .15s, color .15s; }
+        .bar button.tab:hover { border-color: var(--accent); color: var(--accent); }
         .bar button.tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+        .bar .who { color: var(--muted); font-size: 13px; white-space: nowrap; }
+
+        #app { display: none; max-width: 1280px; margin: 0 auto; padding: 16px; }
         .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
-        input[type=text], textarea, select { border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: inherit; }
+        input[type=text], input[type=password], input:not([type]), textarea, select {
+            border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: inherit; background: #fff; }
+        input:focus, textarea:focus, select:focus { outline: 2px solid rgba(37,99,235,.25); border-color: var(--accent); }
         .panel { display: none; }
         .panel.active { display: block; }
         table { width: 100%; border-collapse: collapse; font-size: 14px; }
-        th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+        thead th { background: var(--bg); font-weight: 600; white-space: nowrap; }
+        tbody tr:hover { background: #f8fafc; }
         button.primary { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 8px 16px; cursor: pointer; font: inherit; }
+        button.primary:hover { background: #1d4ed8; }
         button.ghost { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 8px 16px; cursor: pointer; font: inherit; }
-        #editor { min-height: 420px; }
+        button.ghost:hover { border-color: var(--accent); color: var(--accent); }
         .muted { color: var(--muted); font-size: 13px; }
         .row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
-        /* 预览区里的媒体（github-markdown-css 只管 img，video 要自己兜） */
-        .markdown-body video { max-width: 100%; height: auto; border-radius: 6px; display: block; margin: 12px 0; background: #000; }
+        #editor { min-height: 420px; }
+        #pg-content { min-height: 280px; }
 
-        /* 代码块：预览区里的语法高亮 + 右上角「语言标签 / 复制」工具条（js/codeblock.js 注入）。
-           与 article.html / page.html 同一套类名和观感，只是后台的样式变量在本页已定义、直接用。
-           ① 主题里的 pre code.hljs{padding:1em} 与 github-markdown-css 的 .markdown-body pre>code{padding:0}
-              特异度相同、靠加载顺序分胜负，这里显式定死，避免升级 vendor 后代码块突然多出一圈内边距；
-           ② 工具条挂在包裹层 .code-block 上（不是 <pre> 里），<pre> 横滚时它不会跟着滚走；
-           ③ 后台是「边打字边重渲染」的实时预览，这个工具条会随预览反复重建 —— 这是预期行为，
-              复制按钮的「已复制」反馈是短时状态，重建后自然回到「复制」。 */
-        .markdown-body .code-block { position: relative; }
-        .markdown-body .code-block pre { margin-bottom: 16px; }
-        .markdown-body pre code.hljs { padding: 0; background: transparent; }
-        .markdown-body .code-tools { position: absolute; top: 8px; right: 8px; display: flex;
-            align-items: center; gap: 6px; user-select: none; }
-        .markdown-body .code-lang { font-size: 12px; line-height: 18px; color: var(--muted);
-            background: rgba(246, 248, 250, .92); border: 1px solid var(--line);
-            border-radius: 4px; padding: 0 6px; }
-        .markdown-body .code-copy { font-size: 12px; line-height: 18px; margin: 0; padding: 0 8px;
-            color: var(--muted); background: rgba(246, 248, 250, .92); border: 1px solid var(--line);
-            border-radius: 4px; cursor: pointer; opacity: .8;
-            transition: opacity .15s, color .15s, border-color .15s; }
-        .markdown-body .code-copy:hover { opacity: 1; color: var(--accent); border-color: var(--accent); }
-        .markdown-body .code-copy.ok { opacity: 1; color: #16a34a; border-color: #16a34a; }
-        .markdown-body .code-copy.err { opacity: 1; color: #b91c1c; border-color: #b91c1c; }
+        /* ---------- 表单小节：把「一排排裸 input」归组，输入框不再只有 placeholder ---------- */
+        .sec-title { font-size: 13px; font-weight: 700; color: var(--muted); letter-spacing: .02em;
+                     margin: 14px 0 8px; display: flex; align-items: center; gap: 8px; }
+        .sec-title:first-child { margin-top: 0; }
+        .sec-title::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+        /* ---------- 状态徽章 ---------- */
+        .badge { display: inline-block; font-size: 12px; line-height: 20px; padding: 0 9px;
+                 border-radius: 999px; white-space: nowrap; }
+        .b-pub { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
+        .b-draft { background: #f3f4f6; color: #6b7280; border: 1px solid var(--line); }
+
+        /* ---------- 文章面板：宽屏「编辑 | 列表」两栏，列表吸侧边跟随 ---------- */
+        @media (min-width: 1080px) {
+            #p-articles .split { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
+            #p-articles .split-side { position: sticky; top: 72px; }
+            #p-articles .split-side .card { margin-bottom: 0; }
+            /* 侧栏只有 360px，四列表格挤不下：变形为「标题一行 + 徽章/时间/操作一行」的行卡片式。
+               纯 CSS 变形 —— DOM 仍是 <table>，e2e 依赖的 #alist tbody tr td 结构原样不动。 */
+            .split-side thead { display: none; }
+            .split-side table, .split-side tbody { display: block; }
+            .split-side tbody tr { display: block; border-bottom: 1px solid var(--line); padding: 9px 2px; }
+            .split-side tbody tr:last-child { border-bottom: 0; }
+            .split-side td { display: inline; border-bottom: 0; padding: 0 8px 0 0; }
+            .split-side td:first-child { display: block; margin: 0 0 5px; word-break: break-all; }
+            .split-side td:last-child { float: right; padding: 0; }
+        }
+        .split-side h3 { margin-bottom: 8px; }
+        .split-side .t-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+        /* ---------- 表格横向滚动兜底：窄屏里表格式内容自己滚，不再撑破页面 ---------- */
+        .table-wrap { overflow-x: auto; }
+
+        /* ---------- 轻量 toast：保存/复制这类操作反馈固定右上角，滚到哪都看得见 ---------- */
+        #toast { position: fixed; top: 64px; right: 18px; z-index: 1200; background: #111827; color: #fff;
+                 font-size: 13px; padding: 9px 14px; border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,.22);
+                 opacity: 0; transform: translateY(-6px); pointer-events: none; transition: opacity .18s, transform .18s; }
+        #toast.show { opacity: 1; transform: none; }
 
         /* ---------- 媒体选择弹窗 ---------- */
         .modal { display: none; position: fixed; inset: 0; background: rgba(15,23,42,.45); z-index: 999; }
@@ -84,7 +125,7 @@
 
         /* ---------- 封面预览 ---------- */
         .cover-preview { display: flex; align-items: flex-start; gap: 12px; margin: 0 0 10px; flex-wrap: wrap; }
-        .cover-preview img { height: 120px; max-width: 400px; object-fit: cover; border-radius: 6px;
+        .cover-preview img { height: 120px; max-width: min(400px, 100%); object-fit: cover; border-radius: 6px;
                              border: 1px solid var(--line); background: #f3f4f6; display: block;
                              cursor: zoom-in; transition: box-shadow .15s, transform .15s; }
         .cover-preview img:hover { box-shadow: 0 6px 18px rgba(15,23,42,.18); transform: translateY(-1px); }
@@ -102,12 +143,67 @@
         .lightbox .lb-close:hover { opacity: 1; }
         .lightbox .lb-cap { position: absolute; bottom: 18px; left: 0; right: 0; text-align: center;
                             color: #e5e7eb; font-size: 13px; padding: 0 24px; word-break: break-all; }
+
+        /* ---------- 窄屏（≤760px）：单列堆叠，压掉内联的固定宽 ---------- */
+        @media (max-width: 760px) {
+            #app { padding: 10px; }
+            .card { padding: 12px; border-radius: 10px; }
+            .bar-inner { padding: 8px 10px; gap: 10px; }
+            .brand small { display: none; }
+            /* 内联样式写的 flex:2 / min-width 在窄屏一律让位，防止横向溢出 */
+            .row > * { flex: 1 1 auto !important; min-width: 0 !important; }
+            .row input[type=text], .row input:not([type]) { flex: 1 1 100% !important; }
+            .row button, .row select { flex: 0 0 auto !important; }
+            #a-title, #a-desc { flex: 1 1 100% !important; }
+        }
+        /* 预览区里的媒体（github-markdown-css 只管 img，video 要自己兜） */
+        .markdown-body video { max-width: 100%; height: auto; border-radius: 6px; display: block; margin: 12px 0; background: #000; }
+
+        /* 代码块：预览区里的语法高亮 + 右上角「语言标签 / 复制」工具条（js/codeblock.js 注入）。
+           与 article.html / page.html 同一套类名和观感，只是后台的样式变量在本页已定义、直接用。
+           ① 主题里的 pre code.hljs{padding:1em} 与 github-markdown-css 的 .markdown-body pre>code{padding:0}
+              特异度相同、靠加载顺序分胜负，这里显式定死，避免升级 vendor 后代码块突然多出一圈内边距；
+           ② 工具条挂在包裹层 .code-block 上（不是 <pre> 里），<pre> 横滚时它不会跟着滚走；
+           ③ 后台是「边打字边重渲染」的实时预览，这个工具条会随预览反复重建 —— 这是预期行为，
+              复制按钮的「已复制」反馈是短时状态，重建后自然回到「复制」。 */
+        .markdown-body .code-block { position: relative; }
+        .markdown-body .code-block pre { margin-bottom: 16px; }
+        .markdown-body pre code.hljs { padding: 0; background: transparent; }
+        .markdown-body .code-tools { position: absolute; top: 8px; right: 8px; display: flex;
+            align-items: center; gap: 6px; user-select: none; }
+        .markdown-body .code-lang { font-size: 12px; line-height: 18px; color: var(--muted);
+            background: rgba(246, 248, 250, .92); border: 1px solid var(--line);
+            border-radius: 4px; padding: 0 6px; }
+        .markdown-body .code-copy { font-size: 12px; line-height: 18px; margin: 0; padding: 0 8px;
+            color: var(--muted); background: rgba(246, 248, 250, .92); border: 1px solid var(--line);
+            border-radius: 4px; cursor: pointer; opacity: .8;
+            transition: opacity .15s, color .15s, border-color .15s; }
+        .markdown-body .code-copy:hover { opacity: 1; color: var(--accent); border-color: var(--accent); }
+        .markdown-body .code-copy.ok { opacity: 1; color: #16a34a; border-color: #16a34a; }
+        .markdown-body .code-copy.err { opacity: 1; color: #b91c1c; border-color: #b91c1c; }
     </style>
 </head>
 <body>
 
+<div id="topbar">
+    <div class="bar-inner">
+        <div class="brand">写字台<small>管理后台</small></div>
+        <div class="tabs">
+            <button class="tab active" data-p="articles" onclick="switchTab(this)">文章</button>
+            <button class="tab" data-p="pages" onclick="switchTab(this)">页面</button>
+            <button class="tab" data-p="files" onclick="switchTab(this)">文件</button>
+            <button class="tab" data-p="comments" onclick="switchTab(this)">评论</button>
+            <button class="tab" data-p="users" onclick="switchTab(this)">用户</button>
+            <button class="tab" data-p="security" onclick="switchTab(this)">安全</button>
+            <button class="tab" data-p="settings" onclick="switchTab(this)">设置</button>
+        </div>
+        <span class="who" id="who"></span>
+    </div>
+</div>
+
 <div id="login">
-    <h2 style="margin-bottom:16px;">写字台 · 登录</h2>
+    <h2>写字台</h2>
+    <p class="sub">登录管理后台</p>
     <input id="luser" placeholder="用户名" autocomplete="username">
     <input id="lpass" type="password" placeholder="密码" autocomplete="current-password">
     <input id="ltotp" placeholder="两步验证码（未开启则留空）">
@@ -119,68 +215,77 @@
 </div>
 
 <div id="app">
-    <div class="bar">
-        <div class="tabs">
-            <button class="tab active" data-p="articles" onclick="switchTab(this)">文章</button>
-            <button class="tab" data-p="pages" onclick="switchTab(this)">页面</button>
-            <button class="tab" data-p="files" onclick="switchTab(this)">文件</button>
-            <button class="tab" data-p="comments" onclick="switchTab(this)">评论</button>
-            <button class="tab" data-p="users" onclick="switchTab(this)">用户</button>
-            <button class="tab" data-p="security" onclick="switchTab(this)">安全</button>
-            <button class="tab" data-p="settings" onclick="switchTab(this)">设置</button>
-        </div>
-        <span class="muted" id="who"></span>
-    </div>
+    <div id="toast"></div>
 
-    <!-- 文章 -->
+    <!-- 文章：宽屏时左编辑右列表（列表吸边跟随），窄屏上下堆叠 -->
     <div class="panel active" id="p-articles">
-        <div class="card">
-            <div class="row">
-                <input type="text" id="a-title" placeholder="文章标题" style="flex:2; min-width:200px;">
-                <input type="text" id="a-slug" placeholder="slug（留空自动生成）" style="flex:1; min-width:160px;">
-                <select id="a-status">
-                    <option value="DRAFT">草稿</option>
-                    <option value="PUBLISHED">发布</option>
-                </select>
-                <button class="primary" onclick="saveArticle()">保存</button>
-                <input type="hidden" id="a-id">
-            </div>
-            <div class="row">
-                <input type="text" id="a-keywords" placeholder="SEO 关键词" style="flex:1; min-width:200px;">
-                <input type="text" id="a-desc" placeholder="SEO 描述" style="flex:2; min-width:200px;">
-            </div>
-            <div class="row">
-                <button class="ghost" onclick="openMedia('editor')">插入媒体</button>
-                <button class="ghost" onclick="aiAction('polish')">AI 润色/纠错</button>
-                <button class="ghost" onclick="aiAction('summary')">AI 摘要</button>
-                <button class="ghost" onclick="aiAction('title')">AI 优化标题</button>
-                <button class="ghost" onclick="aiAction('keywords')">AI 提取SEO关键词</button>
-                <button class="ghost" onclick="aiAction('seodesc')">AI 提取SEO描述</button>
-            </div>
-            <div class="row"><span class="muted" id="aimsg"></span></div>
-            <input type="text" id="a-summary" placeholder="摘要" style="width:100%; margin-bottom:8px;">
-            <!-- 封面：三种来源并存（AI 生成 / 本地上传 / 从媒体库选择），也允许直接粘贴 URL -->
-            <div class="row">
-                <input type="text" id="a-cover" placeholder="封面图 URL（AI 生成 / 本地上传 / 从媒体库选择）" style="flex:1; min-width:220px;">
-                <button class="ghost" onclick="aiAction('cover')">AI 生成</button>
-                <button class="ghost" onclick="uploadCover()">本地上传</button>
-                <button class="ghost" onclick="openMedia('cover')">从媒体库选择</button>
-                <button class="ghost" onclick="clearCover()">清除</button>
-            </div>
-            <!-- 封面预览：缩略图可点开大图（灯箱），并显示原始尺寸，便于确认封面是否选对 -->
-            <div class="cover-preview" id="cover-preview" style="display:none;">
-                <img id="cover-preview-img" alt="封面预览" title="点击放大预览" onclick="zoomCover()">
-                <div class="meta">
-                    <span id="cover-preview-name"></span>
-                    <button class="ghost" type="button" onclick="zoomCover()" style="align-self:flex-start; padding:3px 10px;">放大预览</button>
+        <div class="split">
+            <div class="split-main">
+                <div class="card">
+                    <div class="sec-title">基本信息</div>
+                    <div class="row">
+                        <input type="text" id="a-title" placeholder="文章标题" style="flex:2; min-width:200px;">
+                        <input type="text" id="a-slug" placeholder="slug（留空自动生成）" style="flex:1; min-width:160px;">
+                        <select id="a-status">
+                            <option value="DRAFT">草稿</option>
+                            <option value="PUBLISHED">发布</option>
+                        </select>
+                        <button class="primary" onclick="saveArticle()">保存</button>
+                        <input type="hidden" id="a-id">
+                    </div>
+                    <input type="text" id="a-summary" placeholder="摘要" style="width:100%; margin-bottom:8px;">
+
+                    <div class="sec-title">SEO</div>
+                    <div class="row">
+                        <input type="text" id="a-keywords" placeholder="SEO 关键词" style="flex:1; min-width:200px;">
+                        <input type="text" id="a-desc" placeholder="SEO 描述" style="flex:2; min-width:200px;">
+                    </div>
+
+                    <div class="sec-title">封面</div>
+                    <!-- 封面：三种来源并存（AI 生成 / 本地上传 / 从媒体库选择），也允许直接粘贴 URL -->
+                    <div class="row">
+                        <input type="text" id="a-cover" placeholder="封面图 URL（AI 生成 / 本地上传 / 从媒体库选择）" style="flex:1; min-width:220px;">
+                        <button class="ghost" onclick="aiAction('cover')">AI 生成</button>
+                        <button class="ghost" onclick="uploadCover()">本地上传</button>
+                        <button class="ghost" onclick="openMedia('cover')">从媒体库选择</button>
+                        <button class="ghost" onclick="clearCover()">清除</button>
+                    </div>
+                    <!-- 封面预览：缩略图可点开大图（灯箱），并显示原始尺寸，便于确认封面是否选对 -->
+                    <div class="cover-preview" id="cover-preview" style="display:none;">
+                        <img id="cover-preview-img" alt="封面预览" title="点击放大预览" onclick="zoomCover()">
+                        <div class="meta">
+                            <span id="cover-preview-name"></span>
+                            <button class="ghost" type="button" onclick="zoomCover()" style="align-self:flex-start; padding:3px 10px;">放大预览</button>
+                        </div>
+                    </div>
+                    <input type="file" id="a-cover-input" accept="image/*" style="display:none;">
+
+                    <div class="sec-title">AI 助手</div>
+                    <div class="row">
+                        <button class="ghost" onclick="aiAction('polish')">AI 润色/纠错</button>
+                        <button class="ghost" onclick="aiAction('summary')">AI 摘要</button>
+                        <button class="ghost" onclick="aiAction('title')">AI 优化标题</button>
+                        <button class="ghost" onclick="aiAction('keywords')">AI 提取SEO关键词</button>
+                        <button class="ghost" onclick="aiAction('seodesc')">AI 提取SEO描述</button>
+                    </div>
+                    <div class="row"><span class="muted" id="aimsg"></span></div>
+
+                    <div class="sec-title">正文</div>
+                    <div class="row">
+                        <button class="ghost" onclick="openMedia('editor')">插入媒体</button>
+                        <span class="muted">插入位置＝光标所在处</span>
+                    </div>
+                    <div id="editor"></div>
                 </div>
             </div>
-            <input type="file" id="a-cover-input" accept="image/*" style="display:none;">
-            <div id="editor"></div>
-        </div>
-        <div class="card">
-            <h3 style="margin-bottom:8px;">全部文章</h3>
-            <table id="alist"><thead><tr><th>标题</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody></tbody></table>
+            <aside class="split-side">
+                <div class="card">
+                    <h3>全部文章</h3>
+                    <div class="table-wrap">
+                        <table id="alist"><thead><tr><th>标题</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody></tbody></table>
+                    </div>
+                </div>
+            </aside>
         </div>
     </div>
 
@@ -201,7 +306,9 @@
             <textarea id="pg-content" placeholder="Markdown 内容" style="width:100%; min-height:280px;"></textarea>
         </div>
         <div class="card">
-            <table id="pglist"><thead><tr><th>标题</th><th>slug</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table>
+            <div class="table-wrap">
+                <table id="pglist"><thead><tr><th>标题</th><th>slug</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table>
+            </div>
         </div>
     </div>
 
@@ -216,14 +323,18 @@
             <p class="muted">默认用户仅可上传图片/视频；管理员可上传更多类型；上传后自动安全扫描。</p>
         </div>
         <div class="card">
-            <table id="flist"><thead><tr><th>文件名</th><th>大小</th><th>扫描</th><th>上传人</th><th>操作</th></tr></thead><tbody></tbody></table>
+            <div class="table-wrap">
+                <table id="flist"><thead><tr><th>文件名</th><th>大小</th><th>扫描</th><th>上传人</th><th>操作</th></tr></thead><tbody></tbody></table>
+            </div>
         </div>
     </div>
 
     <!-- 评论 -->
     <div class="panel" id="p-comments">
         <div class="card">
-            <table id="clist"><thead><tr><th>评论人</th><th>评论</th><th>文章</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table>
+            <div class="table-wrap">
+                <table id="clist"><thead><tr><th>评论人</th><th>评论</th><th>文章</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table>
+            </div>
         </div>
     </div>
 
@@ -232,7 +343,9 @@
         <div class="card">
             <p class="muted" id="pendingTip">新注册用户默认为「待审核」状态，通过审核后才能登录；驳回可填写原因，用户在登录时会看到。</p>
             <p class="muted">角色、启用状态、允许上传的文件类型（逗号分隔，如 jpg,png,mp4；留空则用默认"仅图片/视频"）。</p>
-            <table id="ulist"><thead><tr><th>用户名</th><th>邮箱</th><th>角色</th><th>审核状态</th><th>注册时间</th><th>启用</th><th>TOTP</th><th>允许上传类型</th><th>操作</th></tr></thead><tbody></tbody></table>
+            <div class="table-wrap">
+                <table id="ulist"><thead><tr><th>用户名</th><th>邮箱</th><th>角色</th><th>审核状态</th><th>注册时间</th><th>启用</th><th>TOTP</th><th>允许上传类型</th><th>操作</th></tr></thead><tbody></tbody></table>
+            </div>
         </div>
     </div>
 
@@ -248,7 +361,9 @@
         </div>
         <div class="card">
             <h3 style="margin-bottom:8px;">最近请求日志</h3>
-            <table id="loglist"><thead><tr><th>时间</th><th>方法</th><th>URI</th><th>IP</th><th>状态</th></tr></thead><tbody></tbody></table>
+            <div class="table-wrap">
+                <table id="loglist"><thead><tr><th>时间</th><th>方法</th><th>URI</th><th>IP</th><th>状态</th></tr></thead><tbody></tbody></table>
+            </div>
         </div>
     </div>
 
@@ -793,12 +908,33 @@ async function doLogin() {
 }
 function logout() { clearToken(); location.reload(); }
 
+/** 轻量提示：固定右上角，滚到哪都看得见（保存/复制这类短反馈用） */
+let toastTimer = null;
+function toast(msg) {
+    const el = document.getElementById('toast');
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+}
+/** 2026-10-07T10:30:00 → 10-07 10:30（列表里 ISO 串太占宽度） */
+function fmtTime(s) {
+    const m = /(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(s || '');
+    return m ? m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5] : (s || '');
+}
+
 async function boot() {
     const me = await jget('/api/auth/me');
     document.getElementById('login').style.display = 'none';
+    document.getElementById('topbar').style.display = 'block';
     document.getElementById('app').style.display = 'block';
     document.getElementById('who').textContent = me.username + ' (' + me.role + ')';
     document.getElementById('apitoken').textContent = me.apiToken;
+    // 恢复上次所在面板（#users 这类 hash），刷新后不回文章页
+    const h = (location.hash || '').replace('#', '');
+    const tab = h && document.querySelector('.tab[data-p="' + h + '"]');
+    if (tab) switchTab(tab);
     initEditor('');
     loadArticles(); loadPages(); loadFiles(); loadComments(); loadUsers(); loadLogs(); loadSettings();
 }
@@ -808,11 +944,12 @@ async function loadArticles() {
     const page = await jget('/api/admin/articles?size=100');
     const tb = document.querySelector('#alist tbody');
     tb.innerHTML = '';
+    const BADGE = { PUBLISHED: '<span class="badge b-pub">已发布</span>', DRAFT: '<span class="badge b-draft">草稿</span>' };
     page.content.forEach(a => {
         const tr = document.createElement('tr');
         tr.innerHTML = `<td><a href="/article/${a.slug}" target="_blank">${escapeHtml(a.title)}</a></td>
-            <td>${a.status}</td><td>${a.updatedAt || ''}</td>
-            <td><button class="ghost" onclick="editArticle(${a.id})">编辑</button>
+            <td>${BADGE[a.status] || escapeHtml(a.status)}</td><td class="t-time">${fmtTime(a.updatedAt)}</td>
+            <td style="white-space:nowrap;"><button class="ghost" onclick="editArticle(${a.id})">编辑</button>
                 <button class="ghost" onclick="delArticle(${a.id})">删除</button></td>`;
         tb.appendChild(tr);
     });
@@ -844,6 +981,7 @@ async function saveArticle() {
     if (data.slug) aSlug.value = data.slug;   // 回填服务端自动生成的 slug
     if (data.status === 'PUBLISHED') aStatus.value = 'PUBLISHED';
     aimsg.textContent = '已保存：' + data.slug;
+    toast('文章已保存：' + data.title);
     loadArticles();
 }
 async function delArticle(id) {
@@ -936,6 +1074,7 @@ async function savePage() {
     const body = { title: pgTitle.value, slug: pgSlug.value, content: pgContent.value, published: pgPub.checked };
     if (pgId.value) await jpost('/api/admin/pages/' + pgId.value, body, 'PUT');
     else await jpost('/api/admin/pages', body);
+    toast('页面已保存');
     loadPages();
 }
 async function delPage(id) { if (confirm('确定删除？')) { await api('/api/admin/pages/' + id, { method: 'DELETE' }); loadPages(); } }
@@ -1089,6 +1228,7 @@ async function saveSettings() {
     if (sAikey.value) body['ai.apiKey'] = sAikey.value;
     await jpost('/api/admin/settings', body);
     document.getElementById('smsg').textContent = '已保存';
+    toast('设置已保存');
 }
 async function testNotify() { await jpost('/api/admin/settings/notify/test', {}); }
 
@@ -1154,6 +1294,8 @@ function switchTab(btn) {
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('p-' + btn.dataset.p).classList.add('active');
+    // hash 记录当前面板：刷新/分享链接都能落回原处（replaceState 不产生历史记录）
+    history.replaceState(null, '', '#' + btn.dataset.p);
 }
 
 if (token) boot().catch(() => {});
