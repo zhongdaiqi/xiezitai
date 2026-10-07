@@ -64,8 +64,9 @@ public class WordPressImportService {
     public static class WpSyncProgress {
         public volatile String phase = "RUNNING";        // RUNNING / DONE / FAILED
         public volatile long total = -1;                 // 站点文章总数（列表页拿到后回填）
-        public volatile int done, imported, skipped, failed;
+        public volatile int done, imported, updated, skipped, failed;
         public volatile boolean useWpDate = true;        // 发布时间策略：true=用 WP 原发布时间，false=用当前时间
+        public volatile String onConflict = "skip";      // slug 冲突策略：skip=跳过，update=用 WP 版本覆盖
         public volatile String current = "";             // 正在导入的标题
         public volatile String error;
         public final LocalDateTime startedAt = LocalDateTime.now();
@@ -87,21 +88,37 @@ public class WordPressImportService {
     /**
      * 导入一篇文章。
      *
-     * @param useWpDate true=发布时间用 WP 原发布时间；false=用当前时间
+     * @param useWpDate  true=发布时间用 WP 原发布时间；false=用当前时间
+     * @param onConflict 本地已有同 slug 文章时：skip=跳过；update=用 WP 版本覆盖更新（保留文章 id）
      * @return result：{imported:true, articleId, slug, warnings:[...]} 或 {imported:false, reason:...}
      */
-    public Map<String, Object> importSingle(WpSite site, long wpPostId, boolean useWpDate) throws Exception {
+    public Map<String, Object> importSingle(WpSite site, long wpPostId, boolean useWpDate, String onConflict) throws Exception {
         JsonNode post = client.fetchPost(site, wpPostId);
         List<String> warnings = new ArrayList<>();
-        String slug = post.path("slug").asText("");
+        String slug = normalizeWpSlug(post.path("slug").asText(""));
         String title = WordPressClient.unescapeEntities(post.path("title").path("rendered").asText(""));
         if (title.isBlank()) title = "(无标题)";
 
         Article existing = slug.isBlank() ? null : articles.findBySlug(slug).orElse(null);
         if (existing != null) {
-            return Map.of("imported", false, "reason", "exists",
-                    "message", "本地已有同名 slug 的文章《" + existing.getTitle() + "》，已跳过（如需覆盖请先删除或改名）",
-                    "articleId", existing.getId());
+            if (!"update".equals(onConflict)) {
+                return Map.of("imported", false, "reason", "exists",
+                        "message", "本地已有同名 slug 的文章《" + existing.getTitle() + "》，已跳过（可在导入选项里改为「更新」覆盖）",
+                        "articleId", existing.getId());
+            }
+            updateArticleFields(site, existing, post, warnings, useWpDate);
+            Article saved = articles.save(existing);
+            site.setLastSyncAt(LocalDateTime.now());
+            sites.save(site);
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("imported", true);
+            out.put("updated", true);
+            out.put("articleId", saved.getId());
+            out.put("slug", saved.getSlug());
+            out.put("title", saved.getTitle());
+            out.put("tags", saved.getTags() == null ? "" : saved.getTags());
+            out.put("warnings", warnings);
+            return out;
         }
 
         Article a = buildArticle(site, post, warnings, useWpDate);
@@ -122,11 +139,12 @@ public class WordPressImportService {
     /* ================= 整站导入（后台线程 + 轮询进度） ================= */
 
     /** 启动整站导入；同一站点已有任务在跑时返回 null（controller 回 409） */
-    public WpSyncProgress startFullImport(WpSite site, boolean useWpDate) {
+    public WpSyncProgress startFullImport(WpSite site, boolean useWpDate, String onConflict) {
         WpSyncProgress old = progress.get(site.getId());
         if (old != null && "RUNNING".equals(old.phase)) return null;
         WpSyncProgress p = new WpSyncProgress();
         p.useWpDate = useWpDate;
+        p.onConflict = "update".equals(onConflict) ? "update" : "skip";
         progress.put(site.getId(), p);
         Thread t = new Thread(() -> runFullImport(site, p), "wp-import-" + site.getId());
         t.setDaemon(true);
@@ -137,6 +155,7 @@ public class WordPressImportService {
     private void runFullImport(WpSite site, WpSyncProgress p) {
         try {
             p.msg("发布时间策略：" + (p.useWpDate ? "沿用 WP 原发布时间" : "使用当前时间"));
+            p.msg("同 slug 冲突策略：" + ("update".equals(p.onConflict) ? "用 WP 版本覆盖更新" : "跳过"));
             int page = 1;
             while (true) {
                 WordPressClient.PostsPage pp = client.listPosts(site, page, 100, null);
@@ -148,20 +167,29 @@ public class WordPressImportService {
                     p.current = title;
                     try {
                         JsonNode post = client.fetchPost(site, wpId);
-                        String slug = post.path("slug").asText("");
-                        if (!slug.isBlank() && articles.findBySlug(slug).isPresent()) {
+                        String slug = normalizeWpSlug(post.path("slug").asText(""));
+                        Article existing = slug.isBlank() ? null : articles.findBySlug(slug).orElse(null);
+                        if (existing != null && !"update".equals(p.onConflict)) {
                             p.skipped++;
                             p.done++;
                             p.msg("跳过《" + title + "》：本地已存在同 slug 文章");
                             continue;
                         }
                         List<String> warnings = new ArrayList<>();
-                        Article a = buildArticle(site, post, warnings, p.useWpDate);
-                        if (a.getSlug().isBlank()) a.setSlug(articleService.uniqueSlug(title));
-                        articles.save(a);
-                        p.imported++;
-                        p.done++;
-                        p.msg("已导入《" + title + "》" + (warnings.isEmpty() ? "" : "（" + warnings.size() + " 条媒体警告）"));
+                        if (existing != null) {
+                            updateArticleFields(site, existing, post, warnings, p.useWpDate);
+                            articles.save(existing);
+                            p.updated++;
+                            p.done++;
+                            p.msg("已更新《" + title + "》" + (warnings.isEmpty() ? "" : "（" + warnings.size() + " 条媒体警告）"));
+                        } else {
+                            Article a = buildArticle(site, post, warnings, p.useWpDate);
+                            if (a.getSlug().isBlank()) a.setSlug(articleService.uniqueSlug(title));
+                            articles.save(a);
+                            p.imported++;
+                            p.done++;
+                            p.msg("已导入《" + title + "》" + (warnings.isEmpty() ? "" : "（" + warnings.size() + " 条媒体警告）"));
+                        }
                         warnings.forEach(w -> p.msg("  ⚠ " + w));
                     } catch (Exception e) {
                         p.failed++;
@@ -176,7 +204,7 @@ public class WordPressImportService {
             site.setLastSyncAt(LocalDateTime.now());
             sites.save(site);
             p.phase = "DONE";
-            p.msg("整站导入完成：成功 " + p.imported + "，跳过 " + p.skipped + "，失败 " + p.failed);
+            p.msg("整站导入完成：成功 " + p.imported + "，更新 " + p.updated + "，跳过 " + p.skipped + "，失败 " + p.failed);
         } catch (Exception e) {
             p.phase = "FAILED";
             p.error = e.getMessage();
@@ -197,8 +225,42 @@ public class WordPressImportService {
      */
     Article buildArticle(WpSite site, JsonNode post, List<String> warnings, boolean useWpDate) throws Exception {
         Article a = new Article();
+        applyPostBody(site, a, post, warnings, useWpDate);
+        a.setSlug(normalizeWpSlug(post.path("slug").asText("")));
+        a.setAuthor("wordpress");
+        return a;
+    }
+
+    /**
+     * WP 对中文标题生成的 slug 是 {@code %e4%bd%a0...} 形态的百分号编码字面串。
+     * 原样入库的话，链接里的 {@code %} 再编码成 {@code %25} 会被 Spring Security 的
+     * StrictHttpFirewall 拦成 400，文章永远打不开。这里解码回真实字符（WP 内部本来就是中文），
+     * 得到正常的中英混合 slug，前台路由/SEO/分享都干净。
+     */
+    public static String normalizeWpSlug(String slug) {
+        if (slug == null || slug.isBlank() || !slug.contains("%")) return slug;
+        try {
+            String dec = java.net.URLDecoder.decode(slug, java.nio.charset.StandardCharsets.UTF_8);
+            if (!dec.equals(slug) && !dec.contains("%")
+                    && dec.matches("[\\p{L}\\p{N}\\-_]+")) {
+                return dec;
+            }
+        } catch (Exception ignore) { /* 非法 % 序列，保持原样 */ }
+        return slug;
+    }
+
+    /**
+     * 更新已有文章：保留 id / slug / author / 浏览数 / 评论，正文相关字段以 WP 版本为准。
+     */
+    private void updateArticleFields(WpSite site, Article target, JsonNode post,
+                                     List<String> warnings, boolean useWpDate) throws Exception {
+        applyPostBody(site, target, post, warnings, useWpDate);
+    }
+
+    /** 把 WP post 的内容字段落到文章实体（title/正文/摘要/封面/状态与发布时间/标签） */
+    private void applyPostBody(WpSite site, Article a, JsonNode post,
+                               List<String> warnings, boolean useWpDate) throws Exception {
         a.setTitle(WordPressClient.unescapeEntities(post.path("title").path("rendered").asText("(无标题)")));
-        a.setSlug(post.path("slug").asText(""));
 
         String html = post.path("content").path("rendered").asText("");
         html = localizeMedia(site, html, warnings);
@@ -255,8 +317,6 @@ public class WordPressImportService {
             if (tags.size() > Article.MAX_TAGS) tags = tags.subList(0, Article.MAX_TAGS);
             a.setTags(String.join(",", tags));
         }
-        a.setAuthor("wordpress");
-        return a;
     }
 
     /**

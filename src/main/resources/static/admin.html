@@ -475,6 +475,12 @@
                         <option value="now">用当前时间</option>
                     </select>
                 </label>
+                <label class="muted" style="font-size:13px; white-space:nowrap; display:inline-flex; align-items:center; gap:6px;">已存在时
+                    <select id="wp-conflict" style="padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--card, #fff);">
+                        <option value="skip" selected>跳过</option>
+                        <option value="update">用 WP 版本更新</option>
+                    </select>
+                </label>
                 <button class="ghost" onclick="wpTestSite()">测试连接</button>
             </div>
             <div class="table-wrap">
@@ -1173,7 +1179,7 @@ function renderArticleRows(list) {
         const tagHtml = (a.tags || '').split(',').map(s => s.trim()).filter(Boolean)
             .map(t => '<span class="mini-tag">' + escapeHtml(t) + '</span>').join('');
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td><a href="/article/${a.slug}" target="_blank">${escapeHtml(a.title)}</a></td>
+        tr.innerHTML = `<td><a href="/article/${encodeURIComponent(a.slug || '')}" target="_blank">${escapeHtml(a.title)}</a></td>
             <td>${tagHtml || '<span class="muted">—</span>'}</td>
             <td>${BADGE[a.status] || escapeHtml(a.status)}</td><td class="t-time">${fmtTime(a.updatedAt)}</td>
             <td style="white-space:nowrap;"><button class="ghost" onclick="editArticle(${a.id})">编辑</button>
@@ -1871,17 +1877,19 @@ function onWpSearchInput(immediate) {
 
 /* ---------- 单篇导入 ---------- */
 function wpUseWpDate() { return $('wp-date-mode').value !== 'now'; }
+function wpOnConflict() { return $('wp-conflict').value === 'update' ? 'update' : 'skip'; }
 
 async function wpImportOne(postId) {
     toast('正在导入，媒体较多时可能需要几十秒…');
     const res = await api('/api/admin/wp/sites/' + wpSiteId + '/import', {
-        method: 'POST', body: JSON.stringify({ postId, useWpDate: wpUseWpDate() })
+        method: 'POST', body: JSON.stringify({ postId, useWpDate: wpUseWpDate(), onConflict: wpOnConflict() })
     });
     const data = await res.json();
     if (!res.ok) { toast(data.error || '导入失败'); return; }
     if (data.imported) {
         const tagNote = data.tags ? ' · 标签：' + data.tags : '';
-        toast('导入成功：《' + (data.title || '') + '》' + tagNote
+        const verb = data.updated ? '已更新' : '导入成功';
+        toast(verb + '：《' + (data.title || '') + '》' + tagNote
             + (data.warnings && data.warnings.length ? '（' + data.warnings.length + ' 条媒体警告，详见控制台）' : ''));
         if (data.warnings && data.warnings.length) console.warn('WP 导入媒体警告：', data.warnings);
     } else {
@@ -1893,10 +1901,12 @@ async function wpImportOne(postId) {
 async function wpImportAll() {
     if (!wpSiteId) return;
     const dateNote = wpUseWpDate() ? '发布时间沿用 WP 原发布时间' : '发布时间统一改为当前时间';
-    if (!confirm('开始整站导入？将把该站点全部文章导入本站，' + dateNote
-        + '（本地已存在同 slug 的文章会自动跳过）。')) return;
+    const conflictNote = wpOnConflict() === 'update'
+        ? '本地已存在的同 slug 文章会被 WP 版本覆盖更新'
+        : '本地已存在同 slug 的文章会自动跳过';
+    if (!confirm('开始整站导入？将把该站点全部文章导入本站，' + dateNote + '；' + conflictNote + '。')) return;
     const res = await api('/api/admin/wp/sites/' + wpSiteId + '/import-all', {
-        method: 'POST', body: JSON.stringify({ useWpDate: wpUseWpDate() })
+        method: 'POST', body: JSON.stringify({ useWpDate: wpUseWpDate(), onConflict: wpOnConflict() })
     });
     const data = await res.json();
     if (!res.ok) { toast(data.error || '启动失败'); return; }
@@ -1931,7 +1941,8 @@ async function checkWpProgress() {
     } else {
         stopWpPoll();
         if (data.phase === 'DONE') {
-            toast('整站导入完成：成功 ' + data.imported + '，跳过 ' + data.skipped + '，失败 ' + data.failed);
+            toast('整站导入完成：成功 ' + data.imported + '，更新 ' + (data.updated || 0)
+                + '，跳过 ' + data.skipped + '，失败 ' + data.failed);
             loadWpSites();                            // 刷新「上次同步」
         } else if (data.phase === 'FAILED') {
             toast('整站导入中断：' + (data.error || '未知错误'));

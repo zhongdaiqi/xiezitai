@@ -75,8 +75,24 @@ public class MediaStoreService {
         String stored = HexFormat.of().formatHex(randomBytes(8)) + "." + ext;
         Path target = uploadDir.resolve(stored).normalize();
         if (!target.startsWith(uploadDir)) throw new IOException("非法路径");
-        try (InputStream src = in) {
+
+        // 边写边算 SHA-256：完全一样的字节流不再重复落盘，直接引用已入库的那份
+        // （WP 整站导入时多篇文章共用同一张图，是重复写入的大头）
+        java.security.MessageDigest digest;
+        try {
+            digest = java.security.MessageDigest.getInstance("SHA-256");
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IOException("SHA-256 不可用", e);
+        }
+        String sha256;
+        try (InputStream src = new java.security.DigestInputStream(in, digest)) {
             Files.copy(src, target);
+        }
+        sha256 = HexFormat.of().formatHex(digest.digest());
+        FileEntity existing = files.findFirstBySha256OrderByIdAsc(sha256).orElse(null);
+        if (existing != null) {
+            Files.deleteIfExists(target);       // 刚写的这份是重复的，删掉，复用库里那份
+            return existing;
         }
 
         FileEntity fe = new FileEntity();
@@ -85,6 +101,7 @@ public class MediaStoreService {
         fe.setContentType(contentType);
         fe.setSize(size >= 0 ? size : Files.size(target));
         fe.setUploader(uploader);
+        fe.setSha256(sha256);
         files.save(fe);
 
         scanner.scanContent(fe, target);

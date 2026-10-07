@@ -10,6 +10,8 @@ import java.util.Optional;
 
 public interface ArticleRepository extends JpaRepository<Article, Long> {
     Optional<Article> findBySlug(String slug);
+    /** 前台 slug 多候选匹配用：忽略大小写（WP 中文 slug 常以 %xx 小写形态入库，URL 解码后需换形态再查） */
+    Optional<Article> findBySlugIgnoreCase(String slug);
     Page<Article> findByStatusOrderByPublishedAtDesc(String status, Pageable pageable);
     Page<Article> findAllByOrderByUpdatedAtDesc(Pageable pageable);
     boolean existsBySlug(String slug);

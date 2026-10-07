@@ -51,7 +51,9 @@ function startMockWp() {
       const all = [];
       for (let i = 1; i <= TOTAL_POSTS; i++) {
         all.push({ id: i, title: { rendered: 'E2E WP Post ' + String(i).padStart(2, '0') },
-          slug: 'e2e-wp-' + i, date: '2026-01-01T08:00:00', status: 'publish', link: 'http://x/?p=' + i });
+          // 第 12 篇用 WP 风格的 %xx 中文 slug（WP 对中文标题就这么生成），验证前台路由多候选匹配
+          slug: i === TOTAL_POSTS ? 'e2e-wp-' + encodeURIComponent('文章十二') : 'e2e-wp-' + i,
+          date: '2026-01-01T08:00:00', status: 'publish', link: 'http://x/?p=' + i });
       }
       const totalPages = Math.ceil(all.length / per);
       const slice = all.slice((page - 1) * per, page * per);
@@ -64,7 +66,8 @@ function startMockWp() {
     if (m) {
       const id = parseInt(m[1], 10);
       return json({
-        id, title: { rendered: 'E2E WP Post ' + String(id).padStart(2, '0') }, slug: 'e2e-wp-' + id,
+        id, title: { rendered: 'E2E WP Post ' + String(id).padStart(2, '0') },
+        slug: id === TOTAL_POSTS ? 'e2e-wp-' + encodeURIComponent('文章十二') : 'e2e-wp-' + id,
         status: 'publish', date_gmt: '2026-01-01T08:00:00',
         content: { rendered: '<p>正文 ' + id + '</p>'
           + '<p><img src="' + 'http://127.0.0.1:' + server.address().port + '/wp-content/uploads/e2e.png"/></p>'
@@ -143,6 +146,10 @@ function startMockWp() {
       const s = document.getElementById('wp-date-mode');
       return !!s && s.value === 'wp' && s.options.length === 2;
     }));
+    check('③ 冲突选择器存在且默认「跳过」', await page.evaluate(() => {
+      const s = document.getElementById('wp-conflict');
+      return !!s && s.value === 'skip' && s.options.length === 2;
+    }));
     await page.screenshot({ path: OUT + '/40-wp-browse.png', fullPage: true });
 
     // ---------- ④ 单篇导入 ----------
@@ -197,6 +204,18 @@ function startMockWp() {
     const againData = await (await againPromise).json();
     check('⑤ 重复导入 imported=false（跳过）', againData.imported === false, (againData.message || '').slice(0, 60));
 
+    // ---------- ⑤b 冲突改「更新」再导入：复用原文章 id，不新建 ----------
+    await page.selectOption('#wp-conflict', 'update');
+    const updPromise = page.waitForResponse(
+      r => r.url().includes('/import') && r.request().method() === 'POST', { timeout: 60000 });
+    await page.locator('#wpposts tbody tr').first().getByRole('button', { name: '导入', exact: true }).click();
+    const updData = await (await updPromise).json();
+    check('⑤b 更新模式 imported=true 且 updated=true',
+      updData.imported === true && updData.updated === true, JSON.stringify(updData).slice(0, 120));
+    check('⑤b 更新模式复用原文章 id（不新建）',
+      updData.articleId === importData.articleId, updData.articleId + ' vs ' + importData.articleId);
+    await page.selectOption('#wp-conflict', 'skip');   // 还原默认，避免影响整站导入
+
     // ---------- ⑥ 整站导入 + 进度 ----------
     await page.getByRole('button', { name: '整站导入', exact: true }).click();   // confirm 已自动 accept
     await page.waitForSelector('#wp-progress', { state: 'visible', timeout: 10000 });
@@ -207,7 +226,7 @@ function startMockWp() {
     check('⑥ 进度日志出现「整站导入完成」', logText.includes('整站导入完成'), logText.split('\n').pop());
     const doneLine = logText.split('\n').find(l => l.includes('整站导入完成')) || '';
     // 12 篇里 2 篇已导入（跳过 2），其余 10 篇成功
-    check('⑥ 成功 10 篇、跳过 2 篇', /成功 10，跳过 2/.test(doneLine), doneLine);
+    check('⑥ 成功 10 篇、跳过 2 篇', /成功 10，更新 0，跳过 2/.test(doneLine), doneLine);
     await page.screenshot({ path: OUT + '/41-wp-progress-done.png', fullPage: true });
 
     // 清点导入的文章数（slug 前缀 e2e-wp-）
@@ -217,6 +236,17 @@ function startMockWp() {
       return d.content.filter(a => a.slug.startsWith('e2e-wp-')).length;
     });
     check('⑥ 本站共 12 篇 e2e-wp-* 文章', count === TOTAL_POSTS, 'count=' + count);
+
+    // ---------- ⑥b 中文 slug 路由：WP 风格 %xx slug 已解码为中文入库，详情页应能打开（不 400/不跳首页） ----------
+    const cnSlug = 'e2e-wp-文章十二';   // 导入时 normalizeWpSlug 已把 %E6%96%87... 解码回中文
+    const artCn = await page.evaluate(async s => {
+      const r = await fetch('/article/' + encodeURIComponent(s), { redirect: 'follow' });
+      const html = await r.text();
+      return { status: r.status, finalUrl: r.url, hasTitle: html.includes('E2E WP Post 12') };
+    }, cnSlug);
+    check('⑥b WP 风格中文 slug 详情页 200 且内容正确',
+      artCn.status === 200 && artCn.hasTitle && !artCn.finalUrl.endsWith('/'),
+      JSON.stringify(artCn).slice(0, 120));
 
     // ---------- ⑦ 控制台干净 ----------
     check('⑦ 无 JS 错误', errors.length === 0, errors.slice(0, 3).join(' ; '));

@@ -133,7 +133,10 @@ public class WordPressController {
         }
     }
 
-    /** 导入单篇（同步执行，媒体较多时可能耗时几十秒）；useWpDate=false 时发布时间用当前时间 */
+    /**
+     * 导入单篇（同步执行，媒体较多时可能耗时几十秒）。
+     * useWpDate=false 时发布时间用当前时间；onConflict=update 时同 slug 已存在则用 WP 版本覆盖更新。
+     */
     @PostMapping("/sites/{id}/import")
     public ResponseEntity<?> importOne(@PathVariable Long id, @RequestBody Map<String, Object> body) {
         WpSite s = sites.findById(id).orElse(null);
@@ -143,22 +146,27 @@ public class WordPressController {
             return ResponseEntity.badRequest().body(Map.of("error", "缺少 postId"));
         }
         boolean useWpDate = !Boolean.FALSE.equals(body.get("useWpDate"));
+        String onConflict = "update".equals(body.get("onConflict")) ? "update" : "skip";
         try {
-            return ResponseEntity.ok(imports.importSingle(s, n.longValue(), useWpDate));
+            return ResponseEntity.ok(imports.importSingle(s, n.longValue(), useWpDate, onConflict));
         } catch (Exception e) {
             log.warn("WP 单篇导入失败 site={} post={}: {}", id, pid, e.getMessage());
             return ResponseEntity.status(502).body(Map.of("error", "导入失败：" + e.getMessage()));
         }
     }
 
-    /** 启动整站导入（后台线程）；useWpDate=false 时发布时间用当前时间。返回 202，前端开始轮询 */
+    /**
+     * 启动整站导入（后台线程）；useWpDate=false 时发布时间用当前时间，
+     * onConflict=update 时同 slug 已存在则覆盖更新。返回 202，前端开始轮询
+     */
     @PostMapping("/sites/{id}/import-all")
     public ResponseEntity<?> importAll(@PathVariable Long id,
                                        @RequestBody(required = false) Map<String, Object> body) {
         WpSite s = sites.findById(id).orElse(null);
         if (s == null) return ResponseEntity.notFound().build();
         boolean useWpDate = body == null || !Boolean.FALSE.equals(body.get("useWpDate"));
-        WordPressImportService.WpSyncProgress p = imports.startFullImport(s, useWpDate);
+        String onConflict = body != null && "update".equals(body.get("onConflict")) ? "update" : "skip";
+        WordPressImportService.WpSyncProgress p = imports.startFullImport(s, useWpDate, onConflict);
         if (p == null) {
             return ResponseEntity.status(409).body(Map.of("error", "该站点已有整站导入任务在运行，请等它结束"));
         }
@@ -175,9 +183,11 @@ public class WordPressController {
         out.put("total", p.total);
         out.put("done", p.done);
         out.put("imported", p.imported);
+        out.put("updated", p.updated);
         out.put("skipped", p.skipped);
         out.put("failed", p.failed);
         out.put("useWpDate", p.useWpDate);
+        out.put("onConflict", p.onConflict);
         out.put("current", p.current);
         out.put("error", p.error);
         out.put("messages", List.copyOf(p.messages));

@@ -93,6 +93,10 @@ public class ArticleController {
     public ResponseEntity<?> create(@RequestBody Article body, Authentication auth) {
         String tagErr = tagsViolation(body.getTags());
         if (tagErr != null) return ResponseEntity.badRequest().body(Map.of("error", tagErr));
+        // 显式指定的 slug 撞车要回 409，不能让它砸到唯一索引变成 500
+        if (body.getSlug() != null && !body.getSlug().isBlank() && articles.existsBySlug(body.getSlug())) {
+            return ResponseEntity.status(409).body(Map.of("error", "slug 已被其他文章占用：" + body.getSlug()));
+        }
         Article a = new Article();
         apply(a, body);
         a.setSlug(body.getSlug() == null || body.getSlug().isBlank()
@@ -110,6 +114,12 @@ public class ArticleController {
         if (a == null) return ResponseEntity.notFound().build();
         String tagErr = tagsViolation(body.getTags());
         if (tagErr != null) return ResponseEntity.badRequest().body(Map.of("error", tagErr));
+        // 改成别的文章已占用的 slug 同样回 409（与自己保持一致不算冲突）
+        String newSlug = body.getSlug();
+        if (newSlug != null && !newSlug.isBlank() && !newSlug.equals(a.getSlug())
+                && articles.existsBySlug(newSlug)) {
+            return ResponseEntity.status(409).body(Map.of("error", "slug 已被其他文章占用：" + newSlug));
+        }
         boolean wasPublished = "PUBLISHED".equals(a.getStatus());
         apply(a, body);
         if ("PUBLISHED".equals(a.getStatus()) && a.getPublishedAt() == null) a.setPublishedAt(LocalDateTime.now());

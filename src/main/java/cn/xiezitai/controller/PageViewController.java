@@ -77,7 +77,7 @@ public class PageViewController {
 
     @GetMapping("/article/{slug}")
     public String article(@PathVariable String slug, Model model, jakarta.servlet.http.HttpServletRequest request) {
-        Article a = articles.findBySlug(slug).orElse(null);
+        Article a = findArticleFlexible(slug).orElse(null);
         if (a == null || !ArticleService.isPublished(a)) return "redirect:/";
         articleService.increaseView(a);
         notifyVisit(a, request);
@@ -144,12 +144,57 @@ public class PageViewController {
 
     @GetMapping("/page/{slug}")
     public String page(@PathVariable String slug, Model model) {
-        PageEntity p = pages.findBySlug(slug).filter(PageEntity::isPublished).orElse(null);
+        PageEntity p = findPageFlexible(slug).filter(PageEntity::isPublished).orElse(null);
         if (p == null) return "redirect:/";
         model.addAttribute("page", p);
         model.addAttribute("navPages", navPages());
         model.addAttribute("contentHtml", md.toHtml(p.getContent()));
         return "page";
+    }
+
+    /**
+     * slug 多候选匹配：URL 路径里的 {@code %xx} 会被容器先解码一次，于是
+     * <ul>
+     *   <li>库里存真中文（后台手输）→ 解码后的中文直接命中；</li>
+     *   <li>库里存 WP 风格的 {@code %e4%bd%a0...} 字面串（WP 对中文标题就这么生成 slug）→
+     *       解码后变成中文、查不到，文章/页面会跳回首页 —— 把原串再 URL 编码回去就能命中；</li>
+     *   <li>双重编码的极端情况 → 再解一次码兜底。</li>
+     * </ul>
+     * 忽略大小写：Java {@link java.net.URLEncoder} 产出的 %XX 是大写，WP 存的是小写。
+     */
+    private java.util.Optional<Article> findArticleFlexible(String rawSlug) {
+        for (String candidate : slugCandidates(rawSlug)) {
+            java.util.Optional<Article> hit = articles.findBySlugIgnoreCase(candidate);
+            if (hit.isPresent()) return hit;
+        }
+        return java.util.Optional.empty();
+    }
+
+    private java.util.Optional<PageEntity> findPageFlexible(String rawSlug) {
+        for (String candidate : slugCandidates(rawSlug)) {
+            java.util.Optional<PageEntity> hit = pages.findBySlugIgnoreCase(candidate);
+            if (hit.isPresent()) return hit;
+        }
+        return java.util.Optional.empty();
+    }
+
+    /** 候选顺序：原样 → 再解码一次 → 再编码回去（含小写形态） */
+    public static java.util.List<String> slugCandidates(String rawSlug) {
+        java.util.LinkedHashSet<String> cands = new java.util.LinkedHashSet<>();
+        if (rawSlug == null || rawSlug.isBlank()) return List.of();
+        cands.add(rawSlug);
+        try {
+            String dec = java.net.URLDecoder.decode(rawSlug, java.nio.charset.StandardCharsets.UTF_8);
+            if (!dec.equals(rawSlug)) cands.add(dec);
+        } catch (Exception ignore) { /* 本来就不是合法 % 序列，跳过 */ }
+        try {
+            String enc = java.net.URLEncoder.encode(rawSlug, java.nio.charset.StandardCharsets.UTF_8);
+            if (!enc.equals(rawSlug)) {
+                cands.add(enc);
+                cands.add(enc.toLowerCase(java.util.Locale.ROOT));
+            }
+        } catch (Exception ignore) { /* 不可能出现 */ }
+        return List.copyOf(cands);
     }
 
     /**

@@ -1346,6 +1346,18 @@ class XiezitaiApplicationTests {
         assertThat(wpImports.sameHost("https://example.com/a.png", "https://www.example.com")).isTrue();
         assertThat(wpImports.sameHost("https://cdn.other.com/a.png", "https://example.com")).isFalse();
         assertThat(wpImports.sameHost("/relative/a.png", "https://example.com")).isFalse();
+        // slug 多候选：中文要给出 WP 风格的大小写两种编码形态；%xx 字面串要能解码回中文
+        assertThat(cn.xiezitai.controller.PageViewController.slugCandidates("你好世界"))
+                .contains("%E4%BD%A0%E5%A5%BD%E4%B8%96%E7%95%8C", "%e4%bd%a0%e5%a5%bd%e4%b8%96%e7%95%8c");
+        assertThat(cn.xiezitai.controller.PageViewController.slugCandidates("%e4%bd%a0%e5%a5%bd"))
+                .contains("你好", "%25e4%25bd%25a0%25e5%25a5%25bd");   // 再解码 + 双重编码兜底
+        // 大小写差异由 findBySlugIgnoreCase 消化，不需要在候选里枚举大写形态
+        assertThat(cn.xiezitai.controller.PageViewController.slugCandidates("hello-world"))
+                .containsExactly("hello-world");
+        // WP 中文 slug 导入前先解码：避免 %xx 字面串入库后（链接 %25）被安全防火墙 400 拦截
+        assertThat(wpImports.normalizeWpSlug("%e4%bd%a0%e5%a5%bd%e4%b8%96%e7%95%8c")).isEqualTo("你好世界");
+        assertThat(wpImports.normalizeWpSlug("hello-world")).isEqualTo("hello-world");
+        assertThat(wpImports.normalizeWpSlug("a%20b")).as("解码后含空格不合格，保持原样").isEqualTo("a%20b");
         assertThat(cn.xiezitai.service.WordPressClient.unescapeEntities("A &#8217; B &amp; C &#x4e2d;"))
                 .isEqualTo("A ’ B & C 中");
         assertThat(cn.xiezitai.service.WordPressClient.stripTags("<p>Ex &amp; <b>bold</b></p>"))
@@ -1415,6 +1427,13 @@ class XiezitaiApplicationTests {
                 respond(ex, 200, "application/json", "[{\"id\":3,\"name\":\"随笔\"}]".getBytes(StandardCharsets.UTF_8)));
         server.createContext("/wp-json/wp/v2/tags", ex ->
                 respond(ex, 200, "application/json", "[{\"id\":7,\"name\":\"PHP\"},{\"id\":8,\"name\":\"AI\"}]".getBytes(StandardCharsets.UTF_8)));
+        // 104：WP 对中文标题生成的 slug 就是 %xx 小写字面串 —— 链接里的 %xx 会被容器解码，需多候选匹配
+        String post104 = "{\"id\":104,\"title\":{\"rendered\":\"WP Style Slug\"},"
+                + "\"slug\":\"%e4%bd%a0%e5%a5%bd%e4%b8%96%e7%95%8c\","
+                + "\"status\":\"publish\",\"date_gmt\":\"2024-05-05T05:05:05\","
+                + "\"content\":{\"rendered\":\"<p>wp style body</p>\"},\"excerpt\":{\"rendered\":\"\"}}";
+        server.createContext("/wp-json/wp/v2/posts/104", ex ->
+                respond(ex, 200, "application/json", post104.getBytes(StandardCharsets.UTF_8)));
         server.createContext("/wp-content/uploads/2026/01/pic.png", ex -> respond(ex, 200, "image/png", PNG_1X1));
         server.createContext("/wp-content/uploads/2026/01/cover.png", ex -> respond(ex, 200, "image/png", PNG_1X1));
         server.createContext("/wp-content/uploads/2026/01/doc.pdf", ex ->
@@ -1483,11 +1502,11 @@ class XiezitaiApplicationTests {
             // srcset 里的同站 URL 也应一并本地化（srcset 保留，但 URL 换成 /media/）
             assertThat(content).as("srcset 应本地化: " + content).containsPattern("srcset=\"/media/[0-9a-f]{16}\\.png 300w\"");
             assertThat(art.path("cover").asText()).startsWith("/media/");
-            // 落盘的图 + 封面 + pdf 附件都应登记进媒体库（否则会被全库扫描判为孤立文件）
+            // 落盘文件按内容去重：正文图与封面是同一份字节 → 共用 1 个文件 + pdf 附件 = 2 个
             Matcher fm = Pattern.compile("/media/([0-9a-f]{16}\\.[a-z]+)").matcher(content + art.path("cover").asText());
             java.util.Set<String> storedNames = new java.util.LinkedHashSet<>();
             while (fm.find()) storedNames.add(fm.group(1));
-            assertThat(storedNames).as("正文 1 图（src+srcset 同一文件）+ 封面 1 图 + 正文 pdf 附件").hasSize(3);
+            assertThat(storedNames).as("正文图与封面同字节共用 1 文件 + pdf 附件（内容去重）").hasSize(2);
             for (String stored : storedNames) {
                 assertThat(fileRepo.findByStoredName(stored)).isPresent();
             }
@@ -1544,6 +1563,38 @@ class XiezitaiApplicationTests {
             String pub3 = art3.path("publishedAt").asText();
             assertThat(pub3).as("useWpDate=false 应为当前时间，而非 WP 的 2025-06-01").startsWith(java.time.LocalDate.now().toString());
             assertThat(pub3).doesNotStartWith("2025-06-01");
+
+            // ⑦ 同 slug 冲突可选「更新」：不新建文章（id 不变），重复媒体因内容去重不新增文件
+            long filesBefore = fileRepo.count();
+            MvcResult impUp = mvc.perform(post("/api/admin/wp/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", 101, "onConflict", "update")))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.imported").value(true))
+                    .andExpect(jsonPath("$.updated").value(true))
+                    .andReturn();
+            long upId = om.readTree(impUp.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path("articleId").asLong();
+            assertThat(upId).as("更新模式应复用原文章 id，不新建").isEqualTo(articleId);
+            assertThat(fileRepo.count()).as("完全相同的媒体落盘时应去重复用，不新增文件记录").isEqualTo(filesBefore);
+
+            // ⑧ WP 风格 %xx 中文 slug 导入时应解码成真中文入库（否则链接里的 % 会被安全防火墙拦成 400），
+            //    详情页以中文 slug 正常打开
+            String cnSlug = "你好世界";
+            MvcResult impWp = mvc.perform(post("/api/admin/wp/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", 104)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.imported").value(true))
+                    .andReturn();
+            madeArticles.add(om.readTree(impWp.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path("articleId").asLong());
+            assertThat(articles.findBySlugIgnoreCase(cnSlug))
+                    .as("%xx 字面 slug 应已解码为真中文入库").isPresent();
+            mvc.perform(get("/article/你好世界"))
+                    .andExpect(status().isOk());
         } finally {
             server.stop(0);
             for (Long id : madeArticles) articles.deleteById(id);

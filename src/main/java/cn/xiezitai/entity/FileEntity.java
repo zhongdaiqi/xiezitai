@@ -25,6 +25,10 @@ public class FileEntity {
     @Column(length = 50)
     private String uploader;
 
+    /** 内容 SHA-256（64 hex）：同字节流只落一份盘，重复写入引用同一实体；老数据为 null（不参与去重） */
+    @Column(name = "sha256", length = 64)
+    private String sha256;
+
     /** PENDING / SAFE / DANGEROUS */
     private String scanStatus = "PENDING";
 
@@ -45,6 +49,8 @@ public class FileEntity {
     public void setSize(Long size) { this.size = size; }
     public String getUploader() { return uploader; }
     public void setUploader(String uploader) { this.uploader = uploader; }
+    public String getSha256() { return sha256; }
+    public void setSha256(String sha256) { this.sha256 = sha256; }
     public String getScanStatus() { return scanStatus; }
     public void setScanStatus(String scanStatus) { this.scanStatus = scanStatus; }
     public String getScanDetail() { return scanDetail; }
