@@ -9,6 +9,7 @@
     <meta name="keywords" th:content="${article.seoKeywords}">
     <meta property="og:title" th:content="${article.title}">
     <meta property="og:type" content="article">
+    <meta property="og:image" th:if="${ogImage != null and !ogImage.isEmpty()}" th:content="${ogImage}">
     <link rel="stylesheet" href="/vendor/github-markdown-css/github-markdown-light.min.css">
     <style>
         :root { --ink: #1a1a1a; --muted: #6b7280; --line: #e5e7eb; --accent: #2563eb; }

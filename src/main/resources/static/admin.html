@@ -57,6 +57,11 @@
                         justify-content: center; overflow: hidden; color: var(--muted); font-size: 24px; }
         .mitem .thumb img, .mitem .thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
         .mitem .name { font-size: 12px; padding: 6px; word-break: break-all; line-height: 1.4; }
+
+        /* ---------- 封面预览 ---------- */
+        .cover-preview { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+        .cover-preview img { height: 84px; max-width: 320px; object-fit: cover; border-radius: 6px;
+                             border: 1px solid var(--line); background: #f3f4f6; display: block; }
     </style>
 </head>
 <body>
@@ -108,11 +113,22 @@
                 <button class="ghost" onclick="openMedia('editor')">插入媒体</button>
                 <button class="ghost" onclick="aiAction('polish')">AI 润色/纠错</button>
                 <button class="ghost" onclick="aiAction('summary')">AI 摘要</button>
-                <button class="ghost" onclick="aiAction('cover')">AI 封面图</button>
                 <span class="muted" id="aimsg"></span>
             </div>
             <input type="text" id="a-summary" placeholder="摘要" style="width:100%; margin-bottom:8px;">
-            <input type="text" id="a-cover" placeholder="封面图 URL" style="width:100%; margin-bottom:8px;">
+            <!-- 封面：三种来源并存（AI 生成 / 本地上传 / 从媒体库选择），也允许直接粘贴 URL -->
+            <div class="row">
+                <input type="text" id="a-cover" placeholder="封面图 URL（AI 生成 / 本地上传 / 从媒体库选择）" style="flex:1; min-width:220px;">
+                <button class="ghost" onclick="aiAction('cover')">AI 生成</button>
+                <button class="ghost" onclick="uploadCover()">本地上传</button>
+                <button class="ghost" onclick="openMedia('cover')">从媒体库选择</button>
+                <button class="ghost" onclick="clearCover()">清除</button>
+            </div>
+            <div class="cover-preview" id="cover-preview" style="display:none;">
+                <img id="cover-preview-img" alt="封面预览">
+                <span class="muted" id="cover-preview-name"></span>
+            </div>
+            <input type="file" id="a-cover-input" accept="image/*" style="display:none;">
             <div id="editor"></div>
         </div>
         <div class="card">
@@ -506,9 +522,37 @@ function setupEditorDrop() {
 }
 
 /* ---------- 媒体库弹窗 ---------- */
+/* 弹窗三种用途共用一套 UI：editor/page = 插入正文；cover = 设为封面。
+   仅靠 mediaTarget 分流，避免再复制一个弹窗。 */
+const MEDIA_MODES = {
+    editor: { title: '插入媒体', drop: '点击选择，或把图片 / 视频拖到这里 → <b>上传并插入正文</b>',
+              hint: '图片插成 Markdown，视频插成 &lt;video&gt; 标签（上限 200MB）', filter: 'all', accept: 'image/*,video/*' },
+    page:   { title: '插入媒体', drop: '点击选择，或把图片 / 视频拖到这里 → <b>上传并插入正文</b>',
+              hint: '图片插成 Markdown，视频插成 &lt;video&gt; 标签（上限 200MB）', filter: 'all', accept: 'image/*,video/*' },
+    cover:  { title: '选择封面图', drop: '点击选择，或把图片拖到这里 → <b>上传并设为封面</b>',
+              hint: '封面仅支持图片；也可以直接点下面媒体库里的图片', filter: 'image', accept: 'image/*' }
+};
+/** 按当前 mediaTarget 调整弹窗标题 / 提示语 / 默认筛选 / 可选文件类型 */
+function applyMediaMode() {
+    const m = MEDIA_MODES[mediaTarget] || MEDIA_MODES.editor;
+    const title = document.querySelector('#media-modal .modal-head h3');
+    if (title) title.textContent = m.title;
+    const drop = $('m-media-drop');
+    if (drop) drop.innerHTML = m.drop + '<div class="muted" style="margin-top:4px;">' + m.hint + '</div>';
+    const input = $('m-media-input');
+    if (input) input.accept = m.accept;
+    mediaFilter = m.filter;
+    document.querySelectorAll('#media-modal .tag').forEach(b => {
+        // 封面模式下「全部 / 视频」没有意义，直接隐藏；默认选中「图片」
+        const kind = b.dataset.kind;
+        b.style.display = (mediaTarget === 'cover' && kind !== 'image') ? 'none' : '';
+        b.classList.toggle('active', kind === mediaFilter);
+    });
+}
 function openMedia(target) {
     mediaTarget = target || 'editor';
     setMediaMsg('');
+    applyMediaMode();
     $('media-modal').classList.add('open');
     loadMediaLibrary();
 }
@@ -544,12 +588,23 @@ function renderMediaLibrary() {
         const url = '/media/' + f.storedName;
         const div = document.createElement('div');
         div.className = 'mitem';
-        div.title = (f.originalName || f.storedName) + ' · ' + Math.ceil((f.size || 0) / 1024) + ' KB · 插入到光标处';
+        div.title = (f.originalName || f.storedName) + ' · ' + Math.ceil((f.size || 0) / 1024) + ' KB · '
+            + (mediaTarget === 'cover' ? '设为封面' : '插入到光标处');
         let thumb = '<span>📄</span>';
         if (isImageFile(f)) thumb = `<img src="${url}" alt="" loading="lazy">`;
         else if (isVideoFile(f)) thumb = `<video src="${url}" preload="metadata" muted></video>`;
         div.innerHTML = `<div class="thumb">${thumb}</div><div class="name">${escapeHtml(f.originalName || f.storedName)}</div>`;
-        div.onclick = () => { insertAtCursor(mediaSnippet(f)); closeMedia(); };
+        div.onclick = () => {
+            // 封面模式：点选即设为封面（不插入正文）；非图片一律拒绝
+            if (mediaTarget === 'cover') {
+                if (!isImageFile(f)) { setMediaMsg('封面必须选图片'); return; }
+                setCover('/media/' + f.storedName, f.originalName);
+                aimsg.textContent = '封面已从媒体库选择';
+                closeMedia();
+                return;
+            }
+            insertAtCursor(mediaSnippet(f)); closeMedia();
+        };
         grid.appendChild(div);
     });
 }
@@ -565,22 +620,74 @@ function renderMediaLibrary() {
         e.preventDefault();
         drop.classList.remove('hover');
         const up = await uploadMediaFiles(e.dataTransfer && e.dataTransfer.files);
-        if (!up.length) return;
-        renderMediaLibrary();
-        insertAtCursor(up.map(mediaSnippet).join('\n\n'));
-        closeMedia();
+        handleUploadedMedia(up);
     });
     input.addEventListener('change', async () => {
         const up = await uploadMediaFiles(input.files);
         input.value = '';
         if (!up.length) return;
-        await loadMediaLibrary();
-        insertAtCursor(up.map(mediaSnippet).join('\n\n'));
-        closeMedia();
+        if (mediaTarget !== 'cover') await loadMediaLibrary();
+        handleUploadedMedia(up);
     });
     search.addEventListener('input', renderMediaLibrary);
     document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMedia(); });
     $('media-modal').addEventListener('click', e => { if (e.target === $('media-modal')) closeMedia(); });
+})();
+
+/** 弹窗里上传完文件的统一出口：封面模式设为封面，其余模式插入正文 */
+function handleUploadedMedia(up) {
+    if (!up || !up.length) return;
+    if (mediaTarget === 'cover') {
+        const img = up.find(isImageFile);
+        if (!img) { setMediaMsg('封面必须选图片'); return; }   // 视频已入库，只是不拿它当封面
+        setCover('/media/' + img.storedName, img.originalName);
+        aimsg.textContent = '封面已上传';
+    } else {
+        insertAtCursor(up.map(mediaSnippet).join('\n\n'));
+    }
+    closeMedia();
+}
+
+/* ==================== 封面（AI / 本地上传 / 媒体库） ====================
+   封面字段存的是一条 URL：AI 生成给外部地址，上传或从媒体库选给 /media/xxx。
+   三种来源殊途同归——最终都写进 #a-cover，保存时随文章一起提交。 */
+function setCover(url, name) {
+    aCover.value = url || '';
+    renderCoverPreview(name);
+}
+function renderCoverPreview(name) {
+    const wrap = $('cover-preview'), img = $('cover-preview-img'), nm = $('cover-preview-name');
+    if (!wrap || !img) return;
+    const url = (aCover.value || '').trim();
+    if (!url) {
+        wrap.style.display = 'none';
+        img.removeAttribute('src');
+        if (nm) nm.textContent = '';
+        return;
+    }
+    wrap.style.display = 'flex';
+    img.onerror = () => { if (nm) nm.textContent = '（图片加载失败，检查 URL 是否可访问）'; };
+    img.src = url;
+    if (nm) nm.textContent = name || '';
+}
+function clearCover() { setCover('', ''); }
+/** 本地上传：点隐藏的 file input，选图后复用媒体上传接口入库，再设为封面 */
+function uploadCover() { $('a-cover-input').click(); }
+(function bindCover() {
+    const input = $('a-cover-input');
+    if (input) input.addEventListener('change', async () => {
+        const f = input.files && input.files[0];
+        input.value = '';
+        if (!f) return;
+        if (!(f.type || '').startsWith('image/')) { aimsg.textContent = '封面必须是图片'; return; }
+        aimsg.textContent = '封面上传中…';
+        const up = await uploadMediaFiles([f]);
+        if (!up.length) { aimsg.textContent = '封面 上传失败'; return; }
+        setCover('/media/' + up[0].storedName, up[0].originalName);
+        aimsg.textContent = '封面已上传';
+    });
+    // 直接粘贴 / 手工修改 URL 时同步刷新预览
+    if (aCover) aCover.addEventListener('input', () => renderCoverPreview());
 })();
 
 
@@ -636,7 +743,7 @@ async function editArticle(id) {
     aId.value = a.id; aTitle.value = a.title; aSlug.value = a.slug;
     aStatus.value = a.status; aKeywords.value = a.seoKeywords || '';
     aDesc.value = a.seoDescription || ''; aSummary.value = a.summary || '';
-    aCover.value = a.cover || '';
+    setCover(a.cover || '');
     initEditor(a.content || '');
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -673,7 +780,7 @@ async function aiAction(type) {
         initEditor(r.result); aimsg.textContent = '润色完成';
     } else if (type === 'cover') {
         const r = await jpost('/api/admin/ai/cover', { prompt: aTitle.value });
-        if (r.coverUrl) { aCover.value = r.coverUrl; aimsg.textContent = '封面已生成'; }
+        if (r.coverUrl) { setCover(r.coverUrl); aimsg.textContent = '封面已生成'; }
         else aimsg.textContent = '封面生成失败（检查 AI 配置）';
     }
 }

@@ -8,6 +8,7 @@ import cn.xiezitai.repository.PageRepository;
 import cn.xiezitai.service.ArticleService;
 import cn.xiezitai.service.MarkdownService;
 import cn.xiezitai.service.NotifyService;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Controller;
@@ -43,6 +44,10 @@ public class PageViewController {
 
     /** 首页每页文章数（SEO：翻页用真实链接 + rel prev/next，不用 JS 拼） */
     private static final int PAGE_SIZE = 10;
+
+    /** 站点根地址：把 /media/xxx 这类相对封面拼成绝对 URL（OG 标签按规范要求绝对地址） */
+    @Value("${xiezitai.site-url:https://xiezitai.cn}")
+    private String siteUrl;
 
     @GetMapping("/")
     public String home(@RequestParam(name = "page", defaultValue = "1") int page, Model model) {
@@ -82,7 +87,17 @@ public class PageViewController {
                 comments.findByArticleIdAndStatusOrderByCreatedAtAsc(a.getId(), "APPROVED"));
         model.addAttribute("comments", threads);
         model.addAttribute("commentCount", cn.xiezitai.dto.CommentNode.count(threads));
+        // 封面同时作为社交分享图（og:image）
+        model.addAttribute("ogImage", absoluteUrl(a.getCover()));
         return "article";
+    }
+
+    /** 封面可能是外部地址（AI 生成）或站内相对地址（/media/xxx）；后者补上站点根，拼成绝对 URL */
+    private String absoluteUrl(String url) {
+        if (url == null || url.isBlank()) return "";
+        if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("//")) return url;
+        String base = siteUrl == null ? "" : siteUrl.replaceAll("/+$", "");
+        return base + (url.startsWith("/") ? url : "/" + url);
     }
 
     /** 文章访问来源通知（可通过后台 notify.visit 开关关闭） */
