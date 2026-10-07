@@ -19,7 +19,10 @@ const errors = [], httpBad = [];
 
   page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));
   page.on('console', m => { if (m.type() === 'error') errors.push('CONSOLE.ERROR: ' + m.text()); });
-  page.on('response', r => { if (r.status() >= 400) httpBad.push(r.status() + ' ' + r.url()); });
+  page.on('response', r => {
+    // /api/admin/ai/cover 是第 ③b 步刻意探测的：AI 未配置时后端应答 502 属预期，不算站点错误
+    if (r.status() >= 400 && !/\/api\/admin\/ai\/cover/.test(r.url())) httpBad.push(r.status() + ' ' + r.url());
+  });
   const log = (...a) => console.log(...a);
 
   // 用 getByRole + exact 精确定位按钮，避免 text= 的子串匹配歧义
@@ -179,6 +182,20 @@ const errors = [], httpBad = [];
     zoomCover();
     return !document.getElementById('cover-lightbox').classList.contains('open');
   }));
+
+  // ---------- ③b AI 封面：只允许 /media/ 站内地址，绝不允许第三方链接 ----------
+  // 后端会把 AI 返回的图下载下来存进媒体库（上游给的临时链接过期即裂图）。
+  // 未配置大模型时应明确报错，而不是回一个可写进封面的外部 URL。
+  // 注意：必须在 admin.html 页面里调（jpost 定义在后台脚本里），所以放在跳转前。
+  const aiRes = await page.evaluate(async () => {
+    try { return await jpost('/api/admin/ai/cover', { prompt: 'E2E AI 封面校验' }); }
+    catch (e) { return { error: 'THROWN:' + (e && e.message) }; }
+  });
+  log('AI_COVER=' + JSON.stringify(aiRes));
+  check('③b AI 封面要么给站内 /media/ 地址，要么明确报错（绝不返回第三方链接）',
+    aiRes && aiRes.coverUrl ? /^\/media\//.test(aiRes.coverUrl) : !!(aiRes && aiRes.error),
+    JSON.stringify(aiRes));
+  check('③b AI 封面失败时不产生 HTTP 5xx 页面 JS 错误崩溃', errors.length === 0, errors.slice(0, 3).join(' ; '));
 
   // ---------- ④ 重新选择封面 → 发布 → 前台校验 ----------
   const cover4 = await pickFirstFromLibrary();

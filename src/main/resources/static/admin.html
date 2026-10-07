@@ -822,8 +822,11 @@ async function delArticle(id) {
 /* ---------- AI ---------- */
 async function aiAction(type) {
     const text = getEditorValue();
-    if (!text.trim()) { aimsg.textContent = '先写点内容'; return; }
-    aimsg.textContent = 'AI 处理中…';
+    // 封面只用标题作 prompt，所以不要求正文非空；摘要/润色才以正文为输入
+    if (type === 'cover') {
+        if (!aTitle.value.trim()) { aimsg.textContent = '先填标题，封面按标题生成'; return; }
+    } else if (!text.trim()) { aimsg.textContent = '先写点内容'; return; }
+    aimsg.textContent = type === 'cover' ? 'AI 生成封面中…（生成后自动存到本站媒体库）' : 'AI 处理中…';
     if (type === 'summary') {
         const r = await jpost('/api/admin/ai/summary', { text });
         aSummary.value = r.result; aimsg.textContent = '摘要已生成';
@@ -831,9 +834,10 @@ async function aiAction(type) {
         const r = await jpost('/api/admin/ai/polish', { text });
         initEditor(r.result); aimsg.textContent = '润色完成';
     } else if (type === 'cover') {
+        // 后端会把图下载下来存进本站媒体库，返回的是 /media/xxx，不是上游的第三方临时链接
         const r = await jpost('/api/admin/ai/cover', { prompt: aTitle.value });
-        if (r.coverUrl) { setCover(r.coverUrl); aimsg.textContent = '封面已生成'; }
-        else aimsg.textContent = '封面生成失败（检查 AI 配置）';
+        if (r.coverUrl) { setCover(r.coverUrl); aimsg.textContent = '封面已生成并保存到服务器'; }
+        else aimsg.textContent = r.error || '封面生成失败（检查 AI 配置）';
     }
 }
 

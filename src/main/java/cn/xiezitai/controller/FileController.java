@@ -4,6 +4,7 @@ import cn.xiezitai.entity.FileEntity;
 import cn.xiezitai.repository.FileRepository;
 import cn.xiezitai.repository.UserRepository;
 import cn.xiezitai.service.FileScanService;
+import cn.xiezitai.service.MediaStoreService;
 import cn.xiezitai.service.NotifyService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -11,9 +12,6 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.nio.file.Files;
-import java.nio.file.Path;
-import java.security.SecureRandom;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
@@ -24,18 +22,16 @@ public class FileController {
     private final FileRepository files;
     private final UserRepository users;
     private final FileScanService scanner;
+    private final MediaStoreService media;
     private final NotifyService notify;
-    private final Path uploadDir;
 
     public FileController(FileRepository files, UserRepository users, FileScanService scanner,
-                          NotifyService notify,
-                          @org.springframework.beans.factory.annotation.Value("${xiezitai.upload-dir}") String uploadDir) {
+                          MediaStoreService media, NotifyService notify) {
         this.files = files;
         this.users = users;
         this.scanner = scanner;
+        this.media = media;
         this.notify = notify;
-        // 必须绝对化 + normalize，否则相对路径与 resolve().normalize() 结果不一致，会误判“非法路径”
-        this.uploadDir = Path.of(uploadDir).toAbsolutePath().normalize();
     }
 
     @GetMapping("/admin/files")
@@ -53,34 +49,18 @@ public class FileController {
             return ResponseEntity.badRequest().body(Map.of("error", extCheck));
         }
 
-        Files.createDirectories(uploadDir);
-        String original = file.getOriginalFilename() == null ? "file" : file.getOriginalFilename();
-        String ext = original.contains(".")
-                ? original.substring(original.lastIndexOf('.') + 1).toLowerCase() : "bin";
-        String stored = HexFormat.of().formatHex(randomBytes(8)) + "." + ext;
+        // 落盘 / 入库 / 扫描统一走 MediaStoreService（与 AI 封面共用同一入口）
+        // 用流而不是 getBytes()：视频上限 200MB，整块读进内存会直接把堆打爆
+        FileEntity fe = media.store(file.getInputStream(), file.getOriginalFilename(),
+                file.getContentType(), file.getSize(), auth.getName());
 
-        Path target = uploadDir.resolve(stored).normalize();
-        if (!target.startsWith(uploadDir)) {
-            return ResponseEntity.badRequest().body(Map.of("error", "非法路径"));
-        }
-        file.transferTo(target);
-
-        FileEntity fe = new FileEntity();
-        fe.setOriginalName(original);
-        fe.setStoredName(stored);
-        fe.setContentType(file.getContentType());
-        fe.setSize(file.getSize());
-        fe.setUploader(auth.getName());
-        files.save(fe);
-
-        scanner.scanContent(fe, target);
-        notify.notifyEvent("upload", "**写字台文件上传**\n> 文件: " + original
+        notify.notifyEvent("upload", "**写字台文件上传**\n> 文件: " + fe.getOriginalName()
                 + "\n> 用户: " + auth.getName() + "\n> 扫描: " + fe.getScanStatus());
 
         return ResponseEntity.ok(Map.of(
                 "id", fe.getId(),
-                "storedName", stored,
-                "url", "/media/" + stored,
+                "storedName", fe.getStoredName(),
+                "url", "/media/" + fe.getStoredName(),
                 "scanStatus", fe.getScanStatus()));
     }
 
@@ -88,14 +68,8 @@ public class FileController {
     public ResponseEntity<?> delete(@PathVariable Long id) throws Exception {
         FileEntity fe = files.findById(id).orElse(null);
         if (fe == null) return ResponseEntity.notFound().build();
-        Files.deleteIfExists(uploadDir.resolve(fe.getStoredName()));
+        Files.deleteIfExists(media.dir().resolve(fe.getStoredName()));
         files.delete(fe);
         return ResponseEntity.ok(Map.of("message", "已删除"));
-    }
-
-    private byte[] randomBytes(int n) {
-        byte[] b = new byte[n];
-        new SecureRandom().nextBytes(b);
-        return b;
     }
 }

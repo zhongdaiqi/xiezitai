@@ -8,6 +8,7 @@ import cn.xiezitai.repository.RequestLogRepository;
 import cn.xiezitai.repository.UserRepository;
 import cn.xiezitai.security.LoginAttemptService;
 import cn.xiezitai.security.TotpService;
+import cn.xiezitai.service.AiService;
 import cn.xiezitai.service.NotifyService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -16,6 +17,8 @@ import com.google.zxing.MultiFormatReader;
 import com.google.zxing.Result;
 import com.google.zxing.client.j2se.BufferedImageLuminanceSource;
 import com.google.zxing.common.HybridBinarizer;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -33,9 +36,12 @@ import org.springframework.test.web.servlet.MvcResult;
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -72,6 +78,7 @@ class XiezitaiApplicationTests {
     @Autowired NotifyService notify;
     @Autowired TotpService totp;
     @Autowired LoginAttemptService attempts;
+    @Autowired AiService ai;
 
     /** 站点根地址取自配置 xiezitai.site-url：SEO 端点（robots/sitemap/og:image）与页脚都应由它驱动 */
     @Value("${xiezitai.site-url:https://xiezitai.cn}")
@@ -745,6 +752,121 @@ class XiezitaiApplicationTests {
 
         // 未登记的文件不对外
         mvc.perform(get("/media/not-exist-file.png")).andExpect(status().isNotFound());
+    }
+
+    /* ==================== AI 封面：必须落盘到本站媒体库 ==================== */
+
+    /** 1x1 PNG，用于冒充第三方图床返回的封面 */
+    private static final byte[] PNG_1X1 = java.util.Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=");
+
+    private static void respond(HttpExchange ex, int code, String contentType, byte[] body) throws java.io.IOException {
+        ex.getResponseHeaders().add("Content-Type", contentType);
+        ex.sendResponseHeaders(code, body.length);
+        try (var os = ex.getResponseBody()) {
+            os.write(body);
+        }
+    }
+
+    /**
+     * AI 封面绝不能把上游（ModelScope 等）的第三方临时链接存进封面字段 —— 那种链接过期即裂图。
+     * 这里起一个本机假图床，走完整的「生成接口 → 下载图片 → 落盘媒体库 → 返回 /media/xxx」链路。
+     */
+    @Test
+    @DisplayName("AI 封面：第三方图片链接必须下载落盘到本站媒体库，不返回外部 URL")
+    void aiCoverSavedToServer() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        int port = server.getAddress().getPort();
+        server.createContext("/v1/images/generations", ex -> respond(ex, 200, "application/json",
+                ("{\"data\":[{\"url\":\"http://127.0.0.1:" + port + "/cdn/cover.png\"}]}")
+                        .getBytes(StandardCharsets.UTF_8)));
+        // 图床故意先 302（CDN 常态），验证下载会跟随重定向
+        server.createContext("/cdn/cover.png", ex -> {
+            ex.getResponseHeaders().add("Location", "http://127.0.0.1:" + port + "/real/cover.png");
+            ex.sendResponseHeaders(302, -1);
+            ex.close();
+        });
+        server.createContext("/real/cover.png", ex -> respond(ex, 200, "image/png", PNG_1X1));
+        server.start();
+
+        String baseBackup = ai.get("ai.baseUrl", "");
+        String keyBackup = ai.get("ai.apiKey", "");
+        String modelBackup = ai.get("ai.imageModel", "");
+        try {
+            ai.set("ai.baseUrl", "http://127.0.0.1:" + port + "/v1");
+            ai.set("ai.apiKey", "test-key");
+            ai.set("ai.imageModel", "test-model");
+
+            String token = loginToken(ADMIN, ADMIN_PWD);
+            MvcResult r = mvc.perform(post("/api/admin/ai/cover")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("prompt", "测试封面")))
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            String body = r.getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+            assertThat(body).as("AI 封面响应: " + body).contains("/media/");
+            assertThat(body).as("上游的第三方链接不能出现在返回里").doesNotContain("127.0.0.1");
+
+            Matcher m = Pattern.compile("/media/([0-9a-f]{16}\\.png)").matcher(body);
+            assertThat(m.find()).as("应返回本站 /media/xxx.png: " + body).isTrue();
+            String stored = m.group(1);
+
+            assertThat(fileRepo.findByStoredName(stored))
+                    .as("落盘的图必须登记进媒体库，否则会被全库扫描判为「孤立文件」").isPresent();
+            mvc.perform(get("/media/" + stored))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Content-Type", org.hamcrest.Matchers.containsString("image/png")));
+        } finally {
+            server.stop(0);
+            ai.set("ai.baseUrl", baseBackup);
+            ai.set("ai.apiKey", keyBackup);
+            ai.set("ai.imageModel", modelBackup);
+        }
+    }
+
+    @Test
+    @DisplayName("AI 封面：上游返回的是错误页而非图片时，明确失败且不往媒体库塞脏文件")
+    void aiCoverRejectsNonImage() throws Exception {
+        long before = fileRepo.count();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        int port = server.getAddress().getPort();
+        server.createContext("/v1/images/generations", ex -> respond(ex, 200, "application/json",
+                ("{\"data\":[{\"url\":\"http://127.0.0.1:" + port + "/cdn/err.html\"}]}")
+                        .getBytes(StandardCharsets.UTF_8)));
+        // 图床把 HTML 错误页当图片返回（限流 / 403 时很常见）
+        server.createContext("/cdn/err.html", ex -> respond(ex, 200, "text/html",
+                "<html><body>403 Forbidden</body></html>".getBytes(StandardCharsets.UTF_8)));
+        server.start();
+
+        String baseBackup = ai.get("ai.baseUrl", "");
+        String keyBackup = ai.get("ai.apiKey", "");
+        String modelBackup = ai.get("ai.imageModel", "");
+        try {
+            ai.set("ai.baseUrl", "http://127.0.0.1:" + port + "/v1");
+            ai.set("ai.apiKey", "test-key");
+            ai.set("ai.imageModel", "test-model");
+
+            String token = loginToken(ADMIN, ADMIN_PWD);
+            MvcResult r = mvc.perform(post("/api/admin/ai/cover")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("prompt", "测试封面")))
+                            .header("Authorization", "Bearer " + token))
+                    .andReturn();
+            String body = r.getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+            assertThat(r.getResponse().getStatus())
+                    .as("拿到的不是图片，应明确报错而不是静默成功: " + body).isEqualTo(502);
+            assertThat(body).as("错误信息应可读: " + body).contains("AI 封面生成失败");
+            assertThat(body).as("不能返回任何可直接写进封面的地址").doesNotContain("/media/");
+            assertThat(fileRepo.count()).as("不该往媒体库塞脏文件").isEqualTo(before);
+        } finally {
+            server.stop(0);
+            ai.set("ai.baseUrl", baseBackup);
+            ai.set("ai.apiKey", keyBackup);
+            ai.set("ai.imageModel", modelBackup);
+        }
     }
 
     /* ==================== 开放 API / MCP ==================== */

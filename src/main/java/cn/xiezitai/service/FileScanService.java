@@ -113,6 +113,16 @@ public class FileScanService {
         return "扫描完成: 共 " + total + " 个文件，孤立(未经系统上传) " + orphan + " 个";
     }
 
+    /** 按文件头嗅探真实图片格式；不是已知图片返回 null（用于拒绝把错误页/HTML 当图片存下来） */
+    public String sniffImageExt(byte[] data) {
+        if (data == null || data.length < 4) return null;
+        // 顺序有意为之：png/jpg/gif/bmp/webp 的魔数较严格，ico 最宽松（只判前两字节为 0）故放最后
+        for (String ext : List.of("png", "jpg", "gif", "bmp", "webp", "ico")) {
+            if (magicOk(data, ext)) return ext;
+        }
+        return null;
+    }
+
     private boolean magicOk(byte[] h, String ext) {
         return switch (ext) {
             case "jpg", "jpeg" -> h.length >= 3 && (h[0] & 0xFF) == 0xFF && (h[1] & 0xFF) == 0xD8;
