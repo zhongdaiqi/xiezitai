@@ -1,6 +1,7 @@
 target/
 data/
 .idea/
+.bug/
 *.iml
 .vscode/
 node_modules/

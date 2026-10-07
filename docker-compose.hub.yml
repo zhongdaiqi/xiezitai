@@ -58,6 +58,10 @@ services:
       MYSQL_DB: xiezitai
       MYSQL_USER: xiezitai
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-xiexiexie}
+      # 连接串默认由 MYSQL_* 拼装（镜像内置，characterEncoding 已是 UTF-8）。
+      # 在 .env 里写 SPRING_DATASOURCE_URL 在本文件**不生效**（compose 需显式声明才会传进容器）；
+      # 真要整条覆盖，取消下面这行注释并同时设置该变量（characterEncoding 只能写 UTF-8）：
+      # SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL}
       XIEZITAI_JWT_SECRET: ${XIEZITAI_JWT_SECRET:-please-change-me-0123456789abcdef}
       XIEZITAI_UPLOAD_DIR: /app/data/uploads
       XIEZITAI_SITE_URL: ${XIEZITAI_SITE_URL:-https://xiezitai.cn}

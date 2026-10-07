@@ -166,6 +166,11 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请设置数据库密码，例如 export MYSQL_PASSWORD=$(openssl rand -hex 16)}
       SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${DB_POOL_SIZE:-4}   # 默认 10；1 核机器 4 条足够，也压住 MariaDB 侧连接数
       SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "1"                       # 默认同 maximum；空闲时别养着 10 条连接
+      # 连接串默认由 MYSQL_* 拼装（镜像内置，characterEncoding 已是 UTF-8），本编排无需额外配置。
+      # 注意：在 .env 里写 SPRING_DATASOURCE_URL **在本文件不生效** —— compose 只有显式声明
+      # 某变量才会把它传进容器，.env 只提供「插值用的值」。真要整条覆盖（开 SSL、加参数），
+      # 把下面这行取消注释，同时在 .env / shell 里设置它（characterEncoding 只能写 UTF-8）：
+      # SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL}
 
       # ---------- 站点 ----------
       XIEZITAI_JWT_SECRET: ${XIEZITAI_JWT_SECRET:?请设置至少 32 位随机字符串，例如 export XIEZITAI_JWT_SECRET=$(openssl rand -hex 32)}
@@ -258,10 +263,12 @@ volumes:
 #
 #   | 现象 | 原因 / 处理 |
 #   | --- | --- |
+#   | 启动即挂，报 `Unsupported character encoding 'utf8mb4'` | 用了**修复前**的旧镜像（b94efee 之前的 jar 把 JDBC URL 的 characterEncoding 写成了 utf8mb4）。Docker 不会自动更新本地镜像：`docker compose -f docker-compose.mariadb.yml pull app` 再 `up -d --force-recreate app`。确认镜像出处：`docker image inspect zhongdaiqi/xiezitai:latest --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'`（要 b94efee 之后的提交） |
+#   | 改了 .env 但容器行为没变 | `restart` / `start` 不会重建容器、也不重载环境变量，要用 `up -d --force-recreate`。另外宿主机 shell / 系统环境里 export 的同名变量优先级高于 .env，会把它盖掉（`env \| grep -i mysql` 查一下） |
 #   | 应用容器反复重启，ExitCode 137 | 被内存限制杀了。调大 APP_MEM_LIMIT，或把 -Xmx320m 降到 256m；先看 `docker inspect` 的 OOMKilled |
 #   | db 容器起不来，日志里有 unknown variable | 少见的 MariaDB 版本差异。把报错的那个 `--xxx` 参数注释掉再试 |
 #   | 应用报 Can't connect to MySQL / Communications link failure | 应用启动时数据库还没就绪。正常由 depends_on: service_healthy 兜住；若手动 `up app` 绕过，等 db healthy 再起 |
-#   | 应用报 Access denied for user | MYSQL_PASSWORD 与 db 的 MARIADB_PASSWORD 必须是同一个值（都取 .env 里的 MYSQL_PASSWORD） |
+#   | 应用报 Access denied for user 'xiezitai'@... | ① .env 里 MYSQL_PASSWORD 与 db 的 MARIADB_PASSWORD 不是同一个值（都取 .env 里的 MYSQL_PASSWORD）；② **改过密码**：MariaDB 只在数据卷**首次初始化（空目录）**时按环境变量创建用户，之后再改 .env 不会同步进库 —— 进库 `ALTER USER 'xiezitai'@'%' IDENTIFIED BY '新密码'; FLUSH PRIVILEGES;` 同步，或删卷重建（⚠️ 清空数据） |
 #   | 报 Too many connections | 应用池（DB_POOL_SIZE）与 MariaDB 的 --max-connections 一起调，保持「池 < 上限」 |
 #   | 中文乱码 / 报 Incorrect string value | 库字符集与连接字符集两处都要 utf8mb4；JDBC URL 里 characterEncoding 只能写 UTF-8（写 utf8mb4 会启动失败） |
 #   | 磁盘莫名写满 | 日志没轮转。本文件已配 json-file 10m×3；另检查 /var/lib/docker 与上传目录 |

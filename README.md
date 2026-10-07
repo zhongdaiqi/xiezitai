@@ -178,6 +178,10 @@ docker compose -f docker-compose.mariadb.yml logs -f app      # 见 Started Xiez
 docker stats --no-stream                                      # 看两个容器真实占用
 ```
 
+> ⚠️ **改过 `.env` 或升级版本后，一定要 pull + 重建**：Docker 不会自动更新本地镜像，只跑 `up -d`、`restart`
+> 用的还是旧镜像与旧环境变量。典型症状就是「明明已经修好了，重启后还报一模一样的错」。正确姿势：
+> `docker compose -f docker-compose.mariadb.yml pull && docker compose -f docker-compose.mariadb.yml up -d --force-recreate`
+
 **内存预算（实机实测，非估算）**
 
 | 组成 | 上限 | 空闲 | 压测后 |
@@ -321,6 +325,40 @@ docker run -d --name xiezitai -p 8080:8080 \
 | `DOCKERHUB_USERNAME` | Docker Hub 用户名 |
 | `DOCKERHUB_TOKEN` | Docker Hub Access Token（不是登录密码） |
 
+### 自动部署流程
+
+`.github/workflows/deploy.yml`：镜像构建成功后，自动 SSH 到服务器执行部署脚本。
+
+| 触发方式 | 说明 |
+| --- | --- |
+| 上游「Build and Push Docker Image」成功结束 | 自动部署（PR 构建成功不部署） |
+| Actions 页面手动 Run workflow | 强制部署一次 |
+
+为什么挂在**构建完成之后**而不是也写 `on: push: [main]`：push 之后镜像还要编译 + 双平台构建
+好几分钟才推上 Hub，两边同时起步的话服务器 pull 到的是**上一版镜像**，而且日志全绿、很难察觉。
+
+需要在 Secrets 里配置（和构建用的一组分开）：
+
+| Secret | 值 |
+| --- | --- |
+| `SSH_HOST` | 服务器地址 |
+| `SSH_USER` | 登录用户 |
+| `SSH_PORT` | SSH 端口 |
+| `SSH_KEY` | 部署私钥全文（含 BEGIN/END 行） |
+
+服务器侧 `~/.ssh/authorized_keys` 里这把公钥用 `command=` 强制指向部署脚本，
+客户端发过去的命令会被忽略，所以 workflow 里的 `script` 只是占位；
+**要改部署动作请改服务器上的那个脚本**。
+
+> ⚠️ **注意镜像标签要对得上**：部署脚本若按 `docker-compose.mariadb.yml` 的默认值拉
+> `:latest`，而 `latest` 只在打 `v*.*.*` tag 时才更新（见上节标签语义），
+> 那么每次推 `main` 的自动部署都会**拉到同一个旧镜像、整条链空转**。
+> 想做到「推 main 就上线」：在服务器 `.env` 里加 `XIEZITAI_IMAGE=zhongdaiqi/xiezitai:main`。
+> 想做到「只有发版才上线」：把部署的触发条件收紧到 tag。
+
+可选：在仓库 `Variables` 里配 `DEPLOY_HEALTHCHECK_URL`（如 `https://xiezitai.cn/`），
+部署后会探测一次并只告警不判失败（境外 runner 探测国内域名可能超时）。
+
 ## 服务器部署（非 Docker）
 
 1. 准备 MySQL 8，建库 `xiezitai`（utf8mb4）
@@ -331,10 +369,10 @@ docker run -d --name xiezitai -p 8080:8080 \
 
 | 模块     | 说明                                                                               |
 | ------ | -------------------------------------------------------------------------------- |
-| 文章     | Markdown（ByteMD 编辑器）、slug、SEO 字段、浏览计数；**插入媒体**：媒体库弹窗上传/挑选，图片入 Markdown，视频入 `<video>` 标签；支持粘贴截图、拖拽图片/视频到编辑器自动入库；媒体输出支持 HTTP Range（视频可拖进度条）  |
+| 文章     | Markdown（ByteMD 编辑器）、slug、SEO 字段、浏览计数；**插入媒体**：媒体库弹窗上传/挑选，图片入 Markdown，视频入 `<video>` 标签；支持粘贴截图、拖拽图片/视频到编辑器自动入库；媒体输出支持 HTTP Range（视频可拖进度条）；**代码块**：前台文章页与后台编辑器实时预览都自动语法高亮（标注语言才着色，46 种语言）+ 语言标签 + 一键复制  |
 | 页面     | 自定义页面（关于、友链等）                                                                    |
 | 评论     | **仅限登录用户**评论（禁止匿名），作者名取自登录账号不可伪造；提交后待管理员审核，通过后公开展示 + 文章页内嵌登录/注册弹窗                                                                    |
-| 用户     | 注册 / 角色（ADMIN/USER）/ 按用户限制上传类型                                                   |
+| 用户     | **注册需审核**（新注册为「待审核」，站长通过后才能登录；驳回可填原因，用户登录时可见）/ 角色（ADMIN/USER）/ 按用户限制上传类型 |
 | 文件     | 上传（默认仅图片/视频）、媒体经 Spring 输出并记录访问日志                                                |
 | 安全     | TOTP 两步验证（扫码/密钥绑定）；密码错误 3 次锁 5 分钟、5 次锁 10 分钟、10 次锁 1 小时；全量请求日志；文件魔数扫描 + 孤立文件检测；防篡改基线校验    |
 | 机器人    | 企业微信 webhook 通知（登录/文章/访问/注册/评论/上传），可逐项开关                                         |
@@ -342,7 +380,19 @@ docker run -d --name xiezitai -p 8080:8080 \
 | 开放 API | `POST /api/v1/publish`，Header `X-API-Token`（后台「设置」页查看）                           |
 | MCP    | `POST /api/v1/mcp`，JSON-RPC 2.0，工具：publish_article / list_articles / get_article |
 | SEO    | 服务端渲染、robots.txt、sitemap.xml、OG 标签                                               |
-| 前端资源 | ByteMD / github-markdown-css / Mermaid **全部本地内置**（`static/vendor/`），不依赖任何外部 CDN，可离线/内网部署 |
+| 前端资源 | ByteMD / github-markdown-css / Mermaid / highlight.js **全部本地内置**（`static/vendor/`），不依赖任何外部 CDN，可离线/内网部署 |
+
+### 注册审核怎么走
+
+访客注册后不是立刻可用，而是进待审队列 —— 防的是机器人灌水注册和蹭上传口的账号：
+
+1. 文章页「注册」提交 → 账号状态为 `PENDING`，此时登录返回 403 并提示「等待管理员审核」
+2. 站长在后台「用户」页处理：待审核的行会**黄色高亮并排在最前**，点「通过」或「驳回」（驳回可填原因）
+3. 通过后才能登录；被驳回的用户登录时会看到你填的原因
+4. 管理员账号不走这道闸门，也不允许被驳回（避免一次误操作把自己锁在门外）
+
+> 审核状态对所有入口生效：一经驳回/停用，此前签发的 JWT 和 API Token **立即失效**，不必等它自然过期。
+> 从旧版本升级不需要做数据迁移 —— 新增列的默认值是 `APPROVED`，历史用户不会被挡在门外。
 
 ## AI 大模型（默认接入魔搭 ModelScope）
 
