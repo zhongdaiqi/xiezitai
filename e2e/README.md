@@ -42,6 +42,7 @@ $env:E2E_BASE='http://127.0.0.1:8099'
 | `pager.cjs` | 首页分页、任务列表渲染 |
 | `media.cjs` | 图片 / 视频上传与前台展示 |
 | `cover.cjs` | 封面三种来源：本地上传 / 从媒体库选择 / 清除；放大预览灯箱（点缩略图、按钮、ESC / 遮罩关闭）；AI 封面只允许站内 `/media/` 地址、绝不返回第三方链接；发布后前台封面 + `og:image` 绝对地址 |
+| `ai-seo.cjs` | AI 写作辅助：优化标题 / 提取 SEO 关键词 / 提取 SEO 描述 三个按钮 → 接口 → 字段回填；模型脏输出被洗净；**AI 不可用时只提示、不覆盖用户内容**；保存后落库并在前台 `meta keywords/description` 生效 |
 | `video-insert.cjs` | 编辑器工具栏插入 `<video>` |
 | `password.cjs` | 修改密码流程 |
 | `user-audit.cjs` | 注册审核：待审核拦截 → 后台「用户」页通过/驳回（含备注）→ 通过后可用、驳回后令牌立即失效 |
@@ -49,6 +50,35 @@ $env:E2E_BASE='http://127.0.0.1:8099'
 | `totp.cjs` | TOTP 绑定 |
 | `demo-seed.cjs` | 空库首启示例内容（4 文章 / 2 页面 / 5 评论） |
 | `shot-*.cjs` | 纯截图工具，无断言，供人工核对视觉 |
+
+## AI 相关脚本：用假上游跑，别依赖真实大模型
+
+`ai-seo.cjs`（以及 `cover.cjs` 的 AI 封面那步）需要一个**输出固定**的大模型上游，否则断言没有基准，
+还会把真实第三方服务（默认魔搭 ModelScope）的延迟、限流、配额带进 E2E。
+`lib/fake-ai.cjs` 就是本机假上游：OpenAI 兼容的 `chat/completions` + `images/generations`，
+返回**故意带格式问题**的内容（包裹引号、「优化后的标题：」标签、带序号的列表），用来验证清洗逻辑。
+
+```bash
+# ① 起假上游（默认 127.0.0.1:8123，可用 FAKE_AI_PORT 改）
+node e2e/lib/fake-ai.cjs
+
+# ② 起被测实例时把大模型指过来（⚠️ 必须用全新空库，见下）
+java -jar target/xiezitai.jar --server.port=8099 --spring.profiles.active=lite \
+  --XIEZITAI_AI_BASE_URL=http://127.0.0.1:8123/v1   # 生产用环境变量注入，别写进命令行
+```
+
+⚠️ **必须用全新的空库**：`sys_configs` 里的 `ai.*` 只在「键不存在」时由 `DataInitializer` 写入，
+复用一个跑过的库，新环境变量不会生效（仍旧指向真实大模型）。把 `XIEZITAI_DB_PATH`
+指到一个新的临时目录即可：
+
+```bash
+export XIEZITAI_DB_PATH='E:/tmp/xz-e2e/db/xiezitai'
+export XIEZITAI_UPLOAD_DIR='E:/tmp/xz-e2e/uploads'
+export XIEZITAI_AI_BASE_URL='http://127.0.0.1:8123/v1'
+export XIEZITAI_AI_API_KEY='fake-key'
+export XIEZITAI_AI_MODEL='fake-chat'
+export XIEZITAI_AI_IMAGE_MODEL='fake-image'
+```
 
 ## 说明
 

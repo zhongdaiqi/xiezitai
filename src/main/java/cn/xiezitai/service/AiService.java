@@ -75,6 +75,43 @@ public class AiService {
         return chat("请为以下文章写一段 100 字以内的中文摘要，直接输出摘要内容：\n\n" + text);
     }
 
+    /**
+     * 优化标题：在保持原意的前提下把标题改得更准确、更吸引点击、更利于搜索收录。
+     * 只输出标题本身（清洗交给 {@link AiTextCleaner#title}）。
+     */
+    public String optimizeTitle(String title, String text) {
+        return chat("你是资深中文内容编辑，擅长起标题。请在保持原意的前提下，把下面这篇文章的标题改写得"
+                + "更准确、更吸引点击、更利于搜索引擎收录。要求：只输出一个标题，不要引号、不要序号、"
+                + "不要任何解释，不超过 30 个字。\n\n原标题：" + safe(title) + "\n\n正文：\n" + excerpt(text));
+    }
+
+    /** 提取 SEO 关键词（5~8 个，英文逗号分隔；清洗交给 {@link AiTextCleaner#keywords}） */
+    public String seoKeywords(String title, String text) {
+        return chat("请从下面这篇文章里提取 5 到 8 个最能代表主题的 SEO 关键词。要求：只输出关键词本身，"
+                + "用英文逗号分隔，不要编号、不要引号、不要任何解释，每个关键词不超过 10 个字。\n\n标题："
+                + safe(title) + "\n\n正文：\n" + excerpt(text), 0.3);
+    }
+
+    /** 提取 SEO 描述（Meta Description，80~120 字；清洗交给 {@link AiTextCleaner#seoDescription}） */
+    public String seoDescription(String title, String text) {
+        return chat("请为下面这篇文章写一段 SEO 描述（Meta Description）。要求：80 到 120 个汉字，"
+                + "概括文章核心内容并自然带出主题关键词，面向搜索结果点击。"
+                + "只输出描述本身，不要引号、不要任何解释。\n\n标题："
+                + safe(title) + "\n\n正文：\n" + excerpt(text), 0.3);
+    }
+
+    /** 送给模型的正文节选上限：超长文章没必要整篇塞进 prompt */
+    private static final int EXCERPT_CHARS = 4000;
+
+    private String safe(String s) {
+        return s == null ? "" : s.trim();
+    }
+
+    private String excerpt(String text) {
+        String s = safe(text);
+        return s.length() <= EXCERPT_CHARS ? s : s.substring(0, EXCERPT_CHARS) + "\n…（正文过长，已截断）";
+    }
+
     /** 请求日志安全风险分析 */
     public String analyzeRisk(String logText) {
         return chat("你是安全分析师。以下是一个博客系统的请求日志片段，请识别可疑行为（扫描、爆破、注入、爬虫等）"
@@ -224,6 +261,14 @@ public class AiService {
 
     /** OpenAI 兼容 Chat 调用；未配置返回提示 */
     public String chat(String userPrompt) {
+        return chat(userPrompt, 0.7);
+    }
+
+    /**
+     * OpenAI 兼容 Chat 调用，可指定采样温度。
+     * 抽取类任务（关键词 / SEO 描述）用低温，减少模型「自由发挥」。
+     */
+    public String chat(String userPrompt, double temperature) {
         String baseUrl = get("ai.baseUrl", "");
         String apiKey = get("ai.apiKey", "");
         String model = get("ai.model", "");
@@ -234,7 +279,7 @@ public class AiService {
             Map<String, Object> body = Map.of(
                     "model", model,
                     "messages", new Object[]{Map.of("role", "user", "content", userPrompt)},
-                    "temperature", 0.7);
+                    "temperature", temperature);
             HttpRequest req = HttpRequest.newBuilder(URI.create(trim(baseUrl) + "/chat/completions"))
                     .header("Content-Type", "application/json")
                     .header("Authorization", "Bearer " + apiKey)

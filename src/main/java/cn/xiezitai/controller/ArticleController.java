@@ -4,6 +4,7 @@ import cn.xiezitai.entity.Article;
 import cn.xiezitai.entity.FileEntity;
 import cn.xiezitai.repository.ArticleRepository;
 import cn.xiezitai.service.AiService;
+import cn.xiezitai.service.AiTextCleaner;
 import cn.xiezitai.service.ArticleService;
 import cn.xiezitai.service.MediaStoreService;
 import org.slf4j.Logger;
@@ -103,6 +104,38 @@ public class ArticleController {
     @PostMapping("/admin/ai/summary")
     public ResponseEntity<Map<String, String>> summary(@RequestBody Map<String, String> body) {
         return ResponseEntity.ok(Map.of("result", ai.summarize(body.getOrDefault("text", ""))));
+    }
+
+    /**
+     * AI 优化标题：返回**建议标题**（不落库，由前端确认后再由用户保存）。
+     *
+     * <p>返回的 result 可能带「（AI 功能未启用…）」前缀 —— 那是 {@link AiService#chat} 的降级文案，
+     * 前端必须当消息展示，绝不能拿去覆盖用户已经写好的标题。
+     */
+    @PostMapping("/admin/ai/title")
+    public ResponseEntity<Map<String, String>> aiTitle(@RequestBody Map<String, String> body) {
+        String title = body.getOrDefault("title", "");
+        String text = body.getOrDefault("text", "");
+        String raw = ai.optimizeTitle(title, text);
+        return ResponseEntity.ok(Map.of("result", AiTextCleaner.title(raw, title)));
+    }
+
+    /** AI 提取 SEO 关键词：返回「A, B, C」，与 articles.seo_keywords 同格式 */
+    @PostMapping("/admin/ai/seo-keywords")
+    public ResponseEntity<Map<String, String>> aiSeoKeywords(@RequestBody Map<String, String> body) {
+        String title = body.getOrDefault("title", "");
+        String text = body.getOrDefault("text", "");
+        String raw = ai.seoKeywords(title, text);
+        return ResponseEntity.ok(Map.of("result", AiTextCleaner.keywords(raw)));
+    }
+
+    /** AI 提取 SEO 描述（Meta Description），与 articles.seo_description 同格式 */
+    @PostMapping("/admin/ai/seo-description")
+    public ResponseEntity<Map<String, String>> aiSeoDescription(@RequestBody Map<String, String> body) {
+        String title = body.getOrDefault("title", "");
+        String text = body.getOrDefault("text", "");
+        String raw = ai.seoDescription(title, text);
+        return ResponseEntity.ok(Map.of("result", AiTextCleaner.seoDescription(raw)));
     }
 
     /**

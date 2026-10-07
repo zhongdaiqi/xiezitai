@@ -129,8 +129,11 @@
                 <button class="ghost" onclick="openMedia('editor')">插入媒体</button>
                 <button class="ghost" onclick="aiAction('polish')">AI 润色/纠错</button>
                 <button class="ghost" onclick="aiAction('summary')">AI 摘要</button>
-                <span class="muted" id="aimsg"></span>
+                <button class="ghost" onclick="aiAction('title')">AI 优化标题</button>
+                <button class="ghost" onclick="aiAction('keywords')">AI 提取SEO关键词</button>
+                <button class="ghost" onclick="aiAction('seodesc')">AI 提取SEO描述</button>
             </div>
+            <div class="row"><span class="muted" id="aimsg"></span></div>
             <input type="text" id="a-summary" placeholder="摘要" style="width:100%; margin-bottom:8px;">
             <!-- 封面：三种来源并存（AI 生成 / 本地上传 / 从媒体库选择），也允许直接粘贴 URL -->
             <div class="row">
@@ -797,6 +800,7 @@ async function editArticle(id) {
     aDesc.value = a.seoDescription || ''; aSummary.value = a.summary || '';
     setCover(a.cover || '');
     initEditor(a.content || '');
+    aimsg.textContent = '';   // 换文章时清掉上一篇的 AI 提示，免得误读
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 async function saveArticle() {
@@ -820,24 +824,62 @@ async function delArticle(id) {
 }
 
 /* ---------- AI ---------- */
+/* 后端在「未配置大模型 / 调用失败」时回的是「（AI 功能未启用…）」这类提示文案。
+   它只能当消息展示 —— 绝不能拿去覆盖用户已经写好的标题/关键词/描述，否则点一下内容就没了。 */
+const aiUnavailable = r => !r || !r.result || r.result.indexOf('（AI ') === 0;
+
 async function aiAction(type) {
     const text = getEditorValue();
-    // 封面只用标题作 prompt，所以不要求正文非空；摘要/润色才以正文为输入
+    const title = aTitle.value.trim();
+    // 封面与优化标题只要有标题也能干活；摘要/润色/关键词/描述必须以正文为素材
     if (type === 'cover') {
-        if (!aTitle.value.trim()) { aimsg.textContent = '先填标题，封面按标题生成'; return; }
+        if (!title) { aimsg.textContent = '先填标题，封面按标题生成'; return; }
+    } else if (type === 'title') {
+        if (!title && !text.trim()) { aimsg.textContent = '先写标题或正文'; return; }
     } else if (!text.trim()) { aimsg.textContent = '先写点内容'; return; }
-    aimsg.textContent = type === 'cover' ? 'AI 生成封面中…（生成后自动存到本站媒体库）' : 'AI 处理中…';
-    if (type === 'summary') {
-        const r = await jpost('/api/admin/ai/summary', { text });
-        aSummary.value = r.result; aimsg.textContent = '摘要已生成';
-    } else if (type === 'polish') {
-        const r = await jpost('/api/admin/ai/polish', { text });
-        initEditor(r.result); aimsg.textContent = '润色完成';
-    } else if (type === 'cover') {
+
+    if (type === 'cover') {
+        aimsg.textContent = 'AI 生成封面中…（生成后自动存到本站媒体库）';
         // 后端会把图下载下来存进本站媒体库，返回的是 /media/xxx，不是上游的第三方临时链接
-        const r = await jpost('/api/admin/ai/cover', { prompt: aTitle.value });
+        const r = await jpost('/api/admin/ai/cover', { prompt: title });
         if (r.coverUrl) { setCover(r.coverUrl); aimsg.textContent = '封面已生成并保存到服务器'; }
         else aimsg.textContent = r.error || '封面生成失败（检查 AI 配置）';
+        return;
+    }
+
+    aimsg.textContent = 'AI 处理中…';
+    try {
+        if (type === 'summary') {
+            const r = await jpost('/api/admin/ai/summary', { text });
+            if (aiUnavailable(r)) { aimsg.textContent = r.result || 'AI 未返回结果'; return; }
+            aSummary.value = r.result; aimsg.textContent = '摘要已生成';
+        } else if (type === 'polish') {
+            const r = await jpost('/api/admin/ai/polish', { text });
+            if (aiUnavailable(r)) { aimsg.textContent = r.result || 'AI 未返回结果'; return; }
+            initEditor(r.result); aimsg.textContent = '润色完成';
+        } else if (type === 'title') {
+            const r = await jpost('/api/admin/ai/title', { title, text });
+            if (aiUnavailable(r)) { aimsg.textContent = r.result || 'AI 未返回结果'; return; }
+            const sug = r.result;
+            if (sug === title) { aimsg.textContent = 'AI 认为当前标题已经不错了'; return; }
+            // 标题是用户手写的主文案，覆盖前必须问一声（关键词/描述是辅助字段，直接填）
+            if (confirm('AI 建议标题：\n\n' + sug + '\n\n用这个标题替换当前标题吗？')) {
+                aTitle.value = sug; aimsg.textContent = '标题已优化';
+            } else {
+                aimsg.textContent = '已保留原标题（AI 建议：' + sug + '）';
+            }
+        } else if (type === 'keywords') {
+            const r = await jpost('/api/admin/ai/seo-keywords', { title, text });
+            if (aiUnavailable(r)) { aimsg.textContent = r.result || 'AI 未返回结果'; return; }
+            aKeywords.value = r.result;
+            aimsg.textContent = '已提取 ' + r.result.split(',').length + ' 个 SEO 关键词';
+        } else if (type === 'seodesc') {
+            const r = await jpost('/api/admin/ai/seo-description', { title, text });
+            if (aiUnavailable(r)) { aimsg.textContent = r.result || 'AI 未返回结果'; return; }
+            aDesc.value = r.result; aimsg.textContent = '已生成 SEO 描述（' + r.result.length + ' 字）';
+        }
+    } catch (e) {
+        aimsg.textContent = 'AI 请求失败：' + ((e && e.message) ? e.message : e);
     }
 }
 

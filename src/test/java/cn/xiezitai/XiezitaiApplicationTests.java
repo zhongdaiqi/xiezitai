@@ -9,6 +9,7 @@ import cn.xiezitai.repository.UserRepository;
 import cn.xiezitai.security.LoginAttemptService;
 import cn.xiezitai.security.TotpService;
 import cn.xiezitai.service.AiService;
+import cn.xiezitai.service.AiTextCleaner;
 import cn.xiezitai.service.NotifyService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -867,6 +868,127 @@ class XiezitaiApplicationTests {
             ai.set("ai.apiKey", keyBackup);
             ai.set("ai.imageModel", modelBackup);
         }
+    }
+
+    /**
+     * AI 优化标题 / 提取 SEO 关键词 / 提取 SEO 描述：起一个本机假 chat 上游，故意回「模型不守格式」
+     * 的典型脏输出（带包裹引号、带「优化后的标题：」标签、带序号的列表），
+     * 验证接口返回的是清洗后可直接落库的文本（这三点都会写进表单字段再随文章保存）。
+     */
+    @Test
+    @DisplayName("AI 标题/关键词/SEO 描述：把模型的脏输出清洗成可直接落库的文本")
+    void aiTitleKeywordsAndSeoDescription() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<String> lastChatReq = new java.util.concurrent.atomic.AtomicReference<>("");
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        int port = server.getAddress().getPort();
+        server.createContext("/v1/chat/completions", ex -> {
+            String req = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            lastChatReq.set(req);
+            String content;
+            if (req.contains("SEO 关键词")) {
+                content = "关键词：1. 写字台、2. 博客系统\n3. 内容管理";
+            } else if (req.contains("Meta Description")) {
+                content = "「写字台是一套开箱即用的自托管博客系统，支持文章、页面、评论与媒体管理。」";
+            } else {
+                content = "\"优化后的标题：写字台 · 自托管博客系统\"";
+            }
+            respond(ex, 200, MediaType.APPLICATION_JSON_VALUE, ("{\"choices\":[{\"message\":{\"content\":"
+                    + om.writeValueAsString(content) + "}}]}").getBytes(StandardCharsets.UTF_8));
+        });
+        server.start();
+
+        String baseBackup = ai.get("ai.baseUrl", "");
+        String keyBackup = ai.get("ai.apiKey", "");
+        String modelBackup = ai.get("ai.model", "");
+        try {
+            ai.set("ai.baseUrl", "http://127.0.0.1:" + port + "/v1");
+            ai.set("ai.apiKey", "test-key");
+            ai.set("ai.model", "fake-chat");
+
+            String token = loginToken(ADMIN, ADMIN_PWD);
+            Map<String, String> in = Map.of("title", "写字台", "text", "# 写字台\n一套自托管博客系统");
+            String titleBody = postAi(token, "/api/admin/ai/title", in);
+            String kwBody = postAi(token, "/api/admin/ai/seo-keywords", in);
+            String descBody = postAi(token, "/api/admin/ai/seo-description", in);
+
+            assertThat(om.readTree(titleBody).path("result").asText())
+                    .as("标题应去掉引号与「优化后的标题：」标签: " + titleBody)
+                    .isEqualTo("写字台 · 自托管博客系统");
+            assertThat(om.readTree(kwBody).path("result").asText())
+                    .as("关键词应把带序号的列表洗成逗号分隔: " + kwBody)
+                    .isEqualTo("写字台, 博客系统, 内容管理");
+            assertThat(om.readTree(descBody).path("result").asText())
+                    .as("描述应去掉包裹的书名号: " + descBody)
+                    .isEqualTo("写字台是一套开箱即用的自托管博客系统，支持文章、页面、评论与媒体管理。");
+
+            assertThat(lastChatReq.get())
+                    .as("发给模型的不该只有标题，正文必须一起带上")
+                    .contains("自托管博客系统").contains("fake-chat");
+        } finally {
+            server.stop(0);
+            ai.set("ai.baseUrl", baseBackup);
+            ai.set("ai.apiKey", keyBackup);
+            ai.set("ai.model", modelBackup);
+        }
+    }
+
+    /**
+     * 未配置大模型时，三个新接口必须回「（AI 功能未启用…）」这类提示文案而不是空串 ——
+     * 前端靠这个前缀判断「AI 没干活」，从而不去覆盖用户已经写好的标题/关键词/描述。
+     */
+    @Test
+    @DisplayName("AI 未配置：标题/关键词/描述接口返回可展示的降级文案，而不是空结果")
+    void aiSeoHelpersDegradeWhenUnconfigured() throws Exception {
+        String baseBackup = ai.get("ai.baseUrl", "");
+        String keyBackup = ai.get("ai.apiKey", "");
+        String modelBackup = ai.get("ai.model", "");
+        try {
+            ai.set("ai.baseUrl", "");
+            ai.set("ai.apiKey", "");
+            ai.set("ai.model", "");
+
+            String token = loginToken(ADMIN, ADMIN_PWD);
+            for (String path : new String[]{"/api/admin/ai/title", "/api/admin/ai/seo-keywords",
+                    "/api/admin/ai/seo-description"}) {
+                String body = postAi(token, path, Map.of("title", "标题", "text", "正文"));
+                String result = om.readTree(body).path("result").asText();
+                assertThat(result).as(path + " 的降级文案必须可展示: " + body).startsWith("（AI ");
+                assertThat(AiTextCleaner.isUnavailable(result))
+                        .as(path + " 必须能被前端识别为「AI 没干活」，否则会覆盖用户内容").isTrue();
+            }
+        } finally {
+            ai.set("ai.baseUrl", baseBackup);
+            ai.set("ai.apiKey", keyBackup);
+            ai.set("ai.model", modelBackup);
+        }
+    }
+
+    @Test
+    @DisplayName("AI 文本清洗：未配置提示原样透出、清洗后为空则回退原标题")
+    void aiTextCleanerEdgeCases() {
+        String unavailable = "（AI 功能未启用：请在后台配置大模型接口地址、API Key 与模型名）";
+        assertThat(AiTextCleaner.isUnavailable(unavailable)).isTrue();
+        assertThat(AiTextCleaner.title(unavailable, "原标题")).as("提示文案不能写进标题字段").isEqualTo(unavailable);
+        assertThat(AiTextCleaner.keywords(unavailable)).isEqualTo(unavailable);
+        assertThat(AiTextCleaner.seoDescription(unavailable)).isEqualTo(unavailable);
+
+        assertThat(AiTextCleaner.title("# 标题：**我的博客**", "原")).isEqualTo("我的博客");
+        assertThat(AiTextCleaner.title("   ", "原标题")).as("模型给了空白就保留原标题").isEqualTo("原标题");
+        assertThat(AiTextCleaner.keywords("A,B,A,C")).as("关键词要去重").isEqualTo("A, B, C");
+        assertThat(AiTextCleaner.keywords("这是很长的一整句话根本没有分隔符所以提取不出关键词"))
+                .as("整句不是关键词，宁可为空也不要脏数据").isEmpty();
+        assertThat(AiTextCleaner.seoDescription("描述：\n\n这是一段描述。")).isEqualTo("这是一段描述。");
+    }
+
+    /** 调 AI 接口并返回响应体（都要求已登录管理员） */
+    private String postAi(String token, String path, Map<String, ?> body) throws Exception {
+        MvcResult r = mvc.perform(post(path)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(body))
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn();
+        return r.getResponse().getContentAsString(StandardCharsets.UTF_8);
     }
 
     /* ==================== 开放 API / MCP ==================== */
