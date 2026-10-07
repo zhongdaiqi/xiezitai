@@ -57,6 +57,7 @@ $env:E2E_BASE='http://127.0.0.1:8099'
 | `remember.cjs` | 记住登录（localStorage vs sessionStorage） |
 | `totp.cjs` | TOTP 绑定 |
 | `wp-associate.cjs` | WordPress 关联与导入：脚本内起本地 mock WP 站点（REST + 媒体文件）→ 面板空态 → 关联站点（接口不回显 token 字段）→ 浏览文章（12 篇分页）→ 单篇导入（站点自身图片落盘换 /media/、外站图保留外链、无 wp-content 残留、标签来自 WP）→ 重复导入跳过 → 整站导入进度条到「整站导入完成：成功 11 跳过 1」；导入文章与站点跑完自删 |
+| `cnblog-associate.cjs` | 博客园关联与导入（MetaWeblog XML-RPC）：脚本内起本地 mock XML-RPC 服务器 + 图片文件 → 面板空态 → 关联账号（接口不回显 appKey 字段）→ 浏览文章（3 篇）→ 单篇导入（cnblogs 域图片落盘换 /media/、外站图保留外链、标签/摘要/发布人/原发布时间）→ 切「当前时间」导入发布时间=今天 → 重复导入跳过 → 更新模式复用 id → 整站导入「成功 1 跳过 2」→ 纯中文标题 slug 稳定 cnblog-{postid} 且详情页 200；**服务端需以 `--xiezitai.cn-media-hosts=127.0.0.1` 启动**（放行 mock 主机下载图片，生产默认只认 *.cnblogs.com）；导入文章与账号跑完自删 |
 | `demo-seed.cjs` | 空库首启示例内容（4 文章 / 2 页面 / 5 评论） |
 | `shot-*.cjs` | 纯截图工具，无断言，供人工核对视觉 |
 

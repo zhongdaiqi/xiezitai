@@ -63,6 +63,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
+@org.springframework.test.context.TestPropertySource(properties = "xiezitai.cn-media-hosts=127.0.0.1")
 class XiezitaiApplicationTests {
 
     private static final String ADMIN = "xiezitai";
@@ -1603,6 +1604,251 @@ class XiezitaiApplicationTests {
             for (Long id : madeArticles) articles.deleteById(id);
             if (siteId != null) {
                 mvc.perform(delete("/api/admin/wp/sites/" + siteId)
+                                .header("Authorization", "Bearer " + adminToken))
+                        .andExpect(status().isOk());
+            }
+        }
+    }
+
+    /* ==================== 博客园关联与导入（MetaWeblog） ==================== */
+
+    @Autowired cn.xiezitai.service.CnBlogImportService cnImports;
+
+    @Test
+    @DisplayName("博客园：主机判定与稳定 slug")
+    void cnHelpers() {
+        assertThat(cnImports.isCnblogsHost("https://img2024.cnblogs.com/blog/a.png")).isTrue();
+        assertThat(cnImports.isCnblogsHost("https://i.cnblogs.com/Files/a.png")).isTrue();
+        assertThat(cnImports.isCnblogsHost("https://www.cnblogs.com/itbuddy/p/1.html")).isTrue();
+        assertThat(cnImports.isCnblogsHost("https://cdn.other.com/a.png")).isFalse();
+        assertThat(cnImports.isCnblogsHost("https://cnblogs.com.evil.io/a.png")).as("后缀伪装不算").isFalse();
+        assertThat(cnImports.isCnblogsHost("/relative/a.png")).isFalse();
+        // 稳定 slug：ASCII 标题走 slugify；纯中文标题走 cnblog-{postid}（时间戳会漂移，不能用于冲突检测）
+        assertThat(cn.xiezitai.service.CnBlogImportService.baseSlugOf("Hello World", 201)).isEqualTo("hello-world");
+        assertThat(cn.xiezitai.service.CnBlogImportService.baseSlugOf("你好世界", 202)).isEqualTo("cnblog-202");
+        assertThat(cn.xiezitai.service.CnBlogImportService.baseSlugOf("你好世界", 203)).as("不同文章 slug 必须不同").isEqualTo("cnblog-203");
+    }
+
+    private static String xmlStr(String s) {
+        return "<value><string>" + s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                + "</string></value>";
+    }
+
+    private static String cnPostXml(long id, String title, String desc, String excerpt,
+                                    String categoriesXml, String date, String link) {
+        return "<value><struct>"
+                + "<member><name>postid</name><value><int>" + id + "</int></value></member>"
+                + "<member><name>title</name>" + xmlStr(title) + "</member>"
+                + "<member><name>description</name>" + xmlStr(desc) + "</member>"
+                + "<member><name>mt_text_more</name>" + xmlStr("") + "</member>"
+                + "<member><name>mt_excerpt</name>" + xmlStr(excerpt) + "</member>"
+                + "<member><name>categories</name><value><array><data>" + categoriesXml + "</data></array></value></member>"
+                + "<member><name>dateCreated</name><value><dateTime.iso8601>" + date + "</dateTime.iso8601></value></member>"
+                + "<member><name>link</name>" + xmlStr(link) + "</member>"
+                + "</struct></value>";
+    }
+
+    private static String xmlRpcResp(String inner) {
+        return "<?xml version=\"1.0\"?><methodResponse><params><param>" + inner + "</param></params></methodResponse>";
+    }
+
+    private static String xmlRpcFault(String msg) {
+        return "<?xml version=\"1.0\"?><methodResponse><fault><value><struct>"
+                + "<member><name>faultCode</name><value><int>1</int></value></member>"
+                + "<member><name>faultString</name>" + xmlStr(msg) + "</member>"
+                + "</struct></value></fault></methodResponse>";
+    }
+
+    /**
+     * 起一个假博客园 MetaWeblog 服务器（XML-RPC + 媒体文件），走完整链路：
+     * 关联账号（密钥不回显、密钥错误报 502）→ 浏览文章 → 单篇导入（cnblogs 域图片落盘、外站图保留外链）
+     * → 重复导入跳过 → 更新模式复用 id 且媒体去重 → 整站导入（后台线程 + 进度轮询到 DONE）。
+     */
+    @Test
+    @DisplayName("博客园：关联/密钥脱敏/单篇导入媒体落盘/整站导入进度")
+    void cnAssociateImportAndMediaLocalize() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        int port = server.getAddress().getPort();
+        String base = "http://127.0.0.1:" + port;
+        final String cnKey = "mock-cn-key-0123456789abcdef";
+
+        final String post201Xml = cnPostXml(201, "CN E2E Post 01",
+                "<p>intro</p><img src=\"" + base + "/blog/pic.png\"/>"
+                        + "<p><img src=\"http://cdn.external.com/ext.png\"/></p>",
+                "CN Excerpt", "<value><string>CnTag</string></value>",
+                "20250601T08:30:00", base + "/p/201");
+        final String post202Xml = cnPostXml(202, "中文博客文章",
+                "<p>中文正文</p>", "", "", "20240505T05:05:05", base + "/p/202");
+
+        server.createContext("/", ex -> {
+            String req = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            java.util.regex.Matcher mm = Pattern.compile("<methodName>([\\w.]+)</methodName>").matcher(req);
+            String method = mm.find() ? mm.group(1) : "";
+            String resp;
+            if (!req.contains(cnKey)) {
+                resp = xmlRpcFault("密钥错误");
+            } else if ("blogger.getUsersBlogs".equals(method)) {
+                resp = xmlRpcResp("<value><array><data>"
+                        + "<value><struct>"
+                        + "<member><name>blogid</name><value><string>879366</string></value></member>"
+                        + "<member><name>url</name>" + xmlStr(base + "/") + "</member>"
+                        + "<member><name>blogName</name>" + xmlStr("MockCN") + "</member>"
+                        + "</struct></value>"
+                        + "</data></array></value>");
+            } else if ("metaWeblog.getRecentPosts".equals(method)) {
+                resp = xmlRpcResp("<value><array><data>" + post201Xml + post202Xml + "</data></array></value>");
+            } else if ("metaWeblog.getPost".equals(method)) {
+                resp = xmlRpcResp(req.contains(">201<") ? post201Xml : post202Xml);
+            } else {
+                resp = xmlRpcFault("unknown method: " + method);
+            }
+            respond(ex, 200, "text/xml", resp.getBytes(StandardCharsets.UTF_8));
+        });
+        server.createContext("/blog/pic.png", ex -> respond(ex, 200, "image/png", PNG_1X1));
+        server.start();
+
+        Long siteId = null;
+        java.util.List<Long> madeArticles = new java.util.ArrayList<>();
+        String adminToken = loginToken(ADMIN, ADMIN_PWD);
+        try {
+            // ① 关联账号：200 + hasToken=true，响应体绝不能带出明文密钥
+            MvcResult r = mvc.perform(post("/api/admin/cnblogs/sites")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("url", base + "/metaweblog/cnbob", "username", "cnbob", "token", cnKey)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.site.hasToken").value(true))
+                    .andReturn();
+            String createBody = r.getResponse().getContentAsString(StandardCharsets.UTF_8);
+            assertThat(createBody).as("响应不能带出密钥明文").doesNotContain(cnKey);
+            siteId = om.readTree(createBody).path("site").path("id").asLong();
+            assertThat(siteId).isPositive();
+
+            // ② 站点列表同样不回显密钥；重复关联同一地址回 409
+            String listBody = mvc.perform(get("/api/admin/cnblogs/sites")
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn().getResponse()
+                    .getContentAsString(StandardCharsets.UTF_8);
+            assertThat(listBody).doesNotContain(cnKey);
+            mvc.perform(post("/api/admin/cnblogs/sites")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("url", base + "/metaweblog/cnbob")))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isConflict());
+
+            // ③ 密钥错误：测试连接 502
+            MvcResult badSite = mvc.perform(post("/api/admin/cnblogs/sites")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("url", base + "/metaweblog/bad", "username", "bad", "token", "wrong-key")))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn();
+            long badId = om.readTree(badSite.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path("site").path("id").asLong();
+            mvc.perform(post("/api/admin/cnblogs/sites/" + badId + "/test")
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isBadGateway());
+            mvc.perform(delete("/api/admin/cnblogs/sites/" + badId)
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk());
+
+            // ④ 浏览：共 2 篇
+            MvcResult browse = mvc.perform(get("/api/admin/cnblogs/sites/" + siteId + "/posts")
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode postsNode = om.readTree(browse.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            assertThat(postsNode.path("total").asInt()).isEqualTo(2);
+            assertThat(postsNode.path("posts").get(0).path("title").asText()).isEqualTo("CN E2E Post 01");
+
+            // ⑤ 单篇导入：媒体落盘 / 外链保留 / 标签 / 发布人 / 原发布时间
+            MvcResult imp = mvc.perform(post("/api/admin/cnblogs/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", 201)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            String impBody = imp.getResponse().getContentAsString(StandardCharsets.UTF_8);
+            JsonNode impNode = om.readTree(impBody);
+            assertThat(impNode.path("imported").asBoolean()).as("导入响应: " + impBody).isTrue();
+            long articleId = impNode.path("articleId").asLong();
+            madeArticles.add(articleId);
+            assertThat(impNode.path("warnings").isArray() && impNode.path("warnings").size() == 0)
+                    .as("cnblogs 域图片应成功落盘，不应有警告: " + impBody).isTrue();
+            assertThat(impNode.path("tags").asText()).isEqualTo("CnTag");
+
+            MvcResult got = mvc.perform(get("/api/admin/articles/" + articleId)
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode art = om.readTree(got.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            assertThat(art.path("title").asText()).isEqualTo("CN E2E Post 01");
+            assertThat(art.path("author").asText()).as("发布人应为博客园用户名").isEqualTo("cnbob");
+            assertThat(art.path("publishedAt").asText()).startsWith("2025-06-01T08:30");
+            assertThat(art.path("summary").asText()).isEqualTo("CN Excerpt");
+            String content = art.path("content").asText();
+            assertThat(content).as("正文: " + content).contains("/media/");
+            assertThat(content).as("博客园图床 URL 不应残留在正文: " + content).doesNotContain("/blog/pic.png");
+            assertThat(content).as("外站图片应保留外链: " + content).contains("http://cdn.external.com/ext.png");
+
+            // ⑥ 重复导入：同 slug 已存在 → 跳过；更新模式复用 id 且媒体去重（同字节图片不新增文件）
+            mvc.perform(post("/api/admin/cnblogs/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", 201)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.imported").value(false));
+            long filesBefore = fileRepo.count();
+            MvcResult impUp = mvc.perform(post("/api/admin/cnblogs/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", 201, "onConflict", "update")))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.updated").value(true))
+                    .andReturn();
+            assertThat(om.readTree(impUp.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path("articleId").asLong()).as("更新模式应复用原文章 id").isEqualTo(articleId);
+            assertThat(fileRepo.count()).as("完全相同的媒体落盘时应去重复用").isEqualTo(filesBefore);
+
+            // ⑦ 纯中文标题：slug 稳定为 cnblog-202；useWpDate=false 时发布时间用当前时间
+            MvcResult imp2 = mvc.perform(post("/api/admin/cnblogs/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", 202, "useWpDate", false)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.imported").value(true))
+                    .andReturn();
+            long secondId = om.readTree(imp2.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path("articleId").asLong();
+            madeArticles.add(secondId);
+            cn.xiezitai.entity.Article second = articles.findById(secondId).orElseThrow();
+            assertThat(second.getSlug()).as("纯中文标题 slug 应稳定为 cnblog-{postid}").isEqualTo("cnblog-202");
+            assertThat(second.getPublishedAt()).as("useWpDate=false 应为当前时间").isNotNull();
+            assertThat(second.getPublishedAt().toLocalDate())
+                    .isEqualTo(java.time.LocalDate.now());
+            mvc.perform(get("/article/" + second.getSlug()))
+                    .andExpect(status().isOk());
+
+            // ⑧ 整站导入：启动 202 → 轮询进度到 DONE → 两篇都已导入过 → 全部跳过
+            mvc.perform(post("/api/admin/cnblogs/sites/" + siteId + "/import-all")
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isAccepted());
+            String progBody = "";
+            for (int i = 0; i < 40; i++) {
+                Thread.sleep(250);
+                progBody = mvc.perform(get("/api/admin/cnblogs/sites/" + siteId + "/progress")
+                                .header("Authorization", "Bearer " + adminToken))
+                        .andExpect(status().isOk()).andReturn().getResponse()
+                        .getContentAsString(StandardCharsets.UTF_8);
+                if (progBody.contains("\"phase\":\"DONE\"") || progBody.contains("\"phase\":\"FAILED\"")) break;
+            }
+            JsonNode prog = om.readTree(progBody);
+            assertThat(prog.path("phase").asText()).as("进度: " + progBody).isEqualTo("DONE");
+            assertThat(prog.path("total").asLong()).isEqualTo(2);
+            assertThat(prog.path("skipped").asInt()).isEqualTo(2);
+            assertThat(prog.path("failed").asInt()).isEqualTo(0);
+        } finally {
+            server.stop(0);
+            for (Long id : madeArticles) articles.deleteById(id);
+            if (siteId != null) {
+                mvc.perform(delete("/api/admin/cnblogs/sites/" + siteId)
                                 .header("Authorization", "Bearer " + adminToken))
                         .andExpect(status().isOk());
             }
