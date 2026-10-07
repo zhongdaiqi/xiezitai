@@ -15,7 +15,7 @@ public interface ArticleRepository extends JpaRepository<Article, Long> {
     boolean existsBySlug(String slug);
 
     /**
-     * 后台文章列表：关键词（标题 / 摘要 / 正文）+ 状态双条件过滤。
+     * 后台文章列表：关键词（标题 / 摘要 / 正文 / 标签）+ 状态双条件过滤。
      *
      * <p>两个条件都写成「空串 = 不过滤」而不是「null = 不过滤」—— SQL 里 {@code null = ''}
      * 求值为 unknown、整条 where 直接不成立，会把列表查空。调用方负责把 null 归一成空串。
@@ -28,7 +28,8 @@ public interface ArticleRepository extends JpaRepository<Article, Long> {
             where (:kw = ''
                    or lower(a.title) like lower(concat('%', :kw, '%'))
                    or lower(coalesce(a.summary, '')) like lower(concat('%', :kw, '%'))
-                   or lower(coalesce(a.content, '')) like lower(concat('%', :kw, '%')))
+                   or lower(coalesce(a.content, '')) like lower(concat('%', :kw, '%'))
+                   or lower(coalesce(a.tags, '')) like lower(concat('%', :kw, '%')))
               and (:st = '' or a.status = :st)
             """)
     Page<Article> searchAdmin(@Param("kw") String kw, @Param("st") String st, Pageable pageable);

@@ -26,6 +26,10 @@
         .top .nav-left { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
         h1 { font-size: 26px; line-height: 1.4; }
         .meta { color: var(--muted); font-size: 13px; margin: 10px 0 8px; }
+        /* 标签徽章：浅蓝底、小圆角，空列表时整个块不渲染（th:if 在下面管） */
+        .tags { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+        .tag { font-size: 12px; line-height: 1; color: var(--accent); background: #eff6ff;
+            border: 1px solid #bfdbfe; border-radius: 999px; padding: 5px 10px; }
         .cover { max-width: 100%; border-radius: 6px; margin: 12px 0; }
         /* 正文里的媒体自适应（github-markdown-css 只管 img，video 需自己兜） */
         .markdown-body img, .markdown-body video { max-width: 100%; height: auto; border-radius: 6px; }
@@ -121,6 +125,10 @@
         <span th:text="${article.author}"></span> ·
         <span th:text="${#temporals.format(article.publishedAt, 'yyyy-MM-dd HH:mm')}"></span> ·
         <span th:text="${article.viewCount} + ' 次阅读'"></span>
+    </div>
+    <!-- 标签：后台给文章打的标签（最多 10 个），controller 已拆成 tagList，空列表时整块不渲染 -->
+    <div class="tags" th:if="${tagList != null && !tagList.isEmpty()}">
+        <span class="tag" th:each="t : ${tagList}" th:text="${t}"></span>
     </div>
     <img class="cover" th:if="${article.cover != null && !article.cover.isEmpty()}" th:src="${article.cover}" alt="cover">
     <div class="markdown-body" th:utext="${contentHtml}"></div>

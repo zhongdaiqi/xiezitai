@@ -101,6 +101,26 @@
         .edit-head .muted { flex: 1 1 auto; }      /* 把「保存」顶到最右 */
         .edit-head button.primary { padding: 6px 16px; white-space: nowrap; }
 
+        /* ---------- 标签 chip 输入：整行 = chip 容器 + 「n/10」计数 ----------
+           chip 容器伪装成输入框（点击聚焦内部 input），已提交的标签是可删除的圆片 */
+        .tagrow { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
+        .tagrow .muted { line-height: 30px; font-size: 12px; white-space: nowrap; }
+        .tagbox { flex: 1; min-width: 220px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+                  border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; cursor: text; }
+        .tagbox:focus-within { border-color: var(--accent); }
+        .tagbox input { border: none !important; outline: none; flex: 1 1 120px; min-width: 120px;
+                        padding: 3px 2px !important; margin: 0 !important; background: transparent; }
+        .tagchip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; line-height: 1;
+                   color: var(--accent); background: #eff6ff; border: 1px solid #bfdbfe;
+                   border-radius: 999px; padding: 5px 6px 5px 10px; white-space: nowrap; }
+        .tagchip button { border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1;
+                          color: inherit; padding: 0 2px; opacity: .6; }
+        .tagchip button:hover { opacity: 1; }
+        /* 列表里的标签：只读小徽章，没有删除钮 */
+        .mini-tag { display: inline-block; font-size: 11px; line-height: 1; color: var(--muted);
+                    background: #f3f4f6; border: 1px solid var(--line); border-radius: 999px;
+                    padding: 4px 8px; margin: 1px 3px 1px 0; white-space: nowrap; }
+
         /* ---------- 分页条：信息在左、按钮在右，窄屏自动折行 ---------- */
         .pager { display: flex; align-items: center; justify-content: space-between; gap: 8px;
                  flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
@@ -251,7 +271,7 @@
                 </div>
                 <!-- 搜索：输入即查（防抖 260ms）、回车立即查；与下面的状态筛选叠加生效 -->
                 <div class="alist-filter">
-                    <input type="text" id="a-search" placeholder="搜索标题 / 摘要 / 正文…" autocomplete="off"
+                    <input type="text" id="a-search" placeholder="搜索标题 / 摘要 / 正文 / 标签…" autocomplete="off"
                            oninput="onArticleSearchInput()"
                            onkeydown="if(event.key==='Enter'){event.preventDefault();onArticleSearchInput(true);}">
                     <select id="a-filter-status" onchange="onArticleStatusChange()">
@@ -261,7 +281,7 @@
                     </select>
                 </div>
                 <div class="table-wrap">
-                    <table id="alist"><thead><tr><th>标题</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody></tbody></table>
+                    <table id="alist"><thead><tr><th>标题</th><th>标签</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody></tbody></table>
                 </div>
                 <div class="pager" id="alist-pager"></div>
             </div>
@@ -287,6 +307,18 @@
                     <input type="hidden" id="a-id">
                 </div>
                 <input type="text" id="a-summary" placeholder="摘要" style="width:100%; margin-bottom:8px;">
+
+                <!-- 标签：chip 输入（回车/逗号提交、点 × 删除），最多 10 个；保存时以逗号串提交，
+                     后端再做一次归一化与超量校验（前后端同一条规则，接口调用方也绕不过去） -->
+                <div class="tagrow">
+                    <div class="tagbox" id="a-tagbox" onclick="document.getElementById('a-tag-input').focus()">
+                        <input type="text" id="a-tag-input" placeholder="添加标签，回车或逗号确认"
+                               autocomplete="off"
+                               onkeydown="tagKeydown(event)"
+                               onblur="commitTagInput()">
+                    </div>
+                    <span class="muted" id="a-tagcount">0/10</span>
+                </div>
 
                     <div class="sec-title">SEO</div>
                     <div class="row">
@@ -569,7 +601,8 @@ function clearToken() { localStorage.removeItem(TOKEN_KEY); sessionStorage.remov
 const $ = id => document.getElementById(id);
 // 文章
 const aId = $('a-id'), aTitle = $('a-title'), aSlug = $('a-slug'), aStatus = $('a-status'),
-      aKeywords = $('a-keywords'), aDesc = $('a-desc'), aSummary = $('a-summary'), aCover = $('a-cover');
+      aKeywords = $('a-keywords'), aDesc = $('a-desc'), aSummary = $('a-summary'), aCover = $('a-cover'),
+      aTagBox = $('a-tagbox'), aTagInput = $('a-tag-input'), aTagCount = $('a-tagcount');
 // 页面（正文改用 ByteMD 编辑器 #pg-editor，不再有 textarea）
 const pgId = $('pg-id'), pgTitle = $('pg-title'), pgSlug = $('pg-slug'), pgPub = $('pg-pub');
 // 设置
@@ -1075,14 +1108,17 @@ function renderArticleRows(list) {
     const BADGE = { PUBLISHED: '<span class="badge b-pub">已发布</span>', DRAFT: '<span class="badge b-draft">草稿</span>' };
     if (!list.length) {
         const tip = (aListKw || aListStatus) ? '没有匹配的文章' : '还没有文章，点上方「+ 新建文章」开始写';
-        tb.innerHTML = '<tr><td colspan="4" id="alist-empty">' + tip + '</td></tr>';
+        tb.innerHTML = '<tr><td colspan="5" id="alist-empty">' + tip + '</td></tr>';
         return;
     }
     list.forEach(a => {
         // 列表接口返回的是完整实体（含正文），顺手进缓存 —— 点「编辑」时就不必再请求一次
         articlesCache[a.id] = a;
+        const tagHtml = (a.tags || '').split(',').map(s => s.trim()).filter(Boolean)
+            .map(t => '<span class="mini-tag">' + escapeHtml(t) + '</span>').join('');
         const tr = document.createElement('tr');
         tr.innerHTML = `<td><a href="/article/${a.slug}" target="_blank">${escapeHtml(a.title)}</a></td>
+            <td>${tagHtml || '<span class="muted">—</span>'}</td>
             <td>${BADGE[a.status] || escapeHtml(a.status)}</td><td class="t-time">${fmtTime(a.updatedAt)}</td>
             <td style="white-space:nowrap;"><button class="ghost" onclick="editArticle(${a.id})">编辑</button>
                 <button class="ghost" onclick="delArticle(${a.id})">删除</button></td>`;
@@ -1124,11 +1160,55 @@ function showArticleView(view) {
 /** 编辑视图「← 返回列表」：不弹确认框（半成品草稿留在表单里，回来还在），只切视图 */
 function backToList() { showArticleView('list'); }
 
+/* ---------- 文章标签：chip 输入（最多 10 个） ----------
+   状态放 tagChips 数组，DOM 只是它的投影 —— 保存时 join(',') 直接提交。
+   输入框回车/英文逗号提交一个 chip，Backspace 在空输入时删最后一个，失焦自动收尾；
+   超量/duplicate 在这里就拦（toast 提示），后端还会再做一次同样的校验兜底。 */
+let tagChips = [];
+const Article_MAX_TAGS = 10;   // 与后端 Article.MAX_TAGS 一致
+
+function renderTagChips() {
+    [...aTagBox.querySelectorAll('.tagchip')].forEach(el => el.remove());
+    tagChips.forEach((t, i) => {
+        const chip = document.createElement('span');
+        chip.className = 'tagchip';
+        chip.innerHTML = escapeHtml(t) + '<button type="button" title="删除标签" onclick="removeTag(' + i + ')">×</button>';
+        aTagBox.insertBefore(chip, aTagInput);
+    });
+    if (aTagCount) aTagCount.textContent = tagChips.length + '/' + Article_MAX_TAGS;
+}
+
+/** 尝试把输入框当前值收成一个 chip；超过 10 个 / 重复时提示并清空输入 */
+function commitTagInput() {
+    const v = (aTagInput.value || '').trim().replace(/,+$/, '');
+    aTagInput.value = '';
+    if (!v) return;
+    if (tagChips.length >= Article_MAX_TAGS) { toast('最多 ' + Article_MAX_TAGS + ' 个标签'); return; }
+    if (tagChips.includes(v)) { toast('标签「' + v + '」已存在'); return; }
+    tagChips.push(v);
+    renderTagChips();
+}
+
+function tagKeydown(e) {
+    if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commitTagInput(); }
+    else if (e.key === 'Backspace' && !aTagInput.value && tagChips.length) {
+        tagChips.pop(); renderTagChips();
+    }
+}
+
+function removeTag(i) { tagChips.splice(i, 1); renderTagChips(); }
+
+/** 载入已有标签（逗号分隔串）到 chip 编辑器 */
+function setTagChips(csv) {
+    tagChips = (csv || '').split(',').map(s => s.trim()).filter(Boolean);
+    renderTagChips();
+}
+
 /** 清空表单与编辑器，进入「写新文章」状态（id / slug 由后端在保存时分配） */
 function newArticle() {
     aId.value = ''; aTitle.value = ''; aSlug.value = '';
     aStatus.value = 'DRAFT'; aKeywords.value = ''; aDesc.value = '';
-    aSummary.value = ''; clearCover();
+    aSummary.value = ''; clearCover(); setTagChips('');
     $('a-mode').textContent = '新建文章';
     showArticleView('edit');   // 先切视图再挂编辑器：CodeMirror 挂载时要能量到真实尺寸
     initEditor('');
@@ -1149,6 +1229,7 @@ async function editArticle(id) {
     aId.value = a.id; aTitle.value = a.title; aSlug.value = a.slug;
     aStatus.value = a.status; aKeywords.value = a.seoKeywords || '';
     aDesc.value = a.seoDescription || ''; aSummary.value = a.summary || '';
+    setTagChips(a.tags || '');   // 已有标签回填成 chip
     setCover(a.cover || '');
     aimsg.textContent = '';   // 换文章时清掉上一篇的 AI 提示，免得误读
     $('a-mode').textContent = '编辑文章';
@@ -1159,10 +1240,12 @@ async function saveArticle() {
     const body = {
         title: aTitle.value, slug: aSlug.value, status: aStatus.value,
         content: getEditorValue(), seoKeywords: aKeywords.value,
-        seoDescription: aDesc.value, summary: aSummary.value, cover: aCover.value
+        seoDescription: aDesc.value, summary: aSummary.value, cover: aCover.value,
+        tags: tagChips.join(',')
     };
     const id = aId.value;
     const data = id ? await jpost('/api/admin/articles/' + id, body, 'PUT') : await jpost('/api/admin/articles', body);
+    if (data && data.error) { toast('保存失败：' + data.error); return; }   // 后端校验不过（如标签超量）
     aId.value = data.id; articlesCache[data.id] = data;
     if (data.slug) aSlug.value = data.slug;   // 回填服务端自动生成的 slug
     if (data.status === 'PUBLISHED') aStatus.value = 'PUBLISHED';

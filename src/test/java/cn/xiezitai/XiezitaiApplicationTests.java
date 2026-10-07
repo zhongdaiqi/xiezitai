@@ -1229,6 +1229,54 @@ class XiezitaiApplicationTests {
         return node.path("slug").asText();
     }
 
+    @Test
+    void articleTagsNormalizeLimitAndSearch() throws Exception {
+        String token = loginToken(ADMIN, ADMIN_PWD);
+        String stamp = String.valueOf(System.currentTimeMillis());
+        long[] ids = new long[] { -1, -1 };
+        try {
+            // ① 归一化：中英文逗号/顿号混用 + 去重 + 去空白，存成干净的逗号串
+            MvcResult r = mvc.perform(post("/api/admin/articles").header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("title", "标签归一化" + stamp, "slug", "",
+                                    "content", "正文", "tags", "Java, Spring Boot ，写作 、Java; 运维, 独门" + stamp))))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode a = om.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            ids[0] = a.path("id").asLong();
+            assertThat(a.path("tags").asText())
+                    .as("标签应去空白/去重并统一为英文逗号分隔")
+                    .isEqualTo("Java,Spring Boot,写作,运维,独门" + stamp);
+
+            // ② 归一化后仍超 10 个 → 400 + 可读文案（不是静默截断）
+            String eleven = "t1,t2,t3,t4,t5,t6,t7,t8,t9,t10,t11";
+            mvc.perform(post("/api/admin/articles").header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("title", "标签超量" + stamp, "slug", "",
+                                    "content", "正文", "tags", eleven))))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value(
+                            org.hamcrest.Matchers.containsString("标签最多 10 个")));
+
+            // ③ 后台搜索按标签命中：独门标签只出现在 tags 里，标题/摘要/正文都没有它
+            mvc.perform(get("/api/admin/articles").header("Authorization", "Bearer " + token)
+                            .param("q", "独门" + stamp).param("size", "50"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.totalElements").value(1))
+                    .andExpect(jsonPath("$.content[0].tags").value("Java,Spring Boot,写作,运维,独门" + stamp));
+
+            // ④ 更新时把标签清空 → 存空串
+            mvc.perform(put("/api/admin/articles/" + ids[0]).header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("title", "标签归一化" + stamp, "tags", ""))))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.tags").value(""));
+        } finally {
+            for (long id : ids) {
+                if (id > 0) mvc.perform(delete("/api/admin/articles/" + id).header("Authorization", "Bearer " + token));
+            }
+        }
+    }
+
     /* ==================== 工具方法 ==================== */
 
     private String json(Map<String, ?> map) throws Exception {

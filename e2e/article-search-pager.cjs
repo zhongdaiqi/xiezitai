@@ -82,7 +82,7 @@ async function req(method, path, body, token) {
   const badges = () => page.evaluate(() =>
     [...document.querySelectorAll('#alist tbody tr')]
       .filter(tr => tr.querySelector('td:first-child a'))
-      .map(tr => tr.querySelector('td:nth-child(2)').textContent.trim()));
+      .map(tr => tr.querySelector('td:nth-child(3)').textContent.trim()));   // 状态列（第 2 列现在是标签）
   const PBTN = n => `#alist-pager .pbtns button:nth-child(${n})`;   // 1首页 2上一页 3下一页 4末页
   const isDisabled = n => page.evaluate(sel => document.querySelector(sel).disabled, PBTN(n));
   const editorText = () => page.evaluate(() => {

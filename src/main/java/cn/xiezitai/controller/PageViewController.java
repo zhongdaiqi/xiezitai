@@ -82,6 +82,8 @@ public class PageViewController {
         articleService.increaseView(a);
         notifyVisit(a, request);
         model.addAttribute("article", a);
+        // 标签（逗号分隔串）拆成列表给模板 —— Thymeleaf 对单个字符串没有 split 表达式，别在模板里硬拆
+        model.addAttribute("tagList", cn.xiezitai.entity.Article.parseTags(a.getTags()));
         model.addAttribute("navPages", navPages());
         model.addAttribute("contentHtml", md.toHtml(a.getContent()));
         List<cn.xiezitai.dto.CommentNode> threads = cn.xiezitai.dto.CommentNode.tree(

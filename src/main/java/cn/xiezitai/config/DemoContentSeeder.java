@@ -90,21 +90,21 @@ public class DemoContentSeeder {
     private Article seedArticles() {
         Article a = article("欢迎来到写字台", "welcome",
                 "首页不该是一句「还没有发布的文章」。这篇介绍写字台能做什么、怎么开始写第一篇。",
-                WELCOME_MD, "自托管博客,写字台,新手入门", 6, 128);
+                WELCOME_MD, "自托管博客,写字台,新手入门", "入门,写作", 6, 128);
         article("Markdown 写作速查", "markdown-guide",
                 "标题、列表、任务清单、表格、代码块、引用——这一篇本身就是排版样例，前台和编辑器看到的是同一套语法。",
-                MARKDOWN_MD, "Markdown,语法,写作,排版", 4, 96);
+                MARKDOWN_MD, "Markdown,语法,写作,排版", "Markdown,写作", 4, 96);
         article("自托管博客：把写作重新交回自己手里", "why-self-host",
                 "平台会关站、图床会跑路、规则会变。写了十多年之后，我把内容搬回了自己的服务器——这是为什么，以及成本有多少。",
-                SELF_HOST_MD, "自托管,博客,数据主权,服务器", 2, 57);
+                SELF_HOST_MD, "自托管,博客,数据主权,服务器", "自托管,运维", 2, 57);
         article("部署与维护清单", "deploy-checklist",
                 "上线前、备份、日常维护各一张清单，照着过一遍能避开大部分坑。附 lite 单容器模式的整卷备份命令。",
-                CHECKLIST_MD, "部署,Docker,备份,运维", 0, 23);
+                CHECKLIST_MD, "部署,Docker,备份,运维", "部署,运维,Docker", 0, 23);
         return articles.findBySlug("welcome").orElse(a);
     }
 
     private Article article(String title, String slug, String summary, String content,
-                            String keywords, int daysAgo, long views) {
+                            String keywords, String tags, int daysAgo, long views) {
         Article a = new Article();
         a.setTitle(title);
         a.setSlug(slug);
@@ -114,6 +114,7 @@ public class DemoContentSeeder {
         a.setAuthor(AUTHOR);
         a.setSeoKeywords(keywords);
         a.setSeoDescription(summary);
+        a.setTags(tags);   // 演示文章带标签：前台文章页与后台列表的标签徽章一开站就有样例可看
         a.setViewCount(views);
         LocalDateTime t = LocalDateTime.now().minusDays(daysAgo).withHour(10).withMinute(30)
                 .withSecond(0).withNano(0);

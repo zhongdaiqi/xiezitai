@@ -2,6 +2,8 @@ package cn.xiezitai.entity;
 
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 @Entity
 @Table(name = "articles", indexes = {
@@ -52,6 +54,19 @@ public class Article {
     @Column(length = 500)
     private String seoDescription;
 
+    /**
+     * 标签：归一化后的逗号分隔串（如 {@code "Java,Spring Boot,AI"}）。
+     *
+     * <p>**只存这个串，不做关联表**：站点标签不需要计数/聚合查询，一列就够了；
+     * 「最多 10 个」等规则由 {@link #parseTags(String)} 在写入前执行，
+     * 所以这张表里永远不会再出现空白项、重复项或超量标签。
+     */
+    @Column(length = 300)
+    private String tags;
+
+    /** 每篇文章最多多少个标签 */
+    public static final int MAX_TAGS = 10;
+
     private Long viewCount = 0L;
 
     private LocalDateTime publishedAt;
@@ -81,6 +96,26 @@ public class Article {
     public void setSeoKeywords(String seoKeywords) { this.seoKeywords = seoKeywords; }
     public String getSeoDescription() { return seoDescription; }
     public void setSeoDescription(String seoDescription) { this.seoDescription = seoDescription; }
+    public String getTags() { return tags; }
+    public void setTags(String tags) { this.tags = tags; }
+
+    /**
+     * 解析用户输入的标签串 → 去重、去空白后的列表（不改顺序）。
+     *
+     * <p>分隔符兼容中英文逗号、顿号、分号和换行 —— 后台用 chip 控件时主要产生英文逗号，
+     * 但用户直接在输入框里粘「Java，Spring」这种中文串也照常能拆开。
+     *
+     * @return 永不为 null；条数可能超过 {@link #MAX_TAGS}，是否放行由调用方（controller）决定
+     */
+    public static List<String> parseTags(String raw) {
+        List<String> out = new ArrayList<>();
+        if (raw == null) return out;
+        for (String t : raw.split("[，,、;；\\n]+")) {
+            String v = t.trim();
+            if (!v.isEmpty() && !out.contains(v)) out.add(v);
+        }
+        return out;
+    }
     public Long getViewCount() { return viewCount; }
     public void setViewCount(Long viewCount) { this.viewCount = viewCount; }
     public LocalDateTime getPublishedAt() { return publishedAt; }

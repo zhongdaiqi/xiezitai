@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -89,7 +90,9 @@ public class ArticleController {
     }
 
     @PostMapping("/admin/articles")
-    public Article create(@RequestBody Article body, Authentication auth) {
+    public ResponseEntity<?> create(@RequestBody Article body, Authentication auth) {
+        String tagErr = tagsViolation(body.getTags());
+        if (tagErr != null) return ResponseEntity.badRequest().body(Map.of("error", tagErr));
         Article a = new Article();
         apply(a, body);
         a.setSlug(body.getSlug() == null || body.getSlug().isBlank()
@@ -98,19 +101,34 @@ public class ArticleController {
         if ("PUBLISHED".equals(a.getStatus())) a.setPublishedAt(LocalDateTime.now());
         Article saved = articles.save(a);
         if ("PUBLISHED".equals(saved.getStatus())) articleService.publishNotify(saved, auth.getName());
-        return saved;
+        return ResponseEntity.ok(saved);
     }
 
     @PutMapping("/admin/articles/{id}")
-    public ResponseEntity<Article> update(@PathVariable Long id, @RequestBody Article body, Authentication auth) {
+    public ResponseEntity<?> update(@PathVariable Long id, @RequestBody Article body, Authentication auth) {
         Article a = articles.findById(id).orElse(null);
         if (a == null) return ResponseEntity.notFound().build();
+        String tagErr = tagsViolation(body.getTags());
+        if (tagErr != null) return ResponseEntity.badRequest().body(Map.of("error", tagErr));
         boolean wasPublished = "PUBLISHED".equals(a.getStatus());
         apply(a, body);
         if ("PUBLISHED".equals(a.getStatus()) && a.getPublishedAt() == null) a.setPublishedAt(LocalDateTime.now());
         Article saved = articles.save(a);
         if (!wasPublished && "PUBLISHED".equals(saved.getStatus())) articleService.publishNotify(saved, auth.getName());
         return ResponseEntity.ok(saved);
+    }
+
+    /**
+     * 标签超量校验：解析后去重的标签数超过 {@link Article#MAX_TAGS} 时返回可读文案（回 400），
+     * 否则 null 放行。校验放 controller 而不是静默截断 —— 用户精心挑的标签被悄悄扔掉比报错更糟。
+     */
+    private String tagsViolation(String rawTags) {
+        if (rawTags == null) return null;
+        List<String> tags = Article.parseTags(rawTags);
+        if (tags.size() > Article.MAX_TAGS) {
+            return "标签最多 " + Article.MAX_TAGS + " 个，当前有 " + tags.size() + " 个，请删减后再保存";
+        }
+        return null;
     }
 
     @DeleteMapping("/admin/articles/{id}")
@@ -203,5 +221,7 @@ public class ArticleController {
         if (body.getStatus() != null) a.setStatus(body.getStatus());
         if (body.getSeoKeywords() != null) a.setSeoKeywords(body.getSeoKeywords());
         if (body.getSeoDescription() != null) a.setSeoDescription(body.getSeoDescription());
+        // 标签在 create/update 里已做过「≤10 个」校验，这里只负责归一化落库（去空白/去重/中英文分隔符）
+        if (body.getTags() != null) a.setTags(String.join(",", Article.parseTags(body.getTags())));
     }
 }
