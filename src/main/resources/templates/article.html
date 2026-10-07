@@ -11,6 +11,11 @@
     <meta property="og:type" content="article">
     <meta property="og:image" th:if="${ogImage != null and !ogImage.isEmpty()}" th:content="${ogImage}">
     <link rel="stylesheet" href="/vendor/github-markdown-css/github-markdown-light.min.css">
+    <link rel="stylesheet" href="/vendor/highlight/github.min.css">
+    <!-- 代码块高亮（本地内置，禁 CDN）：库 → 补充语言包 → 增强脚本，defer 保证按序执行 -->
+    <script defer src="/vendor/highlight/highlight.min.js"></script>
+    <script defer src="/vendor/highlight/highlight-langs.min.js"></script>
+    <script defer src="/js/codeblock.js"></script>
     <style>
         :root { --ink: #1a1a1a; --muted: #6b7280; --line: #e5e7eb; --accent: #2563eb; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -32,6 +37,26 @@
         .markdown-body li > input[type=checkbox] { margin-right: 7px; width: 15px; height: 15px;
             vertical-align: -2px; accent-color: var(--accent); }
         .markdown-body li > input[type=checkbox]:checked ~ * { color: var(--muted); }
+        /* 代码块：语法高亮（vendor/highlight）+ 右上角「语言标签 / 复制」工具条。
+           ① 主题里的 pre code.hljs{padding:1em} 与 github-markdown-css 的 .markdown-body pre>code{padding:0}
+              特异度相同、靠加载顺序分胜负，这里显式定死，避免升级 vendor 后代码块突然多出一圈内边距；
+           ② 工具条挂在包裹层 .code-block 上（由 js/codeblock.js 包出来），<pre> 横滚时它不会跟着滚走；
+           ③ 颜色写死不用 var(--muted)：本页 <style> 与 page.html 共用同一段，那边没有这个变量。 */
+        .markdown-body .code-block { position: relative; }
+        .markdown-body .code-block pre { margin-bottom: 16px; }
+        .markdown-body pre code.hljs { padding: 0; background: transparent; }
+        .markdown-body .code-tools { position: absolute; top: 8px; right: 8px; display: flex;
+            align-items: center; gap: 6px; user-select: none; }
+        .markdown-body .code-lang { font-size: 12px; line-height: 18px; color: #6b7280;
+            background: rgba(246, 248, 250, .92); border: 1px solid var(--line);
+            border-radius: 4px; padding: 0 6px; }
+        .markdown-body .code-copy { font-size: 12px; line-height: 18px; margin: 0; padding: 0 8px;
+            color: #6b7280; background: rgba(246, 248, 250, .92); border: 1px solid var(--line);
+            border-radius: 4px; cursor: pointer; opacity: .8;
+            transition: opacity .15s, color .15s, border-color .15s; }
+        .markdown-body .code-copy:hover { opacity: 1; color: var(--accent); border-color: var(--accent); }
+        .markdown-body .code-copy.ok { opacity: 1; color: #16a34a; border-color: #16a34a; }
+        .markdown-body .code-copy.err { opacity: 1; color: #b91c1c; border-color: #b91c1c; }
         /* 评论区排版参考小红书：整体相对正文缩进，条目 = 圆形头像 + 右侧内容，条目间浅分隔线 */
         .comments { margin-left: 8px; }
         .comment { display: flex; gap: 12px; padding: 16px 0; border-bottom: 1px solid #f1f1f3; }

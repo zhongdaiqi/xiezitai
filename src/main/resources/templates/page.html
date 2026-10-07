@@ -6,6 +6,11 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <title th:text="${page.title + ' - 写字台'}">写字台</title>
     <link rel="stylesheet" href="/vendor/github-markdown-css/github-markdown-light.min.css">
+    <link rel="stylesheet" href="/vendor/highlight/github.min.css">
+    <!-- 代码块高亮（本地内置，禁 CDN）：库 → 补充语言包 → 增强脚本，defer 保证按序执行 -->
+    <script defer src="/vendor/highlight/highlight.min.js"></script>
+    <script defer src="/vendor/highlight/highlight-langs.min.js"></script>
+    <script defer src="/js/codeblock.js"></script>
     <style>
         :root { --ink: #1a1a1a; --line: #e5e7eb; --accent: #2563eb; }
         body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--ink); background: #fff; }
@@ -18,6 +23,23 @@
         /* 正文里的媒体自适应 */
         .markdown-body img, .markdown-body video { max-width: 100%; height: auto; border-radius: 6px; }
         .markdown-body video { display: block; margin: 12px 0; background: #000; }
+        /* 代码块：语法高亮（vendor/highlight）+ 右上角「语言标签 / 复制」工具条。
+           与 article.html 保持完全一致的规则（颜色写死不用 CSS 变量，本页 :root 里没有 --muted）。 */
+        .markdown-body .code-block { position: relative; }
+        .markdown-body .code-block pre { margin-bottom: 16px; }
+        .markdown-body pre code.hljs { padding: 0; background: transparent; }
+        .markdown-body .code-tools { position: absolute; top: 8px; right: 8px; display: flex;
+            align-items: center; gap: 6px; user-select: none; }
+        .markdown-body .code-lang { font-size: 12px; line-height: 18px; color: #6b7280;
+            background: rgba(246, 248, 250, .92); border: 1px solid var(--line);
+            border-radius: 4px; padding: 0 6px; }
+        .markdown-body .code-copy { font-size: 12px; line-height: 18px; margin: 0; padding: 0 8px;
+            color: #6b7280; background: rgba(246, 248, 250, .92); border: 1px solid var(--line);
+            border-radius: 4px; cursor: pointer; opacity: .8;
+            transition: opacity .15s, color .15s, border-color .15s; }
+        .markdown-body .code-copy:hover { opacity: 1; color: var(--accent); border-color: var(--accent); }
+        .markdown-body .code-copy.ok { opacity: 1; color: #16a34a; border-color: #16a34a; }
+        .markdown-body .code-copy.err { opacity: 1; color: #b91c1c; border-color: #b91c1c; }
     </style>
 </head>
 <body>
