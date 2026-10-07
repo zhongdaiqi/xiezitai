@@ -11,8 +11,17 @@ name: Deploy
 #   还没换新 —— 结果是「部署成功了，跑的还是上一版代码」，而且很难察觉。
 #   挂在构建**成功之后**触发（workflow_run），服务器必然能拉到本次提交对应的镜像。
 #
-# 服务器侧：authorized_keys 里该公钥已用 `command=` 强制指向 deploy.sh，
-# 客户端发过去的命令会被 sshd 忽略，改由 $SSH_ORIGINAL_COMMAND 携带。
+# 两台服务器（2026-10-07 起）：
+#   镜像只有一份（同一次构建的产物），两台跑的是**同一套** deploy.sh，
+#   登录用户、私钥、端口两台共用，只有地址不同：
+#     SSH_HOST    第一台（原部署目标）
+#     SSH_HOST_2  第二台（新增，必填，缺了会在「校验 Secrets」这一步显式报错）
+#   下面两个 job 相互独立、并行执行：一台挂了不影响另一台继续部署，
+#   全流程会因为失败那台整体标红，Run 摘要里能直接看出是哪台出的问题。
+#   要临时只部署一台：把不需要的那个 job 加一行 `if: false` 即可。
+#
+# 服务器侧：两台服务器的 authorized_keys 里都用 `command=` 把该公钥强制指向
+# deploy.sh，客户端发过去的命令会被 sshd 忽略，改由 $SSH_ORIGINAL_COMMAND 携带。
 # 所以下面 script 的内容只是占位（保持 SSH 有输入、避免个别环境下的 broken pipe），
 # 真正干什么由服务器上的 deploy.sh 决定，改部署动作请改那个脚本，不用改本文件。
 # ---------------------------------------------------------------------------
@@ -23,7 +32,8 @@ on:
     types: [completed]
   workflow_dispatch: # 支持在 Actions 页面手动触发
 
-# 部署串行执行：上一次没跑完不新起，避免两个 deploy.sh 同时 pull/重建
+# 整轮部署（两台一起）串行执行：上一轮没跑完不新起，
+# 避免同一个目标服务器被两次 deploy.sh 同时 pull/重建。
 concurrency:
   group: deploy-production
   cancel-in-progress: false
@@ -32,8 +42,9 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
-    name: 部署到生产服务器
+  # ======================= 第一台服务器：SSH_HOST =======================
+  deploy-1:
+    name: 部署到服务器 1（SSH_HOST）
     runs-on: ubuntu-latest
     # 只有「上游构建成功」才部署；PR 构建成功不部署；手动触发无条件执行
     if: >-
@@ -60,6 +71,7 @@ jobs:
           echo "Secrets 校验通过，目标：${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.SSH_PORT }}"
 
       - name: 部署（SSH 触发服务器 deploy.sh）
+        id: ssh
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -96,13 +108,107 @@ jobs:
           echo "::warning::健康检查未通过：$url，请登录服务器确认容器状态"
 
       - name: 输出结果摘要
+        if: always()
         run: |
+          outcome="${{ steps.ssh.outcome }}"
+          if [ "$outcome" = "success" ]; then
+            title=":rocket: 部署已触发"
+          else
+            title=":x: 部署未完成（${outcome:-未执行}）"
+          fi
           {
-            echo "### 部署已触发 :rocket:"
+            echo "### 服务器 1 $title"
             echo ""
             echo "| 项目 | 值 |"
             echo "| --- | --- |"
             echo "| 服务器 | \`${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.SSH_PORT }}\` |"
+            echo "| 触发方式 | ${{ github.event_name }} |"
+            if [ -n "${{ github.event.workflow_run.head_sha }}" ]; then
+              echo "| 对应提交 | \`${{ github.event.workflow_run.head_sha }}\` |"
+            fi
+            echo ""
+            echo "服务器侧日志：\`journalctl -u deploy -n 50\` 或 deploy.sh 里的日志落盘路径"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ====================== 第二台服务器：SSH_HOST_2 ======================
+  deploy-2:
+    name: 部署到服务器 2（SSH_HOST_2）
+    runs-on: ubuntu-latest
+    # 与服务器 1 完全一致的触发条件；两台并行跑，互不阻塞
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event != 'pull_request')
+    steps:
+      - name: 校验 Secrets 是否配置
+        run: |
+          missing=0
+          if [ -z "${{ secrets.SSH_HOST_2 }}" ]; then
+            echo "::error::缺少 Secret：SSH_HOST_2（第二台服务器地址；用户名/私钥/端口与第一台共用 SSH_USER / SSH_KEY / SSH_PORT）"
+            missing=1
+          fi
+          if [ -z "${{ secrets.SSH_USER }}" ]; then
+            echo "::error::缺少 Secret：SSH_USER"
+            missing=1
+          fi
+          if [ -z "${{ secrets.SSH_KEY }}" ]; then
+            echo "::error::缺少 Secret：SSH_KEY（部署私钥全文，含 BEGIN/END 行）"
+            missing=1
+          fi
+          [ "$missing" = "0" ] || exit 1
+          echo "Secrets 校验通过，目标：${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST_2 }}:${{ secrets.SSH_PORT }}"
+
+      - name: 部署（SSH 触发服务器 deploy.sh）
+        id: ssh
+        uses: appleboy/ssh-action@v1
+        with:
+          # 用户/私钥/端口两台一致，只有地址换成了 SSH_HOST_2
+          host: ${{ secrets.SSH_HOST_2 }}
+          username: ${{ secrets.SSH_USER }}
+          # 第二台若是别的端口，配 SSH_PORT_2 覆盖；没配就沿用 SSH_PORT
+          port: ${{ secrets.SSH_PORT_2 || secrets.SSH_PORT }}
+          key: ${{ secrets.SSH_KEY }}
+          # 可选加固：两台可用各自的指纹，没配就留空，不影响部署。
+          # fingerprint: ${{ secrets.SSH_FINGERPRINT_2 }}
+          timeout: 60s
+          command_timeout: 10m
+          script_stop: true
+          # 与第一台完全相同的占位内容：真正执行什么由服务器上的 deploy.sh 决定
+          script: |
+            echo "trigger deploy"
+
+      - name: 健康检查（可选）
+        # 第二台单独配仓库变量 DEPLOY_HEALTHCHECK_URL_2；没配则整步跳过
+        if: vars.DEPLOY_HEALTHCHECK_URL_2 != ''
+        continue-on-error: true
+        run: |
+          url="${{ vars.DEPLOY_HEALTHCHECK_URL_2 }}"
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 "$url" || true)
+            if [ "$code" = "200" ]; then
+              echo "健康检查通过：$url → 200"
+              exit 0
+            fi
+            echo "第 $i 次探测：$url → ${code:-无响应}，5 秒后重试"
+            sleep 5
+          done
+          echo "::warning::健康检查未通过：$url，请登录服务器确认容器状态"
+
+      - name: 输出结果摘要
+        if: always()
+        run: |
+          outcome="${{ steps.ssh.outcome }}"
+          if [ "$outcome" = "success" ]; then
+            title=":rocket: 部署已触发"
+          else
+            title=":x: 部署未完成（${outcome:-未执行}）"
+          fi
+          {
+            echo "### 服务器 2 $title"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 服务器 | \`${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST_2 }}:${{ secrets.SSH_PORT }}\` |"
             echo "| 触发方式 | ${{ github.event_name }} |"
             if [ -n "${{ github.event.workflow_run.head_sha }}" ]; then
               echo "| 对应提交 | \`${{ github.event.workflow_run.head_sha }}\` |"
