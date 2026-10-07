@@ -1334,4 +1334,189 @@ class XiezitaiApplicationTests {
         while (i >= 0) { n++; i = haystack.indexOf(needle, i + needle.length()); }
         return n;
     }
+
+    /* ==================== WordPress 关联与导入 ==================== */
+
+    @Autowired cn.xiezitai.service.WordPressImportService wpImports;
+
+    @Test
+    @DisplayName("WordPress：sameHost 判定与 HTML 实体还原")
+    void wpHelpers() {
+        assertThat(wpImports.sameHost("https://www.Example.com/wp-content/a.png", "https://example.com")).isTrue();
+        assertThat(wpImports.sameHost("https://example.com/a.png", "https://www.example.com")).isTrue();
+        assertThat(wpImports.sameHost("https://cdn.other.com/a.png", "https://example.com")).isFalse();
+        assertThat(wpImports.sameHost("/relative/a.png", "https://example.com")).isFalse();
+        assertThat(cn.xiezitai.service.WordPressClient.unescapeEntities("A &#8217; B &amp; C &#x4e2d;"))
+                .isEqualTo("A ’ B & C 中");
+        assertThat(cn.xiezitai.service.WordPressClient.stripTags("<p>Ex &amp; <b>bold</b></p>"))
+                .isEqualTo("Ex & bold");
+    }
+
+    /**
+     * 起一个本机假 WP 站点（REST API + 媒体文件），走完整链路：
+     * 关联站点（Token 不回显）→ 浏览文章 → 单篇导入（站点自身图片落盘、外站图保留外链）
+     * → 重复导入跳过 → 整站导入（后台线程 + 进度轮询到 DONE）。
+     */
+    @Test
+    @DisplayName("WordPress：关联/Token 脱敏/单篇导入媒体落盘/整站导入进度")
+    void wpAssociateImportAndMediaLocalize() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        int port = server.getAddress().getPort();
+        String base = "http://127.0.0.1:" + port;
+        final String wpToken = "abcd efgh ijkl mnop";
+        final String expectedAuth = "Basic " + Base64.getEncoder()
+                .encodeToString(("bob:" + wpToken).getBytes(StandardCharsets.UTF_8));
+
+        server.createContext("/wp-json/", ex -> respond(ex, 200, "application/json",
+                "{\"name\":\"Mock WP\",\"description\":\"测试站点\"}".getBytes(StandardCharsets.UTF_8)));
+        server.createContext("/wp-json/wp/v2/users/me", ex -> {
+            if (!expectedAuth.equals(ex.getRequestHeaders().getFirst("Authorization"))) {
+                respond(ex, 401, "application/json", "{\"code\":\"rest_forbidden\"}".getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            respond(ex, 200, "application/json", "{\"name\":\"Bob\"}".getBytes(StandardCharsets.UTF_8));
+        });
+        String listJson = "[{\"id\":101,\"title\":{\"rendered\":\"Hello &#8217; World\"},\"slug\":\"wp-hello-101\","
+                + "\"date\":\"2026-01-02T10:00:00\",\"status\":\"publish\",\"link\":\"" + base + "/?p=101\"},"
+                + "{\"id\":102,\"title\":{\"rendered\":\"Second Post\"},\"slug\":\"wp-second-102\","
+                + "\"date\":\"2026-01-03T11:00:00\",\"status\":\"draft\",\"link\":\"" + base + "/?p=102\"}]";
+        server.createContext("/wp-json/wp/v2/posts", ex -> {
+            ex.getResponseHeaders().add("X-WP-Total", "2");
+            ex.getResponseHeaders().add("X-WP-TotalPages", "1");
+            respond(ex, 200, "application/json", listJson.getBytes(StandardCharsets.UTF_8));
+        });
+        // 站点自身图片：应落盘；外站图（cdn.external.com 不可达也无妨）：应保留外链
+        String content101 = "<p>intro</p>"
+                + "<figure><img src=\"" + base + "/wp-content/uploads/2026/01/pic.png\" "
+                + "srcset=\"" + base + "/wp-content/uploads/2026/01/pic.png 300w\"/></figure>"
+                + "<p><img src=\"http://cdn.external.com/ext.png\"/></p>"
+                + "<p><a href=\"" + base + "/wp-content/uploads/2026/01/doc.pdf\">doc</a></p>";
+        String post101 = "{\"id\":101,\"title\":{\"rendered\":\"Hello &#8217; World\"},\"slug\":\"wp-hello-101\","
+                + "\"status\":\"publish\",\"date_gmt\":\"2026-01-02T10:00:00\","
+                + "\"content\":{\"rendered\":\"" + content101.replace("\"", "\\\"") + "\"},"
+                + "\"excerpt\":{\"rendered\":\"<p>Excerpt &amp; text</p>\"},"
+                + "\"_embedded\":{\"wp:featuredmedia\":[{\"source_url\":\"" + base + "/wp-content/uploads/2026/01/cover.png\"}],"
+                + "\"wp:term\":[[{\"name\":\"News\",\"taxonomy\":\"category\"}],[{\"name\":\"Java\",\"taxonomy\":\"post_tag\"}]]}}";
+        server.createContext("/wp-json/wp/v2/posts/101", ex ->
+                respond(ex, 200, "application/json", post101.getBytes(StandardCharsets.UTF_8)));
+        String post102 = "{\"id\":102,\"title\":{\"rendered\":\"Second Post\"},\"slug\":\"wp-second-102\","
+                + "\"status\":\"draft\",\"date_gmt\":\"2026-01-03T11:00:00\","
+                + "\"content\":{\"rendered\":\"<p>body two</p>\"},\"excerpt\":{\"rendered\":\"\"}}";
+        server.createContext("/wp-json/wp/v2/posts/102", ex ->
+                respond(ex, 200, "application/json", post102.getBytes(StandardCharsets.UTF_8)));
+        server.createContext("/wp-content/uploads/2026/01/pic.png", ex -> respond(ex, 200, "image/png", PNG_1X1));
+        server.createContext("/wp-content/uploads/2026/01/cover.png", ex -> respond(ex, 200, "image/png", PNG_1X1));
+        server.createContext("/wp-content/uploads/2026/01/doc.pdf", ex ->
+                respond(ex, 200, "application/pdf", "fake-pdf".getBytes(StandardCharsets.UTF_8)));
+        server.start();
+
+        String adminToken = loginToken(ADMIN, ADMIN_PWD);
+        java.util.List<Long> madeArticles = new java.util.ArrayList<>();
+        Long siteId = null;
+        try {
+            // ① 关联站点：200 + hasToken=true，响应体绝不能带出明文 Token
+            MvcResult r = mvc.perform(post("/api/admin/wp/sites")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("url", base, "username", "bob", "token", wpToken)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.site.hasToken").value(true))
+                    .andReturn();
+            String body = r.getResponse().getContentAsString(StandardCharsets.UTF_8);
+            assertThat(body).as("响应: " + body).doesNotContain(wpToken);
+            siteId = om.readTree(body).path("site").path("id").asLong();
+            assertThat(siteId).isPositive();
+
+            // ② 站点列表同样不回显 Token；重复关联同一网址回 409
+            String listBody = mvc.perform(get("/api/admin/wp/sites")
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn().getResponse()
+                    .getContentAsString(StandardCharsets.UTF_8);
+            assertThat(listBody).doesNotContain(wpToken);
+            mvc.perform(post("/api/admin/wp/sites")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("url", base)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isConflict());
+
+            // ③ 单篇导入：媒体落盘 / 外链保留 / 标签合并 / 发布时间
+            MvcResult imp = mvc.perform(post("/api/admin/wp/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", 101)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            String impBody = imp.getResponse().getContentAsString(StandardCharsets.UTF_8);
+            assertThat(om.readTree(impBody).path("imported").asBoolean())
+                    .as("导入响应: " + impBody).isTrue();
+            long articleId = om.readTree(impBody).path("articleId").asLong();
+            madeArticles.add(articleId);
+            assertThat(om.readTree(impBody).path("warnings").isArray()
+                    && om.readTree(impBody).path("warnings").size() == 0)
+                    .as("同站媒体都应成功落盘，不应有警告: " + impBody).isTrue();
+
+            MvcResult got = mvc.perform(get("/api/admin/articles/" + articleId)
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn();
+            String artJson = got.getResponse().getContentAsString(StandardCharsets.UTF_8);
+            JsonNode art = om.readTree(artJson);
+            assertThat(art.path("title").asText()).isEqualTo("Hello ’ World");
+            assertThat(art.path("summary").asText()).isEqualTo("Excerpt & text");
+            assertThat(art.path("status").asText()).isEqualTo("PUBLISHED");
+            assertThat(art.path("publishedAt").asText()).startsWith("2026-01-02T10:00");
+            assertThat(art.path("tags").asText()).isEqualTo("News,Java");
+            String content = art.path("content").asText();
+            assertThat(content).as("正文: " + content).contains("/media/");
+            assertThat(content).as("WP 自身图片 URL 不应残留在正文: " + content).doesNotContain("wp-content");
+            assertThat(content).as("外站图片应保留外链: " + content).contains("http://cdn.external.com/ext.png");
+            // srcset 里的同站 URL 也应一并本地化（srcset 保留，但 URL 换成 /media/）
+            assertThat(content).as("srcset 应本地化: " + content).containsPattern("srcset=\"/media/[0-9a-f]{16}\\.png 300w\"");
+            assertThat(art.path("cover").asText()).startsWith("/media/");
+            // 落盘的图 + 封面 + pdf 附件都应登记进媒体库（否则会被全库扫描判为孤立文件）
+            Matcher fm = Pattern.compile("/media/([0-9a-f]{16}\\.[a-z]+)").matcher(content + art.path("cover").asText());
+            java.util.Set<String> storedNames = new java.util.LinkedHashSet<>();
+            while (fm.find()) storedNames.add(fm.group(1));
+            assertThat(storedNames).as("正文 1 图（src+srcset 同一文件）+ 封面 1 图 + 正文 pdf 附件").hasSize(3);
+            for (String stored : storedNames) {
+                assertThat(fileRepo.findByStoredName(stored)).isPresent();
+            }
+
+            // ④ 重复导入：同 slug 已存在 → 跳过而非建重复文章
+            mvc.perform(post("/api/admin/wp/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", 101)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.imported").value(false));
+
+            // ⑤ 整站导入：启动 202 → 轮询进度到 DONE → 第二篇（草稿状态）也进来
+            mvc.perform(post("/api/admin/wp/sites/" + siteId + "/import-all")
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isAccepted());
+            String progBody = "";
+            for (int i = 0; i < 40; i++) {
+                Thread.sleep(250);
+                progBody = mvc.perform(get("/api/admin/wp/sites/" + siteId + "/progress")
+                                .header("Authorization", "Bearer " + adminToken))
+                        .andExpect(status().isOk()).andReturn().getResponse()
+                        .getContentAsString(StandardCharsets.UTF_8);
+                if (om.readTree(progBody).path("phase").asText().equals("DONE")) break;
+            }
+            JsonNode prog = om.readTree(progBody);
+            assertThat(prog.path("phase").asText()).as("进度: " + progBody).isEqualTo("DONE");
+            assertThat(prog.path("imported").asInt()).isEqualTo(1);
+            assertThat(prog.path("skipped").asInt()).isEqualTo(1);
+            Long secondId = articles.findBySlug("wp-second-102").orElseThrow().getId();
+            madeArticles.add(secondId);
+            assertThat(articles.findBySlug("wp-second-102").orElseThrow().getStatus()).isEqualTo("DRAFT");
+        } finally {
+            server.stop(0);
+            for (Long id : madeArticles) articles.deleteById(id);
+            if (siteId != null) {
+                mvc.perform(delete("/api/admin/wp/sites/" + siteId)
+                                .header("Authorization", "Bearer " + adminToken))
+                        .andExpect(status().isOk());
+            }
+        }
+    }
 }

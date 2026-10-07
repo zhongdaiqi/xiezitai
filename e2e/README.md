@@ -56,6 +56,7 @@ $env:E2E_BASE='http://127.0.0.1:8099'
 | `user-audit.cjs` | 注册审核：待审核拦截 → 后台「用户」页通过/驳回（含备注）→ 通过后可用、驳回后令牌立即失效 |
 | `remember.cjs` | 记住登录（localStorage vs sessionStorage） |
 | `totp.cjs` | TOTP 绑定 |
+| `wp-associate.cjs` | WordPress 关联与导入：脚本内起本地 mock WP 站点（REST + 媒体文件）→ 面板空态 → 关联站点（接口不回显 token 字段）→ 浏览文章（12 篇分页）→ 单篇导入（站点自身图片落盘换 /media/、外站图保留外链、无 wp-content 残留、标签来自 WP）→ 重复导入跳过 → 整站导入进度条到「整站导入完成：成功 11 跳过 1」；导入文章与站点跑完自删 |
 | `demo-seed.cjs` | 空库首启示例内容（4 文章 / 2 页面 / 5 评论） |
 | `shot-*.cjs` | 纯截图工具，无断言，供人工核对视觉 |
 

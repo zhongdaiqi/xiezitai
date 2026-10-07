@@ -234,6 +234,7 @@
             <button class="tab active" data-p="articles" onclick="switchTab(this)">文章</button>
             <button class="tab" data-p="pages" onclick="switchTab(this)">页面</button>
             <button class="tab" data-p="files" onclick="switchTab(this)">文件</button>
+            <button class="tab" data-p="wp" onclick="switchTab(this)">WordPress</button>
             <button class="tab" data-p="comments" onclick="switchTab(this)">评论</button>
             <button class="tab" data-p="users" onclick="switchTab(this)">用户</button>
             <button class="tab" data-p="security" onclick="switchTab(this)">安全</button>
@@ -435,6 +436,55 @@
         <div class="card">
             <div class="table-wrap">
                 <table id="flist"><thead><tr><th>文件名</th><th>大小</th><th>扫描</th><th>上传人</th><th>操作</th></tr></thead><tbody></tbody></table>
+            </div>
+        </div>
+    </div>
+
+    <!-- WordPress 关联：多站点管理（网址 + 应用密码）→ 浏览文章 → 单篇导入 / 整站导入（进度轮询）。
+         Token 属敏感信息：只写库、接口不回显（后端 WRITE_ONLY），前端只显示「已配置」。 -->
+    <div class="panel" id="p-wp">
+        <div class="card">
+            <div class="list-head">
+                <h3>WordPress 站点 <span class="count" id="wplist-count"></span></h3>
+            </div>
+            <div class="row">
+                <input type="text" id="wp-url" placeholder="站点网址，如 https://example.com" style="flex:2; min-width:220px;">
+                <input type="text" id="wp-user" placeholder="WP 用户名（应用密码对应用户，可留空）" style="flex:1; min-width:150px;" autocomplete="off">
+                <input type="password" id="wp-token" placeholder="Application Password（API Token）" style="flex:2; min-width:200px;" autocomplete="new-password">
+                <button class="primary" id="wp-add" onclick="addWpSite()">关联站点</button>
+            </div>
+            <p class="muted">Token 只保存在本站数据库，接口永不回传明文，也不会写入任何代码仓库；
+                在 WP 后台「用户 → 个人资料 → 应用密码」生成。留空用户名/Token 时只能导入公开文章。</p>
+            <div class="table-wrap">
+                <table id="wplist"><thead><tr><th>站点</th><th>用户名</th><th>Token</th><th>上次同步</th><th>操作</th></tr></thead><tbody></tbody></table>
+            </div>
+        </div>
+
+        <div class="card" id="wp-browse-card" style="display:none;">
+            <div class="list-head">
+                <h3 id="wp-browse-title">文章列表</h3>
+                <button class="primary" id="wp-import-all" onclick="wpImportAll()">整站导入</button>
+            </div>
+            <div class="alist-filter">
+                <input type="text" id="wp-search" placeholder="搜索 WP 站点文章标题…" autocomplete="off"
+                       oninput="onWpSearchInput()"
+                       onkeydown="if(event.key==='Enter'){event.preventDefault();onWpSearchInput(true);}">
+                <button class="ghost" onclick="wpTestSite()">测试连接</button>
+            </div>
+            <div class="table-wrap">
+                <table id="wpposts"><thead><tr><th>标题</th><th>发布日期</th><th>WP 状态</th><th>操作</th></tr></thead><tbody></tbody></table>
+            </div>
+            <div class="pager" id="wpposts-pager"></div>
+
+            <!-- 整站导入进度：轮询 /api/admin/wp/sites/{id}/progress（RUNNING 期间 1.2s 一次） -->
+            <div id="wp-progress" style="display:none; margin-top:14px;">
+                <div class="row" style="align-items:center;">
+                    <div style="flex:1; height:10px; background:var(--bg); border:1px solid var(--line); border-radius:6px; overflow:hidden;">
+                        <div id="wp-progress-bar" style="height:100%; width:0%; background:#2563eb; transition:width .4s;"></div>
+                    </div>
+                    <span class="muted" id="wp-progress-text"></span>
+                </div>
+                <pre id="wp-progress-log" style="background:var(--bg); padding:10px; border-radius:8px; font-size:12px; max-height:220px; overflow:auto; white-space:pre-wrap; margin-top:8px;"></pre>
             </div>
         </div>
     </div>
@@ -1674,6 +1724,224 @@ async function changePassword() {
     }
 }
 
+/* ==================== WordPress 关联与导入 ====================
+   多站点管理（网址 + 用户名 + Application Password）→ 浏览站点文章 →
+   单篇导入（同步）/ 整站导入（后台线程 + 1.2s 轮询进度条）。
+   Token 只在「关联站点」时提交一次，后端不回显 —— 列表里只显示「已配置」。 */
+let wpSites = [];
+let wpSiteId = null;          // 当前浏览/导入的站点
+let wpPostsPage = 0, wpPostsPages = 1, wpPostsTotal = 0;
+const WP_POSTS_SIZE = 10;
+let wpSearchTimer = null, wpSearchKw = '';
+let wpPollTimer = null;       // 整站导入进度轮询
+
+async function loadWpSites() {
+    wpSites = await jget('/api/admin/wp/sites');
+    const tb = document.querySelector('#wplist tbody');
+    $('wplist-count').textContent = wpSites.length ? '（' + wpSites.length + '）' : '';
+    if (!wpSites.length) {
+        tb.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:center; padding:18px 0;">还没有关联 WordPress 站点，填好上方网址与 Token 点「关联站点」</td></tr>';
+        return;
+    }
+    tb.innerHTML = wpSites.map(s => `<tr>
+        <td><a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.name || s.url)}</a>
+            <div class="muted" style="font-size:12px;">${escapeHtml(s.url)}</div></td>
+        <td>${escapeHtml(s.username || '—')}</td>
+        <td>${s.hasToken ? '<span class="mini-tag">已配置</span>' : '<span class="muted">未配置</span>'}</td>
+        <td>${s.lastSyncAt ? fmtTime(s.lastSyncAt) : '—'}</td>
+        <td>
+            <button class="ghost" onclick="browseWpSite(${s.id})">浏览文章</button>
+            <button class="ghost" onclick="wpTestSite(${s.id})">测试连接</button>
+            <button class="ghost" onclick="delWpSite(${s.id}, '${escapeHtml(String(s.name || s.url)).replace(/'/g, "\\'")}')">删除</button>
+        </td>
+    </tr>`).join('');
+}
+
+async function addWpSite() {
+    const url = $('wp-url').value.trim();
+    if (!url) { toast('请填写站点网址'); return; }
+    const btn = $('wp-add');
+    btn.disabled = true;
+    try {
+        const res = await api('/api/admin/wp/sites', {
+            method: 'POST',
+            body: JSON.stringify({ url, username: $('wp-user').value.trim(), token: $('wp-token').value.trim() })
+        });
+        const data = await res.json();
+        if (!res.ok) { toast(data.error || '关联失败'); return; }
+        $('wp-url').value = ''; $('wp-user').value = ''; $('wp-token').value = '';
+        toast('关联成功：' + (data.site.name || data.site.url));
+        if (data.warning) toast(data.warning);
+        await loadWpSites();
+    } catch (e) {
+        toast('关联失败：' + e.message);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+async function delWpSite(id, name) {
+    if (!confirm('确定删除关联站点「' + name + '」？已导入的文章不受影响。')) return;
+    const res = await api('/api/admin/wp/sites/' + id, { method: 'DELETE' });
+    if (res.ok) {
+        if (wpSiteId === id) closeWpBrowse();
+        toast('已删除关联');
+        loadWpSites();
+    } else toast('删除失败');
+}
+
+async function wpTestSite(id) {
+    const sid = id || wpSiteId;
+    if (!sid) return;
+    toast('正在测试连接…');
+    const res = await api('/api/admin/wp/sites/' + sid + '/test', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+        toast('连接正常：' + (data.name || '') + (data.credentials && data.credentials !== 'anonymous' ? ' · 凭据 ' + data.credentials : ' · 匿名访问'));
+    } else {
+        toast(data.error || '连接失败');
+    }
+}
+
+/* ---------- 浏览某个站点的文章 ---------- */
+function browseWpSite(id) {
+    wpSiteId = id;
+    const s = wpSites.find(x => x.id === id) || {};
+    $('wp-browse-title').textContent = '文章列表 · ' + (s.name || s.url || '');
+    $('wp-browse-card').style.display = '';
+    wpSearchKw = '';
+    $('wp-search').value = '';
+    loadWpPosts(0);
+    checkWpProgress();          // 若该站点此前有任务在跑，恢复进度条
+}
+
+function closeWpBrowse() {
+    wpSiteId = null;
+    $('wp-browse-card').style.display = 'none';
+    stopWpPoll();
+}
+
+async function loadWpPosts(page) {
+    if (!wpSiteId) return;
+    const res = await api('/api/admin/wp/sites/' + wpSiteId + '/posts?page=' + (page + 1)
+        + '&per_page=' + WP_POSTS_SIZE + (wpSearchKw ? '&search=' + encodeURIComponent(wpSearchKw) : ''));
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || '拉取文章列表失败'); return; }
+    wpPostsPage = page;
+    wpPostsTotal = data.total || 0;
+    wpPostsPages = Math.max(data.totalPages || 1, 1);
+    const tb = document.querySelector('#wpposts tbody');
+    if (!data.posts.length) {
+        tb.innerHTML = '<tr><td colspan="4" class="muted" style="text-align:center; padding:18px 0;">没有匹配的文章</td></tr>';
+    } else {
+        const statusText = st => ({ publish: '已发布', draft: '草稿', pending: '待审', private: '私密' }[st] || st);
+        tb.innerHTML = data.posts.map(p => `<tr>
+            <td><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">${escapeHtml(p.title)}</a></td>
+            <td>${escapeHtml(String(p.date || '').replace('T', ' ').slice(0, 16))}</td>
+            <td>${escapeHtml(statusText(p.status))}</td>
+            <td><button class="ghost" onclick="wpImportOne(${p.id})">导入</button></td>
+        </tr>`).join('');
+    }
+    // 分页（与文章列表同款式）
+    const box = $('wpposts-pager');
+    const from = wpPostsTotal ? page * WP_POSTS_SIZE + 1 : 0;
+    const to = Math.min((page + 1) * WP_POSTS_SIZE, wpPostsTotal);
+    const first = page <= 0, last = page >= wpPostsPages - 1;
+    box.innerHTML = `<span class="pinfo">共 ${wpPostsTotal} 篇 · 第 ${from}-${to} 条 · ${page + 1}/${wpPostsPages} 页</span>
+        <span class="pbtns">
+            <button class="ghost" onclick="loadWpPosts(0)" ${first ? 'disabled' : ''}>首页</button>
+            <button class="ghost" onclick="loadWpPosts(${page - 1})" ${first ? 'disabled' : ''}>上一页</button>
+            <button class="ghost" onclick="loadWpPosts(${page + 1})" ${last ? 'disabled' : ''}>下一页</button>
+            <button class="ghost" onclick="loadWpPosts(${wpPostsPages - 1})" ${last ? 'disabled' : ''}>末页</button>
+        </span>`;
+}
+
+function onWpSearchInput(immediate) {
+    clearTimeout(wpSearchTimer);
+    const run = () => { wpSearchKw = $('wp-search').value.trim(); loadWpPosts(0); };
+    if (immediate) run();
+    else wpSearchTimer = setTimeout(run, 420);
+}
+
+/* ---------- 单篇导入 ---------- */
+async function wpImportOne(postId) {
+    toast('正在导入，媒体较多时可能需要几十秒…');
+    const res = await api('/api/admin/wp/sites/' + wpSiteId + '/import', {
+        method: 'POST', body: JSON.stringify({ postId })
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || '导入失败'); return; }
+    if (data.imported) {
+        toast('导入成功：《' + (data.title || '') + '》' + (data.warnings && data.warnings.length ? '（' + data.warnings.length + ' 条媒体警告，详见控制台）' : ''));
+        if (data.warnings && data.warnings.length) console.warn('WP 导入媒体警告：', data.warnings);
+    } else {
+        toast(data.message || '该文章已存在，已跳过');
+    }
+}
+
+/* ---------- 整站导入 + 进度轮询 ---------- */
+async function wpImportAll() {
+    if (!wpSiteId) return;
+    if (!confirm('开始整站导入？将把该站点全部文章导入本站（本地已存在同 slug 的文章会自动跳过）。')) return;
+    const res = await api('/api/admin/wp/sites/' + wpSiteId + '/import-all', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || '启动失败'); return; }
+    toast('整站导入已启动');
+    $('wp-progress').style.display = '';
+    renderWpProgress({ phase: 'RUNNING', messages: ['任务已启动，正在拉取文章列表…'] });
+    startWpPoll();
+}
+
+function startWpPoll() {
+    stopWpPoll();
+    wpPollTimer = setInterval(checkWpProgress, 1200);
+    checkWpProgress();
+}
+
+function stopWpPoll() {
+    if (wpPollTimer) { clearInterval(wpPollTimer); wpPollTimer = null; }
+}
+
+async function checkWpProgress() {
+    if (!wpSiteId) return;
+    let data;
+    try {
+        const res = await api('/api/admin/wp/sites/' + wpSiteId + '/progress');
+        data = await res.json();
+    } catch (e) { return; }
+    if (!data || data.phase === 'IDLE') return;      // 没有任务：不动进度区
+    $('wp-progress').style.display = '';
+    renderWpProgress(data);
+    if (data.phase === 'RUNNING') {
+        if (!wpPollTimer) startWpPoll();
+    } else {
+        stopWpPoll();
+        if (data.phase === 'DONE') {
+            toast('整站导入完成：成功 ' + data.imported + '，跳过 ' + data.skipped + '，失败 ' + data.failed);
+            loadWpSites();                            // 刷新「上次同步」
+        } else if (data.phase === 'FAILED') {
+            toast('整站导入中断：' + (data.error || '未知错误'));
+        }
+    }
+}
+
+function renderWpProgress(p) {
+    const total = p.total >= 0 ? p.total : null;
+    const pct = total ? Math.min(100, Math.round(p.done / total * 100)) : (p.phase === 'DONE' ? 100 : 0);
+    $('wp-progress-bar').style.width = pct + '%';
+    const statusLabel = { RUNNING: '导入中', DONE: '已完成', FAILED: '已中断' }[p.phase] || p.phase;
+    $('wp-progress-text').textContent = statusLabel
+        + (total ? ' ' + p.done + '/' + total + '（' + pct + '%）' : ' ' + p.done + ' 篇')
+        + (p.current ? ' · ' + p.current : '');
+    const lines = (p.messages || []).slice(-12);
+    $('wp-progress-log').textContent = lines.join('\n') + (lines.length ? '\n' : '');
+}
+
+/* 进编辑面板时若已登录就顺带刷一次站点列表（switchTab 里调用） */
+function maybeLoadWp() {
+    if (token) loadWpSites().catch(() => {});
+}
+
 /* ---------- tabs ---------- */
 function switchTab(btn) {
     document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
@@ -1682,6 +1950,8 @@ function switchTab(btn) {
     document.getElementById('p-' + btn.dataset.p).classList.add('active');
     // 页面面板与文章面板一样默认落在「列表」视图，编辑器等点「新建 / 编辑」时再挂
     // （ByteMD 有开销，隐藏态挂载还量不到尺寸 → 现在不在这里预挂）。
+    // WordPress 面板：每次进来刷新站点列表（Token 配置、上次同步都可能被别处改过）
+    if (btn.dataset.p === 'wp') maybeLoadWp();
     // hash 记录当前面板：刷新/分享链接都能落回原处（replaceState 不产生历史记录）
     history.replaceState(null, '', '#' + btn.dataset.p);
 }
