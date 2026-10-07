@@ -227,7 +227,6 @@ public class WordPressImportService {
         Article a = new Article();
         applyPostBody(site, a, post, warnings, useWpDate);
         a.setSlug(normalizeWpSlug(post.path("slug").asText("")));
-        a.setAuthor("wordpress");
         return a;
     }
 
@@ -250,16 +249,20 @@ public class WordPressImportService {
     }
 
     /**
-     * 更新已有文章：保留 id / slug / author / 浏览数 / 评论，正文相关字段以 WP 版本为准。
+     * 更新已有文章：保留 id / slug / 浏览数 / 评论，正文相关字段与发布人以 WP 站点版本为准。
      */
     private void updateArticleFields(WpSite site, Article target, JsonNode post,
                                      List<String> warnings, boolean useWpDate) throws Exception {
         applyPostBody(site, target, post, warnings, useWpDate);
     }
 
-    /** 把 WP post 的内容字段落到文章实体（title/正文/摘要/封面/状态与发布时间/标签） */
+    /** 把 WP post 的内容字段落到文章实体（title/正文/摘要/封面/状态与发布时间/标签/发布人） */
     private void applyPostBody(WpSite site, Article a, JsonNode post,
                                List<String> warnings, boolean useWpDate) throws Exception {
+        // 发布人 = 关联站点时填写的 WP 用户名（如 zhongdaiqi），而不是固定写死。
+        // 放在 applyPostBody 里：新建导入与「更新」模式重导都会归一，旧文章（author=wordpress）可自愈
+        a.setAuthor(site.getUsername() == null || site.getUsername().isBlank()
+                ? "wordpress" : site.getUsername().trim());
         a.setTitle(WordPressClient.unescapeEntities(post.path("title").path("rendered").asText("(无标题)")));
 
         String html = post.path("content").path("rendered").asText("");

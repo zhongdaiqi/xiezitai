@@ -1495,6 +1495,9 @@ class XiezitaiApplicationTests {
             assertThat(art.path("status").asText()).isEqualTo("PUBLISHED");
             assertThat(art.path("publishedAt").asText()).startsWith("2026-01-02T10:00");
             assertThat(art.path("tags").asText()).isEqualTo("News,Java");
+            // 发布人 = 关联站点时填写的 WP 用户名（bob），而非固定 "wordpress"
+            assertThat(art.path("author").asText())
+                    .as("导入文章发布人应为站点用户名").isEqualTo("bob");
             String content = art.path("content").asText();
             assertThat(content).as("正文: " + content).contains("/media/");
             assertThat(content).as("WP 自身图片 URL 不应残留在正文: " + content).doesNotContain("wp-content");
