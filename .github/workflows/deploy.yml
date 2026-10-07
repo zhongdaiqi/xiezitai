@@ -1,0 +1,112 @@
+name: Deploy
+
+# ---------------------------------------------------------------------------
+# 触发规则：
+#   1) 「Build and Push Docker Image」成功结束 → 自动部署
+#   2) Actions 页面手动 Run workflow            → 强制部署一次
+#
+# 为什么不直接写 `on: push: branches: [main]`：
+#   push 到 main 后，镜像还要经过「Maven 编译 + amd64/arm64 双平台 buildx」，
+#   好几分钟才推上 Docker Hub。如果部署和构建同时起步，服务器 pull 到时镜像
+#   还没换新 —— 结果是「部署成功了，跑的还是上一版代码」，而且很难察觉。
+#   挂在构建**成功之后**触发（workflow_run），服务器必然能拉到本次提交对应的镜像。
+#
+# 服务器侧：authorized_keys 里该公钥已用 `command=` 强制指向 deploy.sh，
+# 客户端发过去的命令会被 sshd 忽略，改由 $SSH_ORIGINAL_COMMAND 携带。
+# 所以下面 script 的内容只是占位（保持 SSH 有输入、避免个别环境下的 broken pipe），
+# 真正干什么由服务器上的 deploy.sh 决定，改部署动作请改那个脚本，不用改本文件。
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_run:
+    workflows: ["Build and Push Docker Image"]
+    types: [completed]
+  workflow_dispatch: # 支持在 Actions 页面手动触发
+
+# 部署串行执行：上一次没跑完不新起，避免两个 deploy.sh 同时 pull/重建
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: 部署到生产服务器
+    runs-on: ubuntu-latest
+    # 只有「上游构建成功」才部署；PR 构建成功不部署；手动触发无条件执行
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event != 'pull_request')
+    steps:
+      - name: 校验 Secrets 是否配置
+        run: |
+          missing=0
+          if [ -z "${{ secrets.SSH_HOST }}" ]; then
+            echo "::error::缺少 Secret：SSH_HOST（Settings → Secrets and variables → Actions）"
+            missing=1
+          fi
+          if [ -z "${{ secrets.SSH_USER }}" ]; then
+            echo "::error::缺少 Secret：SSH_USER"
+            missing=1
+          fi
+          if [ -z "${{ secrets.SSH_KEY }}" ]; then
+            echo "::error::缺少 Secret：SSH_KEY（部署私钥全文，含 BEGIN/END 行）"
+            missing=1
+          fi
+          [ "$missing" = "0" ] || exit 1
+          echo "Secrets 校验通过，目标：${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.SSH_PORT }}"
+
+      - name: 部署（SSH 触发服务器 deploy.sh）
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          port: ${{ secrets.SSH_PORT }}
+          key: ${{ secrets.SSH_KEY }}
+          # 可选加固：把服务器主机公钥指纹放进 Secret/变量 SSH_FINGERPRINT 后，
+          # 打开下面两行可防中间人（没配就留空，不影响部署）。
+          # fingerprint: ${{ secrets.SSH_FINGERPRINT }}
+          timeout: 60s
+          command_timeout: 10m
+          script_stop: true
+          # 服务器 authorized_keys 里已用 command= 强制执行 deploy.sh，
+          # 这里的内容会被忽略，仅为占位。
+          script: |
+            echo "trigger deploy"
+
+      - name: 健康检查（可选）
+        # 配了仓库变量 DEPLOY_HEALTHCHECK_URL 才会跑，例如 https://xiezitai.cn/actuator/health
+        # 没配则整步跳过；配了但站点不可达只告警、不判失败（域名从境外 runner 探测可能超时）
+        if: vars.DEPLOY_HEALTHCHECK_URL != ''
+        continue-on-error: true
+        run: |
+          url="${{ vars.DEPLOY_HEALTHCHECK_URL }}"
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 "$url" || true)
+            if [ "$code" = "200" ]; then
+              echo "健康检查通过：$url → 200"
+              exit 0
+            fi
+            echo "第 $i 次探测：$url → ${code:-无响应}，5 秒后重试"
+            sleep 5
+          done
+          echo "::warning::健康检查未通过：$url，请登录服务器确认容器状态"
+
+      - name: 输出结果摘要
+        run: |
+          {
+            echo "### 部署已触发 :rocket:"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 服务器 | \`${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.SSH_PORT }}\` |"
+            echo "| 触发方式 | ${{ github.event_name }} |"
+            if [ -n "${{ github.event.workflow_run.head_sha }}" ]; then
+              echo "| 对应提交 | \`${{ github.event.workflow_run.head_sha }}\` |"
+            fi
+            echo ""
+            echo "服务器侧日志：\`journalctl -u deploy -n 50\` 或 deploy.sh 里的日志落盘路径"
+          } >> "$GITHUB_STEP_SUMMARY"
