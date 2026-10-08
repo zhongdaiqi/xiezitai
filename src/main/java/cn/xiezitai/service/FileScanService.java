@@ -131,7 +131,10 @@ public class FileScanService {
             case "bmp" -> h.length >= 2 && h[0] == 'B' && h[1] == 'M';
             case "webp" -> h.length >= 12 && h[0] == 'R' && h[1] == 'I' && h[2] == 'F' && h[3] == 'F'
                     && h[8] == 'W' && h[9] == 'E' && h[10] == 'B' && h[11] == 'P';
-            case "ico" -> h.length >= 2 && h[0] == 0 && h[1] == 0;
+            // ico 头：reserved(2)=0, type(2)=1(icon)/2(cursor)。
+            // ⚠️ 不能只判前两字节为 0 —— mp4/mov 的 ftyp box 也是 00 00 00 20 'ftyp'，
+            // 只判两字节会把视频当成 ico 图片（曾把导入的视频存成 image/x-icon）。
+            case "ico" -> h.length >= 4 && h[0] == 0 && h[1] == 0 && (h[2] == 1 || h[2] == 2) && h[3] == 0;
             // mp4/mov: ftyp box；注意必须判到第 8 字节，短文件直接判为不匹配（避免越界）
             case "mp4", "mov" -> h.length >= 8 && h[4] == 'f' && h[5] == 't' && h[6] == 'y' && h[7] == 'p';
             case "avi" -> h.length >= 4 && h[0] == 'R' && h[1] == 'I' && h[2] == 'F' && h[3] == 'F';

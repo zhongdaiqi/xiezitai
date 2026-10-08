@@ -8,6 +8,7 @@ import cn.xiezitai.repository.XzSiteRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -49,17 +50,26 @@ public class XiezitaiImportService {
     private final MediaStoreService media;
     private final ArticleService articleService;
 
+    /**
+     * 导入对方站点**自身文件**时的单文件上限（字节）。默认 64MB —— 站点自带的视频/附件常常
+     * 十几兆，用媒体库默认的 10MB 会拒收，与需求「站点自身文件要落盘」冲突。
+     * 超过此上限才降级为「保留外链 + 警告」。可通过 {@code xiezitai.xz-import.max-media-bytes} 调整。
+     */
+    private final long maxMediaBytes;
+
     /** 每个账号一份导入进度；键 = xzSite.id。同一账号同一时间只允许一个整站导入任务 */
     private final Map<Long, XzSyncProgress> progress = new ConcurrentHashMap<>();
 
     public XiezitaiImportService(XiezitaiClient client, ArticleRepository articles,
                                  XzSiteRepository sites, MediaStoreService media,
-                                 ArticleService articleService) {
+                                 ArticleService articleService,
+                                 @Value("${xiezitai.xz-import.max-media-bytes:67108864}") long maxMediaBytes) {
         this.client = client;
         this.articles = articles;
         this.sites = sites;
         this.media = media;
         this.articleService = articleService;
+        this.maxMediaBytes = maxMediaBytes;
     }
 
     /* ================= 进度模型 ================= */
@@ -380,12 +390,15 @@ public class XiezitaiImportService {
         }
         String name = fileNameOf(url);
         try {
-            FileEntity fe = media.storeImage(data, name, "xiezitai");
+            // 对方站点自身的文件用更大的上限（默认 64MB）：视频/附件常超过媒体库默认的 10MB
+            FileEntity fe = media.storeImage(data, name, "xiezitai", maxMediaBytes);
             return "/media/" + fe.getStoredName();
         } catch (MediaStoreService.NotAnImageException e) {
-            // 不是图片（PDF/zip/mp3…）：按普通附件入库
+            // 不是图片（PDF/zip/mp3/mp4…）：按普通附件入库，Content-Type 按扩展名推断
+            // （否则 mp4 会落成 octet-stream，<video> 播不出来）
             try {
-                FileEntity fe = media.store(data, name, "application/octet-stream", "xiezitai");
+                FileEntity fe = media.store(data, name, MediaStoreService.guessContentType(name),
+                        "xiezitai", maxMediaBytes);
                 return "/media/" + fe.getStoredName();
             } catch (Exception e2) {
                 warnings.add(kind + " 附件入库失败，保留外链：" + url + "（" + e2.getMessage() + "）");

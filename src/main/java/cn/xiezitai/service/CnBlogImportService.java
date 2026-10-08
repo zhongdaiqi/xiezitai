@@ -351,7 +351,7 @@ public class CnBlogImportService {
             return "/media/" + fe.getStoredName();
         } catch (MediaStoreService.NotAnImageException e) {
             try {
-                FileEntity fe = media.store(data, name, "application/octet-stream", "cnblogs");
+                FileEntity fe = media.store(data, name, MediaStoreService.guessContentType(name), "cnblogs");
                 return "/media/" + fe.getStoredName();
             } catch (Exception e2) {
                 warnings.add(kind + " 附件入库失败，保留外链：" + url + "（" + e2.getMessage() + "）");

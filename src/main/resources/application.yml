@@ -41,6 +41,11 @@ xiezitai:
   # 免得部署完打开首页只有一句「还没有发布的文章」。写过一次就打标记、不会重复写入，
   # 也不影响已经存在的库。不想要示例内容：XIEZITAI_SEED_DEMO=false
   seed-demo: ${XIEZITAI_SEED_DEMO:true}
+  # 写字台⇄写字台导入：对方**站点自身文件**（视频/附件）的单文件上限，默认 64MB。
+  # 站点自带视频常超过媒体库默认的 10MB，若沿用，命中「需求 2.3 要落盘」的文件会被拒收。
+  # 超过此上限才降级为「保留外链 + 警告」。设 0 表示不限制（谨慎，防磁盘写满）。
+  xz-import:
+    max-media-bytes: ${XIEZITAI_XZ_MAX_MEDIA_BYTES:67108864}
   # 首次启动时写入 sys_configs 的 AI 默认值（已存在则不改，后台可随时覆盖）
   # 申请大模型额度：https://www.modelscope.cn/register?inviteCode=freetoken2208&invitorName=AIDever
   ai:

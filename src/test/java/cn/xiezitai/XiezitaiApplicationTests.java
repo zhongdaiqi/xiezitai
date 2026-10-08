@@ -75,6 +75,7 @@ class XiezitaiApplicationTests {
     @Autowired ArticleRepository articles;
     @Autowired cn.xiezitai.repository.CommentRepository comments;
     @Autowired FileRepository fileRepo;
+    @Autowired cn.xiezitai.service.MediaStoreService mediaStore;
     @Autowired RequestLogRepository logs;
     @Autowired PasswordEncoder encoder;
     @Autowired NotifyService notify;
@@ -2746,6 +2747,106 @@ class XiezitaiApplicationTests {
             }
             for (String slug : new String[]{"xz-hello-" + sfx, "xz-second-" + sfx}) {
                 articles.findBySlug(slug).ifPresent(a -> articles.deleteById(a.getId()));
+            }
+        }
+    }
+
+    /**
+     * 需求 2.3 的边界：对方**站点自身**的大文件（视频 &gt; 媒体库默认 10MB）也应落盘。
+     * 靠导入专用上限（默认 64MB）放行 —— 不能因为是「大文件」就降级保留外链。
+     */
+    @Test
+    void xzImportLocalizesLargeSiteOwnedAttachment() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        int port = server.getAddress().getPort();
+        String base = "http://127.0.0.1:" + port;          // 模拟「对方写字台」站点根
+        String apiUrl = base + "/api/v1/publish";
+        final String xzToken = "xz-large-token-abcdef012345";
+        final String slug = "xz-big-" + port;
+
+        byte[] big = new byte[12 * 1024 * 1024];            // 12MB：故意超过媒体库默认 10MB 上限
+        new java.util.Random(7).nextBytes(big);
+        // 写成合法的 mp4 头（ftyp box）——否则会被安全扫描判为「伪装文件」DANGEROUS 而不对外提供；
+        // 本用例测的是「大文件落盘 + Content-Type 正确」，不是测伪装文件拦截
+        byte[] ftyp = {0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'};
+        System.arraycopy(ftyp, 0, big, 0, ftyp.length);
+
+        String listJson = "{\"total\":1,\"totalPages\":1,\"items\":[{"
+                + "\"id\":301,\"slug\":\"" + slug + "\",\"title\":\"大文件\",\"summary\":\"\","
+                + "\"tags\":\"\",\"cover\":null,\"publishedAt\":\"2026-03-06T09:00:00\","
+                + "\"url\":\"/article/" + slug + "\"}]}";
+        String content = "看视频：<video src=\"" + base + "/media/big.mp4\"></video>";
+        String detail = "{\"id\":301,\"slug\":\"" + slug + "\",\"title\":\"大文件\",\"summary\":\"\","
+                + "\"tags\":\"\",\"status\":\"PUBLISHED\",\"cover\":\"\","
+                + "\"publishedAt\":\"2026-03-06T09:00:00\",\"author\":\"xiezitai\","
+                + "\"url\":\"/article/" + slug + "\",\"content\":\"" + content.replace("\"", "\\\"") + "\"}";
+
+        server.createContext("/api/v1/articles", ex -> {
+            if (!xzToken.equals(ex.getRequestHeaders().getFirst("X-API-Token"))) {
+                respond(ex, 401, "application/json",
+                        "{\"error\":\"无效的 API Token\"}".getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            String p = ex.getRequestURI().getPath();
+            respond(ex, 200, "application/json",
+                    (p.endsWith("/301") ? detail : listJson).getBytes(StandardCharsets.UTF_8));
+        });
+        server.createContext("/media/big.mp4", ex -> respond(ex, 200, "video/mp4", big));
+        server.start();
+
+        String adminToken = loginToken(ADMIN, ADMIN_PWD);
+        Long siteId = null;
+        String stored = null;
+        try {
+            MvcResult cr = mvc.perform(post("/api/admin/xz/sites")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("url", apiUrl, "username", "xiezitai", "token", xzToken)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn();
+            siteId = om.readTree(cr.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path("site").path("id").asLong();
+
+            MvcResult ir = mvc.perform(post("/api/admin/xz/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", 301)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode res = om.readTree(ir.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            assertThat(res.path("imported").asBoolean()).isTrue();
+            // 大文件不能被降级：既没有「过大」也没有「入库失败」类警告
+            assertThat(res.path("warnings").toString())
+                    .doesNotContain("过大").doesNotContain("入库失败");
+
+            cn.xiezitai.entity.Article got = articles.findBySlug(slug).orElseThrow();
+            assertThat(got.getContent()).contains("/media/");
+            assertThat(got.getContent()).doesNotContain("127.0.0.1");   // 站点媒体已被改写落盘
+            assertThat(got.getContent()).doesNotContain("http://");
+
+            Matcher fm = Pattern.compile("/media/([0-9a-f]{16}\\.[a-z0-9]+)").matcher(got.getContent());
+            assertThat(fm.find()).isTrue();
+            stored = fm.group(1);
+            assertThat(stored).as("视频不能被魔数嗅探误判成 ico 图片").endsWith(".mp4");
+            assertThat(fileRepo.findByStoredName(stored)).isPresent();
+            // 落盘要能被 <video> 播放：Content-Type 必须是 video/mp4，不能是 octet-stream
+            MvcResult mr = mvc.perform(get("/media/" + stored))
+                    .andExpect(status().isOk()).andReturn();
+            assertThat(mr.getResponse().getContentType()).startsWith("video/mp4");
+        } finally {
+            server.stop(0);
+            if (siteId != null) {
+                mvc.perform(delete("/api/admin/xz/sites/" + siteId)
+                                .header("Authorization", "Bearer " + adminToken))
+                        .andExpect(status().isOk());
+            }
+            articles.findBySlug(slug).ifPresent(a -> articles.deleteById(a.getId()));
+            if (stored != null) {
+                String s = stored;
+                fileRepo.findByStoredName(s).ifPresent(fe -> {
+                    try {
+                        java.nio.file.Files.deleteIfExists(mediaStore.dir().resolve(s));
+                    } catch (Exception ignore) { /* 清理失败无伤大雅 */ }
+                    fileRepo.deleteById(fe.getId());
+                });
             }
         }
     }

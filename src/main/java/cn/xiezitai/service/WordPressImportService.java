@@ -617,9 +617,9 @@ public class WordPressImportService {
             FileEntity fe = media.storeImage(data, name, "wordpress");
             return "/media/" + fe.getStoredName();
         } catch (MediaStoreService.NotAnImageException e) {
-            // 不是图片（PDF/zip/mp3…）：按普通附件入库
+            // 不是图片（PDF/zip/mp3/mp4…）：按普通附件入库，Content-Type 按扩展名推断
             try {
-                FileEntity fe = media.store(data, name, "application/octet-stream", "wordpress");
+                FileEntity fe = media.store(data, name, MediaStoreService.guessContentType(name), "wordpress");
                 return "/media/" + fe.getStoredName();
             } catch (Exception e2) {
                 warnings.add(kind + " 附件入库失败，保留外链：" + url + "（" + e2.getMessage() + "）");

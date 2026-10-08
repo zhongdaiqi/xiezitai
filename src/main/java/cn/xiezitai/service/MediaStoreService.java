@@ -58,9 +58,22 @@ public class MediaStoreService {
      * 文件名后缀取自 {@code originalName}；调用方若不确定格式，请用 {@link #storeImage}。
      */
     public FileEntity store(byte[] data, String originalName, String contentType, String uploader) throws IOException {
+        return store(data, originalName, contentType, uploader, MAX_BYTES);
+    }
+
+    /**
+     * 以字节入库，可自定义大小上限。
+     *
+     * <p>默认上限 {@link #MAX_BYTES} 是为「上游返回的字节」设的护栏（AI 图片、错误页）。
+     * 导入对方站点**自身的文件**时用更大的上限（视频/附件常常十几兆），由调用方传入。
+     * 落盘走的是无上限的流式 {@link #store(InputStream, String, String, long, String)}，
+     * 这里只是加一道前置校验，不会二次读取。
+     */
+    public FileEntity store(byte[] data, String originalName, String contentType, String uploader,
+                            long maxBytes) throws IOException {
         if (data == null || data.length == 0) throw new IOException("空文件");
-        if (data.length > MAX_BYTES) {
-            throw new IOException("文件过大（上限 " + (MAX_BYTES / 1024 / 1024) + "MB）");
+        if (maxBytes > 0 && data.length > maxBytes) {
+            throw new IOException("文件过大（上限 " + (maxBytes / 1024 / 1024) + "MB）");
         }
         return store(new ByteArrayInputStream(data), originalName, contentType, data.length, uploader);
     }
@@ -121,19 +134,34 @@ public class MediaStoreService {
      * @throws IOException 空数据、超限，或字节不是有效的图片
      */
     public FileEntity storeImage(byte[] data, String originalName, String uploader) throws IOException {
+        return storeImage(data, originalName, uploader, MAX_BYTES);
+    }
+
+    /** {@link #storeImage(byte[], String, String)} 的「自定义上限」版本，供导入大图/大附件时使用 */
+    public FileEntity storeImage(byte[] data, String originalName, String uploader, long maxBytes) throws IOException {
         if (data == null || data.length == 0) throw new IOException("空文件");
-        if (data.length > MAX_BYTES) {
-            throw new IOException("文件过大（上限 " + (MAX_BYTES / 1024 / 1024) + "MB）");
+        if (maxBytes > 0 && data.length > maxBytes) {
+            throw new IOException("文件过大（上限 " + (maxBytes / 1024 / 1024) + "MB）");
         }
         String ext = scanner.sniffImageExt(data);
         if (ext == null) throw new NotAnImageException("不是有效的图片数据（上游可能返回了错误页）");
 
         String base = (originalName == null || originalName.isBlank()) ? "image" : originalName;
         base = base.replaceAll("\\.[^.]*$", "");     // 去掉原有后缀，改用嗅探出的真实后缀
-        return store(data, base + "." + ext, contentTypeOf(ext), uploader);
+        return store(data, base + "." + ext, contentTypeOf(ext), uploader, maxBytes);
     }
 
-    private String contentTypeOf(String ext) {
+    /**
+     * 按文件名（扩展名）推断 Content-Type。
+     *
+     * <p>导入渠道把对方站点自身的**视频 / 附件**落盘时用它，避免一律落成
+     * {@code application/octet-stream} —— 否则 {@code <video>} 取到 octet-stream 播不出来。
+     */
+    public static String guessContentType(String fileName) {
+        return contentTypeOf(extOf(fileName));
+    }
+
+    private static String contentTypeOf(String ext) {
         return switch (ext) {
             case "png" -> "image/png";
             case "jpg", "jpeg" -> "image/jpeg";
@@ -141,11 +169,25 @@ public class MediaStoreService {
             case "webp" -> "image/webp";
             case "bmp" -> "image/bmp";
             case "ico" -> "image/x-icon";
+            case "svg" -> "image/svg+xml";
+            case "mp4", "m4v" -> "video/mp4";
+            case "webm" -> "video/webm";
+            case "mov" -> "video/quicktime";
+            case "avi" -> "video/x-msvideo";
+            case "mkv" -> "video/x-matroska";
+            case "mp3" -> "audio/mpeg";
+            case "wav" -> "audio/wav";
+            case "ogg" -> "audio/ogg";
+            case "pdf" -> "application/pdf";
+            case "zip" -> "application/zip";
+            case "json" -> "application/json";
+            case "txt", "md", "log" -> "text/plain;charset=UTF-8";
             default -> "application/octet-stream";
         };
     }
 
-    private String extOf(String name) {
+    private static String extOf(String name) {
+        if (name == null) return "bin";
         int i = name.lastIndexOf('.');
         return i < 0 ? "bin" : name.substring(i + 1).toLowerCase();
     }
