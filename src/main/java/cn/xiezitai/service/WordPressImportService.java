@@ -128,17 +128,19 @@ public class WordPressImportService {
         JsonNode post = client.fetchPost(site, wpPostId);
         List<String> warnings = new ArrayList<>();
         String mode = normalizeContentMode(contentMode);
-        String slug = normalizeWpSlug(post.path("slug").asText(""));
+        String rawSlug = post.path("slug").asText("");
+        String slug = normalizeWpSlug(rawSlug);
         String title = WordPressClient.unescapeEntities(post.path("title").path("rendered").asText(""));
         if (title.isBlank()) title = "(无标题)";
 
-        Article existing = slug.isBlank() ? null : articles.findBySlug(slug).orElse(null);
+        Article existing = findExistingArticle(rawSlug);
         if (existing != null) {
             if (!"update".equals(onConflict)) {
                 return Map.of("imported", false, "reason", "exists",
                         "message", "本地已有同名 slug 的文章《" + existing.getTitle() + "》，已跳过（可在导入选项里改为「更新」覆盖）",
                         "articleId", existing.getId());
             }
+            String normalized = adoptNormalizedSlug(existing, slug);
             updateArticleFields(site, existing, post, warnings, useWpDate, mode);
             Article saved = articles.save(existing);
             site.setLastSyncAt(LocalDateTime.now());
@@ -151,6 +153,7 @@ public class WordPressImportService {
             out.put("title", saved.getTitle());
             out.put("tags", saved.getTags() == null ? "" : saved.getTags());
             out.put("warnings", warnings);
+            if (normalized != null) out.put("slugNote", "slug 已由 " + rawSlug + " 归一为 " + normalized);
             return out;
         }
 
@@ -202,8 +205,9 @@ public class WordPressImportService {
                     p.current = title;
                     try {
                         JsonNode post = client.fetchPost(site, wpId);
-                        String slug = normalizeWpSlug(post.path("slug").asText(""));
-                        Article existing = slug.isBlank() ? null : articles.findBySlug(slug).orElse(null);
+                        String rawSlug = post.path("slug").asText("");
+                        String slug = normalizeWpSlug(rawSlug);
+                        Article existing = findExistingArticle(rawSlug);
                         if (existing != null && !"update".equals(p.onConflict)) {
                             p.skipped++;
                             p.done++;
@@ -212,11 +216,14 @@ public class WordPressImportService {
                         }
                         List<String> warnings = new ArrayList<>();
                         if (existing != null) {
+                            String normalized = adoptNormalizedSlug(existing, slug);
                             updateArticleFields(site, existing, post, warnings, p.useWpDate, p.contentMode);
                             articles.save(existing);
                             p.updated++;
                             p.done++;
-                            p.msg("已更新《" + title + "》" + (warnings.isEmpty() ? "" : "（" + warnings.size() + " 条媒体警告）"));
+                            p.msg("已更新《" + title + "》"
+                                    + (normalized != null ? "（slug 归一为 " + normalized + "）" : "")
+                                    + (warnings.isEmpty() ? "" : "（" + warnings.size() + " 条媒体警告）"));
                         } else {
                             Article a = buildArticle(site, post, warnings, p.useWpDate, p.contentMode);
                             if (a.getSlug().isBlank()) a.setSlug(articleService.uniqueSlug(title));
@@ -283,6 +290,43 @@ public class WordPressImportService {
             }
         } catch (Exception ignore) { /* 非法 % 序列，保持原样 */ }
         return slug;
+    }
+
+    /**
+     * 按 WP 原始 slug 找本地已存在的文章。
+     *
+     * <p>老数据里 slug 可能仍是 WP 原样的 {@code %e4%bd%a0...} 百分号字面串（早于
+     * {@link #normalizeWpSlug} 的导入产物），也可能已经归一成真中文。只拿归一后的值去查，
+     * 会把这类老文章判成「不存在」→ 再导入一次就凭空多出一篇重复文章。
+     * 所以原串与归一串都试，忽略大小写（WP 存小写 %xx，URLEncoder 产大写）。
+     */
+    private Article findExistingArticle(String rawWpSlug) {
+        java.util.LinkedHashSet<String> cands = new java.util.LinkedHashSet<>();
+        if (rawWpSlug != null && !rawWpSlug.isBlank()) cands.add(rawWpSlug.trim());
+        String norm = normalizeWpSlug(rawWpSlug);
+        if (norm != null && !norm.isBlank()) cands.add(norm.trim());
+        for (String c : cands) {
+            var hit = articles.findBySlugIgnoreCase(c);
+            if (hit.isPresent()) return hit.get();
+        }
+        return null;
+    }
+
+    /**
+     * 老文章自愈：本地 slug 还是 {@code %xx} 字面串时，顺手归一成真中文。
+     *
+     * <p>只在「目标 slug 尚未被别的文章占用」时改，绝不覆盖已有文章（库里确实存在
+     * 真中文与 %xx 两条并存的重复数据，那种情况下宁可不改）。归一后老 URL 依然可用：
+     * 前台路由的 slug 多候选会把 {@code %xx} 解码回中文再匹配。
+     *
+     * @return 归一后的 slug；没变化时返回 null
+     */
+    private String adoptNormalizedSlug(Article a, String normalized) {
+        if (a == null || normalized == null || normalized.isBlank()) return null;
+        if (normalized.equals(a.getSlug())) return null;
+        if (articles.findBySlugIgnoreCase(normalized).isPresent()) return null;
+        a.setSlug(normalized);
+        return normalized;
     }
 
     /**

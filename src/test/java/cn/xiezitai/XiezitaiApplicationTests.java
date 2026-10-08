@@ -1474,6 +1474,14 @@ class XiezitaiApplicationTests {
                 + "\"excerpt\":{\"rendered\":\"\"}}";
         server.createContext("/wp-json/wp/v2/posts/105", ex ->
                 respond(ex, 200, "application/json", post105.getBytes(StandardCharsets.UTF_8)));
+        // 106：老数据场景 —— 本地库里已经躺着一条 slug 是 WP 原样 %xx 字面串的文章（早于 slug 归一的
+        //      导入产物）。再导入同一篇时不能重复建文；更新模式下要顺手把 slug 归一成真中文。
+        String post106 = "{\"id\":106,\"title\":{\"rendered\":\"Legacy Percent Slug\"},"
+                + "\"slug\":\"%e4%bd%a0%e5%a5%bd-legacy\","
+                + "\"status\":\"publish\",\"date_gmt\":\"2025-03-03T03:03:03\","
+                + "\"content\":{\"rendered\":\"<p>legacy body v2</p>\"},\"excerpt\":{\"rendered\":\"\"}}";
+        server.createContext("/wp-json/wp/v2/posts/106", ex ->
+                respond(ex, 200, "application/json", post106.getBytes(StandardCharsets.UTF_8)));
         server.createContext("/wp-content/uploads/2026/01/pic.png", ex -> respond(ex, 200, "image/png", PNG_1X1));
         server.createContext("/wp-content/uploads/2026/01/cover.png", ex -> respond(ex, 200, "image/png", PNG_1X1));
         server.createContext("/wp-content/uploads/2026/01/doc.pdf", ex ->
@@ -1679,6 +1687,56 @@ class XiezitaiApplicationTests {
             // 还原式带出来的字面 Markdown 图片同样要本地化（与正文 <img> 同字节 → 共用一份）
             assertThat(mdG).as("字面 Markdown 图片应本地化: " + mdG)
                     .containsPattern("!\\[站点图\\]\\(/media/[0-9a-f]{16}\\.png\\)");
+
+            // ⑩ 老数据：库里已有一条 slug 为 WP 原样 %xx 字面串的文章（早于 slug 归一的导入产物）。
+            //    —— skip 模式必须判定为「已存在」，绝不能又建一篇重复文章；
+            //    —— update 模式复用同一条并把 slug 归一成真中文；
+            //    —— 归一后新旧两种链接都要能打开（旧 %xx 链接靠前台多候选解码命中）。
+            cn.xiezitai.entity.Article legacy = new cn.xiezitai.entity.Article();
+            legacy.setTitle("Legacy Percent Slug");
+            legacy.setSlug("%e4%bd%a0%e5%a5%bd-legacy");
+            legacy.setContent("legacy body v1");
+            legacy.setSummary("legacy");
+            legacy.setAuthor("wordpress");
+            legacy.setStatus("PUBLISHED");
+            legacy.setPublishedAt(java.time.LocalDateTime.now().minusDays(30));
+            cn.xiezitai.entity.Article savedLegacy = articles.save(legacy);
+            madeArticles.add(savedLegacy.getId());
+            long countBeforeLegacy = articles.count();
+
+            mvc.perform(post("/api/admin/wp/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", 106)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.imported").value(false))
+                    .andExpect(jsonPath("$.reason").value("exists"));
+            assertThat(articles.count()).as("%xx 老文章应被识别为已存在，不得新增重复文章")
+                    .isEqualTo(countBeforeLegacy);
+
+            MvcResult impLegacy = mvc.perform(post("/api/admin/wp/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", 106, "onConflict", "update")))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.updated").value(true))
+                    .andExpect(jsonPath("$.slug").value("你好-legacy"))
+                    .andReturn();
+            assertThat(om.readTree(impLegacy.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path("articleId").asLong()).as("更新模式应复用老文章 id").isEqualTo(savedLegacy.getId());
+            assertThat(articles.findBySlugIgnoreCase("你好-legacy")).as("slug 应已归一为真中文").isPresent();
+            assertThat(articles.findBySlugIgnoreCase("%e4%bd%a0%e5%a5%bd-legacy"))
+                    .as("旧的 %xx slug 不应残留").isEmpty();
+            assertThat(articles.count()).as("更新模式不新增文章").isEqualTo(countBeforeLegacy);
+
+            mvc.perform(get("/article/你好-legacy")).andExpect(status().isOk());
+            // 旧的 %xx 链接依然可用：容器先解码一次、前台路由的多候选再兜一层解码。
+            // 这里只断言候选逻辑 —— MockMvc 会把 URL 里的 % 再编码成 %25，与真实容器的行为不同，
+            // 直接 perform 一个 %xx 路径会被防火墙挡成 400，测不出真实链路。
+            assertThat(cn.xiezitai.controller.PageViewController
+                    .slugCandidates("%e4%bd%a0%e5%a5%bd-legacy"))
+                    .as("旧 %xx 链接的解码候选应命中归一后的中文 slug")
+                    .contains("你好-legacy");
         } finally {
             server.stop(0);
             for (Long id : madeArticles) articles.deleteById(id);

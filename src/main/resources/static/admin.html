@@ -871,6 +871,17 @@ function escapeHtml(s) {
         c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+/**
+ * 拼详情页链接用。slug 有两种形态，必须区别对待：
+ *   - 真中文（后台手输、或导入时已归一）→ 需要 encodeURIComponent 编一次；
+ *   - WP 遗留的 %e4%bd%a0... 字面串（老数据）→ 本身已是 URL 编码，再编一次会把 % 变成 %25，
+ *     请求被 Spring Security 的 StrictHttpFirewall 判为非法百分号 → 400 打不开。
+ */
+function slugHref(slug) {
+    if (!slug) return '';
+    return /%[0-9a-fA-F]{2}/.test(slug) ? slug : encodeURIComponent(slug);
+}
+
 /** 上传一批文件到媒体库（复用 /api/admin/files/upload，返回结构与 FileEntity 对齐的轻量对象） */
 async function uploadMediaFiles(files) {
     const arr = Array.from(files || []);
@@ -1250,7 +1261,7 @@ function renderArticleRows(list) {
         const tagHtml = (a.tags || '').split(',').map(s => s.trim()).filter(Boolean)
             .map(t => '<span class="mini-tag">' + escapeHtml(t) + '</span>').join('');
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td><a href="/article/${encodeURIComponent(a.slug || '')}" target="_blank">${escapeHtml(a.title)}</a></td>
+        tr.innerHTML = `<td><a href="/article/${slugHref(a.slug)}" target="_blank">${escapeHtml(a.title)}</a></td>
             <td>${tagHtml || '<span class="muted">—</span>'}</td>
             <td>${BADGE[a.status] || escapeHtml(a.status)}</td><td class="t-time">${fmtTime(a.updatedAt)}</td>
             <td style="white-space:nowrap;"><button class="ghost" onclick="editArticle(${a.id})">编辑</button>
@@ -1513,7 +1524,7 @@ function renderPageRows(list) {
     list.forEach(p => {
         pagesCache[p.id] = p;   // 正文含引号时不能再塞进 onclick 属性（会逃逸 → 存储型 XSS）
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td><a href="/page/${encodeURIComponent(p.slug || '')}" target="_blank">${escapeHtml(p.title)}</a></td>
+        tr.innerHTML = `<td><a href="/page/${slugHref(p.slug)}" target="_blank">${escapeHtml(p.title)}</a></td>
             <td>${escapeHtml(p.slug || '')}</td>
             <td>${p.published ? '<span class="badge b-pub">已发布</span>' : '<span class="badge b-draft">未发布</span>'}</td>
             <td class="t-time">${fmtTime(p.updatedAt)}</td>
