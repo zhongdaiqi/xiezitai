@@ -126,7 +126,7 @@ public class PageViewController {
      *       所以 {@code .+} 已经够用（{@code /a/b} 这种多段路径压根不会命中这条路由）。</li>
      * </ol>
      */
-    @GetMapping("/{slug:(?!admin\\.html$|index\\.html$|favicon\\.svg$|favicon\\.ico$|robots\\.txt$|sitemap\\.xml$|error$).+}")
+    @GetMapping("/{slug:(?!admin\\.html$|index\\.html$|privacy\\.html$|favicon\\.svg$|favicon\\.ico$|robots\\.txt$|sitemap\\.xml$|error$).+}")
     public String rootSlug(@PathVariable String slug, Model model, jakarta.servlet.http.HttpServletRequest request) {
         String s = slug.replaceAll("/+$", "");
         Article a = findArticleFlexible(s).filter(ArticleService::isPublished).orElse(null);
