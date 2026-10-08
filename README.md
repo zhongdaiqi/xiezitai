@@ -380,6 +380,8 @@ docker run -d --name xiezitai -p 8080:8080 \
 | 分发     | **把文章一键发到关联的 WordPress 站点 / 博客园账号**（可多选）：正文里的站内媒体自动补成绝对地址；可选**原文分发**或**转载分发**（文末附首发链接）；正文可按 Markdown 原文发或转成 HTML 发（发博客园时自动带 `[Markdown]` 分类，否则代码块/表格会被当 HTML 原样贴出）；**已分发过的目标会被记住**，下次可选「更新之前分发的文章」或「分发一个新文章」，文章列表行上用「已分发 · 站点名」徽标标出 |
 | 开放 API | `POST /api/v1/publish`，Header `X-API-Token`（后台「设置」页查看）                           |
 | MCP    | `POST /api/v1/mcp`，JSON-RPC 2.0，工具：publish_article / list_articles / get_article |
+| 搜索     | **首页站内搜索**（`/?q=`）：标题 / 摘要 / 正文 / 标签四处 like 命中，**只搜已发布**（草稿不露头）；纯 GET 表单 + 服务端渲染，链接可分享、爬虫可抓；关键词一路带进翻页 / canonical / rel prev·next（点下一页不丢条件）；搜索结果页自动 `noindex`（这类低质重复页不收进索引） |
+| 后台操作  | 列表行内操作统一为图标按钮（分发 / 编辑 / 删除 / 评论通过·拒绝），带中文悬浮提示与 `aria-label` 无障碍名称                                 |
 | SEO    | 服务端渲染、robots.txt、sitemap.xml、OG 标签                                               |
 | 前端资源 | ByteMD / github-markdown-css / Mermaid / highlight.js **全部本地内置**（`static/vendor/`），不依赖任何外部 CDN，可离线/内网部署 |
 
@@ -414,12 +416,47 @@ docker run -d --name xiezitai -p 8080:8080 \
 
 ## MCP 接入示例
 
+后台「设置 → 开放 API / MCP」会按当前登录账号把下面三份配置**实时生成好并支持一键复制**
+（Token、站点地址都替你填进去，不用手抄）。命令行自测：
+
 ```bash
-curl -X POST http://localhost:8080/api/v1/mcp \
+curl -X POST https://xiezitai.cn/api/v1/mcp \
   -H "Content-Type: application/json" \
   -H "X-API-Token: 你的token" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
+
+直接支持远程 HTTP MCP 的客户端（Cursor / VS Code / Claude Code / WorkBuddy 自定义连接器）：
+
+```json
+{
+  "mcpServers": {
+    "xiezitai": {
+      "type": "http",
+      "url": "https://xiezitai.cn/api/v1/mcp",
+      "headers": { "X-API-Token": "你的token" }
+    }
+  }
+}
+```
+
+Claude Desktop 只认 stdio 子进程，远程 HTTP 服务要用 `mcp-remote` 桥一下
+（写进 macOS `~/Library/Application Support/Claude/claude_desktop_config.json` /
+Windows `%APPDATA%\Claude\claude_desktop_config.json`，改完重启；需要本机有 Node.js）：
+
+```json
+{
+  "mcpServers": {
+    "xiezitai": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://xiezitai.cn/api/v1/mcp",
+               "--header", "X-API-Token:你的token"]
+    }
+  }
+}
+```
+
+> Token 等同于账号（可发布文章），别贴到公开的地方；怀疑泄露时在后台改一次密码即可让它失效。
 
 ## 本地开发与自测
 
@@ -435,7 +472,8 @@ mvn test
 
 集成测试覆盖：SEO 页面、登录与失败锁定（3/5/10 次）、TOTP 两步验证、
 文章发布与草稿隔离、登录用户评论待审与审核（禁止匿名）、页面上线、上传类型限制与魔数扫描、
-媒体访问留痕、开放 API 与 MCP（握手/工具列表/调用）、请求日志、管理端权限。
+媒体访问留痕、开放 API 与 MCP（握手/工具列表/调用）、**首页站内搜索**（命中范围 / 草稿隔离 / 分页带 q / noindex / 空态）、
+请求日志、管理端权限。
 
 - 测试类：`src/test/java/cn/xiezitai/XiezitaiApplicationTests.java`
 - 测试配置：`src/test/resources/application-test.yml`

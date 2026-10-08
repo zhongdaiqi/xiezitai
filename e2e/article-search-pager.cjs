@@ -187,7 +187,7 @@ async function req(method, path, body, token) {
     /* ---------- ⑦ 点「编辑」载入（在搜索结果里点） ---------- */
     const firstTitle = await page.evaluate(() =>
       document.querySelector('#alist tbody td:first-child a').textContent.trim());
-    await page.click('#alist tbody tr:first-child td:last-child button:nth-child(1)');
+    await page.click('#alist tbody tr:first-child button[data-act="edit"]');
     await page.waitForTimeout(1200);
     const loadedTitle = await page.inputValue('#a-title');
     const loadedText = await editorText();

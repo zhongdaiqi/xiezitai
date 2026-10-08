@@ -167,7 +167,7 @@ let madeId = null;
     await page.evaluate(t => {
       const tr = [...document.querySelectorAll('#pglist tbody tr')]
         .find(x => x.querySelector('td:first-child').textContent.trim() === t);
-      tr.querySelector('td:last-child button').click();
+      tr.querySelector('button[data-act="edit"]').click();
     }, title);
     await page.waitForSelector('#pv-edit', { state: 'visible', timeout: 8000 });
     await page.waitForTimeout(800);

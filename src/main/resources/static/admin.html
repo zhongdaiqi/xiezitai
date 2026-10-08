@@ -210,6 +210,30 @@
         .dist-result .dok { color: #16a34a; font-weight: 700; }
         .dist-result .dbad { color: #b91c1c; font-weight: 700; }
 
+        /* ---------- 列表行内操作：图标按钮 ----------
+           文字按钮在操作列里又宽又吵，一行三个就把表格撑出横向滚动条。
+           统一换成 15px 线性图标：title 做鼠标提示、aria-label 做无障碍名称
+           （e2e 里 getByRole('button', { name }) 仍能按名字定位）；
+           data-act 是给测试用的稳定钩子 —— 别再用 button:nth-child(n) 这种按位置点的方式。 */
+        .act-cell { display: flex; gap: 6px; align-items: center; }
+        .act-cell > button.ghost { padding: 6px 12px; font-size: 13px; }
+        .icon-btn { flex: 0 0 auto; width: 30px; height: 30px; padding: 0; display: inline-flex;
+                    align-items: center; justify-content: center; cursor: pointer;
+                    color: var(--muted); background: #fff; border: 1px solid var(--line); border-radius: 7px;
+                    transition: color .15s, border-color .15s, background .15s; }
+        .icon-btn svg { width: 15px; height: 15px; display: block; }
+        .icon-btn:hover { color: var(--accent); border-color: var(--accent); background: #eff6ff; }
+        .icon-btn.danger:hover { color: #dc2626; border-color: #fca5a5; background: #fef2f2; }
+        .icon-btn:focus-visible { outline: 2px solid rgba(37,99,235,.35); outline-offset: 1px; }
+
+        /* ---------- 开放 API / MCP：凭据 + 可一键复制的配置示例 ---------- */
+        .tk { display: inline-block; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+              font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+              padding: 3px 8px; word-break: break-all; }
+        .code-box { margin: 6px 0 8px; padding: 12px 14px; background: #0f172a; color: #e2e8f0;
+                    border-radius: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                    font-size: 12px; line-height: 1.6; overflow-x: auto; white-space: pre; }
+
         /* ---------- 窄屏（≤760px）：单列堆叠，压掉内联的固定宽 ---------- */
         @media (max-width: 760px) {
             #app { padding: 10px; }
@@ -688,9 +712,38 @@
         </div>
         <div class="card">
             <h3>开放 API / MCP</h3>
-            <p class="muted">API Token: <code id="apitoken"></code></p>
-            <p class="muted">发布: POST /api/v1/publish （Header: X-API-Token）</p>
-            <p class="muted">MCP : POST /api/v1/mcp （JSON-RPC 2.0，工具 publish_article / list_articles / get_article）</p>
+            <div class="sec-title">凭据</div>
+            <div class="row">
+                <span class="muted">API Token</span>
+                <code class="tk" id="apitoken"></code>
+                <button class="ghost" onclick="copyText(apiTokenCache, 'tkmsg', 'Token 已复制')">复制 Token</button>
+                <span class="muted" id="tkmsg"></span>
+            </div>
+            <p class="muted">下面示例里的 Token 与站点地址都是按当前登录态实时生成的，复制走直接就能用，
+                不用手抄。这个 Token 等同于你的账号（可以发布文章），别贴到公开的地方；
+                万一泄露，去「账号安全」改一次密码即可让它失效。</p>
+
+            <div class="sec-title">外部系统发布（REST）</div>
+            <pre class="code-box" id="api-example"></pre>
+            <button class="ghost" onclick="copyBlock('api-example','api-cpmsg')">复制示例</button>
+            <span class="muted" id="api-cpmsg"></span>
+
+            <div class="sec-title">MCP 服务（给 AI 客户端接入）</div>
+            <p class="muted">接口 <code class="tk" id="mcp-url"></code> · JSON-RPC 2.0 ·
+                工具 <code>publish_article</code> / <code>list_articles</code> / <code>get_article</code></p>
+            <div class="row">
+                <label class="muted" style="font-size:13px; white-space:nowrap;">客户端
+                    <select id="mcp-client" onchange="renderMcpCfg()">
+                        <option value="http">通用 HTTP：Cursor / VS Code / Claude Code</option>
+                        <option value="claude">Claude Desktop（stdio 桥接 mcp-remote）</option>
+                        <option value="curl">curl 自测（命令行验证连通）</option>
+                    </select>
+                </label>
+                <button class="ghost" onclick="copyBlock('mcp-cfg','mcp-cpmsg')">复制配置</button>
+                <span class="muted" id="mcp-cpmsg"></span>
+            </div>
+            <pre class="code-box" id="mcp-cfg"></pre>
+            <p class="muted" id="mcp-hint"></p>
         </div>
     </div>
 
@@ -940,6 +993,47 @@ function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g,
         c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+
+/* ---------- 列表行内操作的图标按钮（编辑 / 删除 / 分发 / 审核） ----------
+   文字按钮在操作列里又宽又吵，一排三个就把表格撑出横向滚动条。
+   统一换成 15px 线性图标（Feather 风格，stroke 用 currentColor 跟着文字色走）。 */
+
+/** 图标路径（只存 <path> 部分，外壳在 iconBtn 里统一拼） */
+const ICONS = {
+    dist:  '<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/>',
+    edit:  '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+    del:   '<path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/>'
+         + '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    close: '<path d="M18 6 6 18"/><path d="M6 6l12 12"/>'
+};
+
+/**
+ * 生成一个图标按钮。
+ *
+ * <ul>
+ *   <li>{@code data-act}：给 e2e 的稳定钩子 —— 别再用 {@code button:nth-child(n)} 按位置点，
+ *       操作列一旦增删按钮就全错位；</li>
+ *   <li>{@code title} / {@code aria-label}：鼠标提示 + 无障碍名称（屏幕阅读器与
+ *       Playwright 的 getByRole(name) 都靠它）。</li>
+ * </ul>
+ *
+ * @param act     图标名（也是 data-act 值）：dist / edit / del / check / close
+ * @param label   中文提示文案，同时作 aria-label
+ * @param onclick 内联点击表达式（调用方自己拼参数，注意只出现单引号）
+ * @param danger  危险操作（删除），hover 变红
+ */
+function iconBtn(act, label, onclick, danger) {
+    return '<button type="button" class="icon-btn' + (danger ? ' danger' : '') + '"'
+        + ' data-act="' + act + '" title="' + label + '" aria-label="' + label + '"'
+        + ' onclick="' + onclick + '">'
+        + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
+        + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[act] + '</svg>'
+        + '</button>';
+}
+
+/** 行内操作区容器：按钮之间固定 6px 间距，不再靠 HTML 里的空格对齐 */
+function actCell(html) { return '<div class="act-cell">' + html + '</div>'; }
 
 /**
  * 拼详情页链接用。slug 有两种形态，必须区别对待：
@@ -1271,7 +1365,10 @@ async function boot() {
     document.getElementById('topbar').style.display = 'block';
     document.getElementById('app').style.display = 'block';
     document.getElementById('who').textContent = me.username + ' (' + me.role + ')';
-    document.getElementById('apitoken').textContent = me.apiToken;
+    // Token 先缓存再渲染示例：开放 API / MCP 的示例里要把 Token 填进去，方便一键复制
+    apiTokenCache = me.apiToken || '';
+    document.getElementById('apitoken').textContent = apiTokenCache || '（当前账号未生成 Token）';
+    renderApiExamples();
     // 恢复上次所在面板（#users 这类 hash），刷新后不回文章页
     const h = (location.hash || '').replace('#', '');
     const tab = h && document.querySelector('.tab[data-p="' + h + '"]');
@@ -1336,9 +1433,10 @@ function renderArticleRows(list) {
                 <div class="dist-badge" id="dist-badge-${a.id}"></div></td>
             <td>${tagHtml || '<span class="muted">—</span>'}</td>
             <td>${BADGE[a.status] || escapeHtml(a.status)}</td><td class="t-time">${fmtTime(a.updatedAt)}</td>
-            <td style="white-space:nowrap;"><button class="ghost" onclick="openDist(${a.id})">分发</button>
-                <button class="ghost" onclick="editArticle(${a.id})">编辑</button>
-                <button class="ghost" onclick="delArticle(${a.id})">删除</button></td>`;
+            <td>${actCell(
+                iconBtn('dist', '分发到 WordPress / 博客园', `openDist(${a.id})`)
+                + iconBtn('edit', '编辑', `editArticle(${a.id})`)
+                + iconBtn('del', '删除', `delArticle(${a.id})`, true))}</td>`;
         tb.appendChild(tr);
     });
     loadDistBadges(list.map(a => a.id));
@@ -1623,8 +1721,9 @@ function renderPageRows(list) {
             <td>${escapeHtml(p.slug || '')}</td>
             <td>${p.published ? '<span class="badge b-pub">已发布</span>' : '<span class="badge b-draft">未发布</span>'}</td>
             <td class="t-time">${fmtTime(p.updatedAt)}</td>
-            <td style="white-space:nowrap;"><button class="ghost" onclick="editPage(${p.id})">编辑</button>
-                <button class="ghost" onclick="delPage(${p.id})">删除</button></td>`;
+            <td>${actCell(
+                iconBtn('edit', '编辑', `editPage(${p.id})`)
+                + iconBtn('del', '删除', `delPage(${p.id})`, true))}</td>`;
         tb.appendChild(tr);
     });
 }
@@ -1724,7 +1823,7 @@ async function loadFiles() {
         const tr = document.createElement('tr');
         tr.innerHTML = `<td><a href="/media/${f.storedName}" target="_blank">${f.originalName}</a></td>
             <td>${Math.ceil(f.size / 1024)} KB</td><td>${f.scanStatus}</td><td>${f.uploader}</td>
-            <td><button class="ghost" onclick="delFile(${f.id})">删除</button></td>`;
+            <td>${actCell(iconBtn('del', '删除', `delFile(${f.id})`, true))}</td>`;
         tb.appendChild(tr);
     });
 }
@@ -1742,9 +1841,10 @@ async function loadComments() {
         tr.innerHTML = `<td>${isReply ? '<span class="muted">↳ </span>' : ''}${escapeHtml(c.authorName)}</td>
             <td${isReply ? ' style="padding-left:26px;border-left:2px solid #e5e7eb;"' : ''}>${isReply && c.replyToName ? '<span class="muted">回复 @' + escapeHtml(c.replyToName) + '：</span>' : ''}${escapeHtml(c.content)}</td>
             <td>${c.article ? escapeHtml(c.article.title) : ''}</td><td>${c.status}</td>
-            <td><button class="ghost" onclick="setComment(${c.id}, 'APPROVED')">通过</button>
-                <button class="ghost" onclick="setComment(${c.id}, 'REJECTED')">拒绝</button>
-                <button class="ghost" onclick="delComment(${c.id})">删除</button></td>`;
+            <td>${actCell(
+                iconBtn('check', '通过', `setComment(${c.id}, 'APPROVED')`)
+                + iconBtn('close', '拒绝', `setComment(${c.id}, 'REJECTED')`)
+                + iconBtn('del', '删除', `delComment(${c.id})`, true))}</td>`;
         tb.appendChild(tr);
     });
 }
@@ -1878,19 +1978,103 @@ async function totpConfirm() {
     document.getElementById('totpmsg').textContent = r.message || r.error || '';
     if (r.message) document.getElementById('totpbox').style.display = 'none';
 }
-function copyTotpSecret() {
-    const done = () => { document.getElementById('totpmsg').textContent = '密钥已复制'; };
+function copyTotpSecret() { copyText(totpSecretCache, 'totpmsg', '密钥已复制'); }
+
+/* ==================== 复制（剪贴板）==================== */
+
+/**
+ * 统一的复制实现，TOTP 密钥 / API Token / MCP 配置示例共用一份。
+ *
+ * <p>优先用 {@code navigator.clipboard}（只在 HTTPS 或 localhost 这类安全上下文可用），
+ * 否则退回老式的隐藏 textarea + execCommand —— 后台常见于内网 http 部署，不能只认新 API。
+ */
+function copyText(text, msgId, okMsg) {
+    const msg = msgId ? $(msgId) : null;
+    const ok = () => { if (msg) msg.textContent = okMsg || '已复制'; toast(okMsg || '已复制'); };
+    const bad = () => { if (msg) msg.textContent = '复制失败，请手动选择复制'; };
     const fallback = () => {
         const ta = document.createElement('textarea');
-        ta.value = totpSecretCache;
+        ta.value = text;
         ta.style.position = 'fixed'; ta.style.opacity = '0';
         document.body.appendChild(ta); ta.select();
-        try { document.execCommand('copy'); done(); } catch (e) { /* 忽略 */ }
+        try { document.execCommand('copy') ? ok() : bad(); } catch (e) { bad(); }
         document.body.removeChild(ta);
     };
     if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(totpSecretCache).then(done).catch(fallback);
+        navigator.clipboard.writeText(text).then(ok).catch(fallback);
     } else { fallback(); }
+}
+
+/** 复制某个 <pre>/元素里的全文（MCP 配置 / REST 示例用） */
+function copyBlock(id, msgId) {
+    const el = $(id);
+    if (!el) return;
+    copyText(el.textContent, msgId, '已复制到剪贴板');
+}
+
+/* ==================== 开放 API / MCP 配置示例 ====================
+   后台不能只说「我们有 MCP」——用户真正卡住的是「这段配置怎么写」。
+   所以这里按客户端类型把配置整段生成好，Token 和站点地址都用当前登录态实时填，
+   配合「复制」按钮一键带走，省掉手抄 Token 抄错一位的坑。 */
+
+/** 当前登录账号的 API Token（boot() 里从 /api/auth/me 拿到后缓存） */
+let apiTokenCache = '';
+
+/** 生成示例文本：站点地址用 location.origin，客户端在别的机器上跑，相对路径没意义 */
+function renderApiExamples() {
+    const origin = location.origin;
+    $('mcp-url').textContent = origin + '/api/v1/mcp';
+    $('api-example').textContent =
+        'POST ' + origin + '/api/v1/publish\n'
+        + 'Header: X-API-Token: ' + apiTokenCache + '\n'
+        + 'Content-Type: application/json\n\n'
+        + 'curl -X POST ' + origin + '/api/v1/publish \\\n'
+        + '  -H "Content-Type: application/json" \\\n'
+        + '  -H "X-API-Token: ' + apiTokenCache + '" \\\n'
+        + '  -d \'{"title":"我的文章","content":"# 正文\\n\\n用 Markdown 写"}\'';
+    renderMcpCfg();
+}
+
+/** 按当前选择的客户端，重新生成 MCP 配置示例 */
+function renderMcpCfg() {
+    const url = $('mcp-url').textContent;
+    const mode = $('mcp-client').value;
+    let text, hint;
+    if (mode === 'claude') {
+        // Claude Desktop 只吃 stdio 子进程配置，远程 HTTP 服务要用 mcp-remote 桥一下
+        text = '{\n'
+             + '  "mcpServers": {\n'
+             + '    "xiezitai": {\n'
+             + '      "command": "npx",\n'
+             + '      "args": ["-y", "mcp-remote", "' + url + '",\n'
+             + '               "--header", "X-API-Token:' + apiTokenCache + '"]\n'
+             + '    }\n'
+             + '  }\n'
+             + '}';
+        hint = 'Claude Desktop 的配置文件：macOS 在 ~/Library/Application Support/Claude/claude_desktop_config.json，'
+             + 'Windows 在 %APPDATA%\\Claude\\claude_desktop_config.json；改完重启 Claude Desktop 生效。'
+             + '需要本机装有 Node.js（npx 会临时拉取 mcp-remote）。';
+    } else if (mode === 'curl') {
+        text = 'curl -X POST ' + url + ' \\\n'
+             + '  -H "Content-Type: application/json" \\\n'
+             + '  -H "X-API-Token: ' + apiTokenCache + '" \\\n'
+             + '  -d \'{"jsonrpc":"2.0","id":1,"method":"tools/list"}\'';
+        hint = '返回里能看到 result.tools 列出 publish_article / list_articles / get_article 三个工具，就说明连通了。';
+    } else {
+        text = '{\n'
+             + '  "mcpServers": {\n'
+             + '    "xiezitai": {\n'
+             + '      "type": "http",\n'
+             + '      "url": "' + url + '",\n'
+             + '      "headers": { "X-API-Token": "' + apiTokenCache + '" }\n'
+             + '    }\n'
+             + '  }\n'
+             + '}';
+        hint = '直接支持远程 HTTP MCP 的客户端用这份：Cursor 写进 ~/.cursor/mcp.json，'
+             + 'Claude Code 写进项目里的 .mcp.json，VS Code 写进 .vscode/mcp.json。';
+    }
+    $('mcp-cfg').textContent = text;
+    $('mcp-hint').textContent = hint;
 }
 async function totpDisable() {
     const r = await jpost('/api/auth/totp/disable', {});
@@ -1938,11 +2122,10 @@ async function loadWpSites() {
         <td>${escapeHtml(s.username || '—')}</td>
         <td>${s.hasToken ? '<span class="mini-tag">已配置</span>' : '<span class="muted">未配置</span>'}</td>
         <td>${s.lastSyncAt ? fmtTime(s.lastSyncAt) : '—'}</td>
-        <td>
-            <button class="ghost" onclick="browseWpSite(${s.id})">浏览文章</button>
-            <button class="ghost" onclick="wpTestSite(${s.id})">测试连接</button>
-            <button class="ghost" onclick="delWpSite(${s.id}, '${escapeHtml(String(s.name || s.url)).replace(/'/g, "\\'")}')">删除</button>
-        </td>
+        <td>${actCell(
+            '<button class="ghost" onclick="browseWpSite(' + s.id + ')">浏览文章</button>'
+            + '<button class="ghost" onclick="wpTestSite(' + s.id + ')">测试连接</button>'
+            + iconBtn('del', '删除', 'delWpSite(' + s.id + ')', true))}</td>
     </tr>`).join('');
 }
 
@@ -1969,8 +2152,16 @@ async function addWpSite() {
     }
 }
 
+/**
+ * 删除关联站点。
+ *
+ * <p>名字不再从 onclick 的内联字面量里传：站点名可能带引号（站点标题里有 ' 或 "），
+ * 拼进 HTML 属性会逃逸、轻则点不动重则注入。改成按 id 从已加载的列表里取。
+ */
 async function delWpSite(id, name) {
-    if (!confirm('确定删除关联站点「' + name + '」？已导入的文章不受影响。')) return;
+    const site = (wpSites || []).find(s => s.id === id);
+    const label = name || (site ? (site.name || site.url) : ('#' + id));
+    if (!confirm('确定删除关联站点「' + label + '」？已导入的文章不受影响。')) return;
     const res = await api('/api/admin/wp/sites/' + id, { method: 'DELETE' });
     if (res.ok) {
         if (wpSiteId === id) closeWpBrowse();
@@ -2170,11 +2361,10 @@ async function loadCnSites() {
         <td>${escapeHtml(String(s.username || '—'))}</td>
         <td>${s.hasToken ? '<span class="mini-tag">已配置</span>' : '<span class="muted">未配置</span>'}</td>
         <td class="muted">${s.lastSyncAt ? escapeHtml(String(s.lastSyncAt).replace('T', ' ').slice(0, 16)) : '—'}</td>
-        <td>
-            <button class="ghost" onclick="browseCnSite(${s.id})">浏览文章</button>
-            <button class="ghost" onclick="cnTestSite(${s.id})">测试连接</button>
-            <button class="ghost" onclick="delCnSite(${s.id}, '${escapeHtml(String(s.name || s.url)).replace(/'/g, "\\'")}')">删除</button>
-        </td>
+        <td>${actCell(
+            '<button class="ghost" onclick="browseCnSite(' + s.id + ')">浏览文章</button>'
+            + '<button class="ghost" onclick="cnTestSite(' + s.id + ')">测试连接</button>'
+            + iconBtn('del', '删除', 'delCnSite(' + s.id + ')', true))}</td>
     </tr>`).join('');
 }
 
@@ -2201,8 +2391,11 @@ async function addCnSite() {
     }
 }
 
+/** 删除关联博客园账号。名字同样按 id 从缓存取，不从内联属性里传（见 delWpSite 的说明）。 */
 async function delCnSite(id, name) {
-    if (!confirm('确定删除关联账号「' + name + '」？已导入的文章不受影响。')) return;
+    const site = (cnSites || []).find(s => s.id === id);
+    const label = name || (site ? (site.name || site.url) : ('#' + id));
+    if (!confirm('确定删除关联账号「' + label + '」？已导入的文章不受影响。')) return;
     const res = await api('/api/admin/cnblogs/sites/' + id, { method: 'DELETE' });
     if (res.ok) {
         if (cnSiteId === id) closeCnBrowse();

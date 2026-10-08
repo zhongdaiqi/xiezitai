@@ -273,7 +273,7 @@ let uiMadeId = null;                         // UI 新建并删除的那条（�
     if (uiMadeId) madeIds.push(uiMadeId);
 
     // 行内「编辑」→ 回填
-    await page.click('#pglist tbody tr:first-child td:last-child button:nth-child(1)');
+    await page.click('#pglist tbody tr:first-child button[data-act="edit"]');
     await page.waitForSelector('#pv-edit', { state: 'visible', timeout: 8000 });
     await page.waitForTimeout(600);
     check('⑦ 点行内「编辑」→ 编辑视图并回填', (await page.inputValue('#pg-title')) === uiTitle,
@@ -287,7 +287,7 @@ let uiMadeId = null;                         // UI 新建并删除的那条（�
     await page.waitForSelector('#pv-list', { state: 'visible', timeout: 8000 });
     await search(uiTitle);
     await page.waitForTimeout(300);
-    await page.click('#pglist tbody tr:first-child td:last-child button:nth-child(2)');
+    await page.click('#pglist tbody tr:first-child button[data-act="del"]');
     await page.waitForTimeout(900);
     await search(uiTitle);
     await page.waitForTimeout(300);

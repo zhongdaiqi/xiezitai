@@ -35,4 +35,25 @@ public interface ArticleRepository extends JpaRepository<Article, Long> {
               and (:st = '' or a.status = :st)
             """)
     Page<Article> searchAdmin(@Param("kw") String kw, @Param("st") String st, Pageable pageable);
+
+    /**
+     * 前台首页搜索：只在**已发布**文章里按关键词（标题 / 摘要 / 正文 / 标签）过滤。
+     *
+     * <p>与 {@link #searchAdmin} 同一个「空串 = 不过滤」口径；状态是硬编码的
+     * {@code PUBLISHED}，草稿即便命中关键词也不会漏到前台。
+     *
+     * <p>排序不写在 JPQL 里，由调用方通过 {@link Pageable} 传
+     * （publishedAt desc, id desc）—— 与首页默认列表同一口径，
+     * 同一秒发布的文章顺序才稳定，翻页不会重复或漏。
+     */
+    @Query("""
+            select a from Article a
+            where a.status = 'PUBLISHED'
+              and (:kw = ''
+                   or lower(a.title) like lower(concat('%', :kw, '%'))
+                   or lower(coalesce(a.summary, '')) like lower(concat('%', :kw, '%'))
+                   or lower(coalesce(a.content, '')) like lower(concat('%', :kw, '%'))
+                   or lower(coalesce(a.tags, '')) like lower(concat('%', :kw, '%')))
+            """)
+    Page<Article> searchPublished(@Param("kw") String kw, Pageable pageable);
 }

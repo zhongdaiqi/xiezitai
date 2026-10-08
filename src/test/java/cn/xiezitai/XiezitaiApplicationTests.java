@@ -441,6 +441,63 @@ class XiezitaiApplicationTests {
         for (int i = 1; i <= 12; i++) assertThat(all.toString()).contains(prefix + i);
     }
 
+    @Test
+    @DisplayName("首页搜索：标题/正文/标签命中已发布文章、草稿不露头、搜索页 noindex、翻页带 q")
+    void homeSearch() throws Exception {
+        String token = loginToken(ADMIN, ADMIN_PWD);
+        String kw = "ZK" + (System.currentTimeMillis() % 1000000);
+        String prefix = "搜索命中-" + kw + "-";
+        // 12 篇标题命中：凑出第 2 页，顺带验证搜索与分页叠加
+        for (int i = 1; i <= 12; i++) {
+            mvc.perform(post("/api/admin/articles").header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("title", prefix + i, "content", "第 " + i + " 篇",
+                                    "status", "PUBLISHED"))))
+                    .andExpect(status().isOk());
+        }
+        // 正文命中（标题里没有这个词）
+        mvc.perform(post("/api/admin/articles").header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("title", "正文命中-" + kw, "content", "正文里写着 " + kw,
+                                "status", "PUBLISHED"))))
+                .andExpect(status().isOk());
+        // 标签命中（标题与正文都不含）
+        mvc.perform(post("/api/admin/articles").header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("title", "标签命中-" + kw, "content", "正文无关词",
+                                "tags", "E2E," + kw, "status", "PUBLISHED"))))
+                .andExpect(status().isOk());
+        // 草稿命中：状态是硬编码的 PUBLISHED 条件，草稿绝不能被搜出来
+        mvc.perform(post("/api/admin/articles").header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("title", "草稿命中-" + kw, "content", "草稿 " + kw,
+                                "status", "DRAFT"))))
+                .andExpect(status().isOk());
+
+        String p1 = getBody("/?q=" + kw);
+        assertThat(countOccurrences(p1, "<article>")).as("搜索结果同样每页 10 篇").isEqualTo(10);
+        assertThat(p1).contains("class=\"search\"");                       // 搜索框在
+        assertThat(p1).contains(kw).contains("命中 <b>14</b> 篇");          // 14 = 12 标题 + 1 正文 + 1 标签
+        assertThat(p1).contains("name=\"robots\" content=\"noindex,follow\"");
+        assertThat(p1).contains("?q=" + kw + "&amp;page=2");               // 翻页链接带着关键词
+        assertThat(p1).doesNotContain("草稿命中-" + kw);
+
+        String p2 = getBody("/?q=" + kw + "&page=2");
+        assertThat(countOccurrences(p2, "<article>")).as("第 2 页剩 4 篇").isEqualTo(4);
+        assertThat(p2).contains("?q=" + kw + "&amp;page=1");               // 「上一页」也带 q
+        assertThat(p2).doesNotContain("草稿命中-" + kw);
+
+        // 搜不到：可读空态，且不给分页条（1 页不需要翻）
+        String none = getBody("/?q=" + kw + "绝无此词");
+        assertThat(none).contains("没有找到匹配").doesNotContain("class=\"pager\"");
+
+        // 空关键词按普通首页处理：不 noindex、不显示命中提示
+        String blank = getBody("/?q=");
+        assertThat(blank).doesNotContain("name=\"robots\"").doesNotContain("class=\"hit\"");
+        // 无 q 时翻页链接不带 q（与改造前一致）
+        assertThat(getBody("/")).doesNotContain("?page=2&q=");
+    }
+
     /* ==================== 评论（懒加载序列化回归） ==================== */
 
     @Test

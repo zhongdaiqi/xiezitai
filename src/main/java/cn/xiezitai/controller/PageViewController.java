@@ -45,19 +45,39 @@ public class PageViewController {
     /** 首页每页文章数（SEO：翻页用真实链接 + rel prev/next，不用 JS 拼） */
     private static final int PAGE_SIZE = 10;
 
+    /** 搜索关键词上限：超长关键词直接截断，别把一整段话喂进 like */
+    private static final int MAX_KEYWORD = 60;
+
+    /** 搜索结果的排序：发布时间倒序，同刻按 id 倒序 —— 与首页默认列表同口径，翻页才稳定 */
+    private static final Sort LIST_SORT = Sort.by(Sort.Order.desc("publishedAt"), Sort.Order.desc("id"));
+
     /** 站点根地址：把 /media/xxx 这类相对封面拼成绝对 URL（OG 标签按规范要求绝对地址） */
     @Value("${xiezitai.site-url:https://xiezitai.cn}")
     private String siteUrl;
 
+    /**
+     * 首页：默认列已发布文章；带 {@code ?q=} 时变成站内搜索（标题 / 摘要 / 正文 / 标签，只搜已发布）。
+     *
+     * <p>搜索与翻页是叠加的：关键词会一路带进翻页链接、canonical、rel prev/next，
+     * 否则用户点「下一页」搜索条件就丢了。搜索页用 {@code noindex} —— 站内搜索结果页
+     * 属于典型的「低质重复页」，收录了反而稀释首页权重（SEO 常规做法）。
+     */
     @GetMapping("/")
-    public String home(@RequestParam(name = "page", defaultValue = "1") int page, Model model) {
-        org.springframework.data.domain.Page<Article> result =
-                articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(0, PAGE_SIZE));
+    public String home(@RequestParam(name = "page", defaultValue = "1") int page,
+                       @RequestParam(name = "q", required = false) String q, Model model) {
+        String kw = normalizeKeyword(q);
+        boolean searching = !kw.isEmpty();
+
+        org.springframework.data.domain.Page<Article> result = searching
+                ? articles.searchPublished(kw, PageRequest.of(0, PAGE_SIZE, LIST_SORT))
+                : articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(0, PAGE_SIZE));
         int totalPages = Math.max(1, result.getTotalPages());
         int pageNo = Math.min(Math.max(page, 1), totalPages);
         // 页码越界（含 ?page=999）时按钳制后的页码重新取一页，而不是给空列表
         if (pageNo - 1 != 0) {
-            result = articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(pageNo - 1, PAGE_SIZE));
+            result = searching
+                    ? articles.searchPublished(kw, PageRequest.of(pageNo - 1, PAGE_SIZE, LIST_SORT))
+                    : articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(pageNo - 1, PAGE_SIZE));
         }
         List<Article> list = result.getContent();
         model.addAttribute("articles", list);
@@ -67,12 +87,29 @@ public class PageViewController {
         model.addAttribute("pageNo", pageNo);
         model.addAttribute("totalPages", totalPages);
         model.addAttribute("totalArticles", result.getTotalElements());
+        model.addAttribute("q", kw);
+        model.addAttribute("searching", searching);
+        // 首页 / 翻页链接交给模板拼：模板里没法把「?q=」有条件地拼在 @{...} 前面，
+        // 索性在这里把两种前缀算好，模板只用 ${} 拼接（关键词已经编码过，直接进 href 是安全的）
+        String enc = kw.isEmpty() ? "" : java.net.URLEncoder.encode(kw, java.nio.charset.StandardCharsets.UTF_8);
+        model.addAttribute("homeUrl", kw.isEmpty() ? "/" : "/?q=" + enc);
+        model.addAttribute("pageUrlPrefix", kw.isEmpty() ? "/?page=" : "/?q=" + enc + "&page=");
         // 页码窗口：最多 5 个，围绕当前页，避免文章多了以后页码条铺满一行
         int winStart = Math.max(1, Math.min(pageNo - 2, totalPages - 4));
         int winEnd = Math.min(totalPages, winStart + 4);
         model.addAttribute("pageNumbers", java.util.stream.IntStream.rangeClosed(winStart, winEnd).boxed().toList());
         model.addAttribute("siteHost", siteHost());
         return "index";
+    }
+
+    /**
+     * 搜索关键词归一：去首尾空白、把换行/制表压成空格（GET 参数里塞换行只会污染 like）、超长截断。
+     * 返回空串表示「不搜索」，模板与仓库层都用「空串 = 不过滤」这一个口径。
+     */
+    private String normalizeKeyword(String q) {
+        if (q == null) return "";
+        String s = q.replaceAll("[\\r\\n\\t]+", " ").trim();
+        return s.length() > MAX_KEYWORD ? s.substring(0, MAX_KEYWORD) : s;
     }
 
     @GetMapping("/article/{slug}")

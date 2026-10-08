@@ -124,7 +124,8 @@ let madeId = null;
     log('MADE_ID=' + madeId);
 
     // ---------- ④ 列表行内「编辑」→ 编辑视图并回填 ----------
-    await page.click('#alist tbody tr:first-child td:last-child button:nth-child(1)');   // 第 1 个按钮＝编辑
+    // 行内操作已改成图标按钮，用 data-act 定位（不再靠按钮位置，操作列增删按钮也不会错位）
+    await page.click('#alist tbody tr:first-child button[data-act="edit"]');
     await page.waitForSelector('#ev-edit', { state: 'visible', timeout: 10000 });
     await page.waitForTimeout(600);
     check('④ 点行内「编辑」→ 进入编辑视图', (await editVisible()) && !(await listVisible()));

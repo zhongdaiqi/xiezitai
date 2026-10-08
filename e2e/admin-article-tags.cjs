@@ -159,7 +159,7 @@ let madeId = null, madeSlug = null;
       hitTitles.join(' , ') || '(空)');
 
     // ---------- ⑥ 再编辑 → chip 回填 → 删一个保存 → 徽章同步 ----------
-    await page.click('#alist tbody tr:first-child td:last-child button:nth-child(1)');
+    await page.click('#alist tbody tr:first-child button[data-act="edit"]');
     await page.waitForSelector('#ev-edit', { state: 'visible', timeout: 10000 });
     await page.waitForTimeout(500);
     check('⑥ 编辑时标签回填成 chip（8 个）', (await chipCount()) === 8, (await chipCount()) + '');

@@ -157,10 +157,11 @@ function startMockCn() {
   let articleId = null, wpSiteId = null, cnSiteId = null;
   const jwtOf = () => page.evaluate(() =>
     localStorage.getItem('xz_token') || sessionStorage.getItem('xz_token'));
-  const clickRowButton = (label) => page.evaluate(([t, l]) => {
+  // 行内操作按钮已改成图标按钮（没有文字），按 data-act 这个稳定钩子点
+  const clickRowButton = (act) => page.evaluate(([t, a]) => {
     const tr = [...document.querySelectorAll('#alist tbody tr')].find(r => r.textContent.includes(t));
-    [...tr.querySelectorAll('button')].find(b => b.textContent.trim() === l).click();
-  }, [TITLE, label]);
+    tr.querySelector('button[data-act="' + a + '"]').click();
+  }, [TITLE, act]);
 
   try {
     // ---------- 登录 ----------
@@ -205,12 +206,13 @@ function startMockCn() {
     await page.evaluate(() => { if (typeof loadArticles === 'function') loadArticles(0); });
     await page.waitForFunction(t => [...document.querySelectorAll('#alist tbody tr')]
       .some(r => r.textContent.includes(t)), TITLE, { timeout: 15000 });
-    check('① 文章列表行有「分发」按钮', await page.evaluate(t => {
+    check('① 文章列表行有「分发」图标按钮（svg + aria-label）', await page.evaluate(t => {
       const tr = [...document.querySelectorAll('#alist tbody tr')].find(r => r.textContent.includes(t));
-      return [...tr.querySelectorAll('button')].some(b => b.textContent.trim() === '分发');
+      const b = tr && tr.querySelector('button[data-act="dist"]');
+      return !!b && !!b.querySelector('svg') && (b.getAttribute('aria-label') || '').includes('分发');
     }, TITLE));
 
-    await clickRowButton('分发');
+    await clickRowButton('dist');
     await page.waitForSelector('#dist-modal.open', { timeout: 8000 });
     await page.waitForFunction(() => document.querySelectorAll('#dist-targets .dist-row input[type=checkbox]').length > 0,
       { timeout: 15000 });
@@ -278,7 +280,7 @@ function startMockCn() {
     await page.screenshot({ path: OUT + '/51-dist-list-badges.png', fullPage: true });
 
     // ---------- ④ 再打开弹窗：自动勾上 + 处理方式默认「更新」 ----------
-    await clickRowButton('分发');
+    await clickRowButton('dist');
     await page.waitForFunction(() => document.querySelectorAll('#dist-targets .dist-row').length === 2
       && document.querySelector('#dist-targets .dstate').textContent.includes('已分发过'), { timeout: 15000 });
     const t1 = await page.evaluate(() => [...document.querySelectorAll('#dist-targets .dist-row')].map(r => ({
