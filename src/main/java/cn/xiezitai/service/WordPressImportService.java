@@ -399,7 +399,15 @@ public class WordPressImportService {
 
         if (source.isBlank()) return "";
         if (isHtml) {
-            return HtmlToMarkdown.convert(localizeMedia(site, source, warnings));
+            String localized = localizeMedia(site, source, warnings);
+            // 有的站点是「Markdown 粘进古腾堡」的正文：HTML 只是外壳，里面全是字面 Markdown。
+            // 这种情况必须走还原式转换，否则会把本来就对的 Markdown 语法一起转义掉。
+            String md = HtmlToMarkdown.looksLikeMarkdownInHtml(localized)
+                    ? HtmlToMarkdown.convertMarkdownWrapped(localized)
+                    : HtmlToMarkdown.convert(localized);
+            // 还原式转换会把「本来就写在 Markdown 里的图片/附件链接」原样带出来，
+            // 这里再过一遍 Markdown 媒体本地化：指向本站资源的照样落盘，已本地化的 /media/ 会自动跳过。
+            return localizeMediaMarkdown(site, md, warnings);
         }
         return localizeMediaMarkdown(site, source, warnings);
     }

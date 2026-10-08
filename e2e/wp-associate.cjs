@@ -2,20 +2,23 @@
  *
  * 方案：脚本内起一个本地 mock WP REST 站点（127.0.0.1 随机端口）：
  *   - /wp-json/ 根（连通性探测）
- *   - /wp-json/wp/v2/posts 列表（12 篇，分页）
+ *   - /wp-json/wp/v2/posts 列表（13 篇，分页）
  *   - /wp-json/wp/v2/posts/{id} 单篇（content.raw = Markdown 原文，content.rendered = 渲染后的 HTML，
  *     两者各带 RAW-MD / RENDERED-HTML 标记 —— 模拟装了 Markdown 插件的站点）
+ *   - /wp-json/wp/v2/posts/13：作者把 Markdown 粘进古腾堡的形态 —— 每行一个 <p>、
+ *     行首 # 被吃成 <strong>、** 与 ``` 与 ![..](..) 原样留成字面文本（验证「还原式」转换）
  *   - /wp-content/uploads/e2e.png 站点自身图片（会被落盘换 /media/）
  *   外站图片用 http://cdn.external-wp-e2e.test/（不可达也无妨 —— 规则是外站保留外链，不下载）。
  *
  * 覆盖：
  *   ① 「WordPress」tab 存在，进面板站点列表为空态
  *   ② 关联站点（只填网址、匿名）→ 表格出现该站点；接口返回/列表永不含 token 明文（本例无 token）
- *   ③ 浏览文章 → mock 站点 12 篇渲染，分页「共 12 篇」
+ *   ③ 浏览文章 → mock 站点 13 篇渲染，分页「共 13 篇」
  *   ④ 单篇导入 → toast 导入成功；正文取 content.raw（Markdown 原文，不是渲染后的 HTML）；
  *      正文图片被本地化为 /media/、外站图保留外链、无 wp-content 残留
  *   ⑤ 重复导入 → 提示跳过（不建重复文章）
  *   ⑥ 整站导入 → 进度区出现并最终显示「整站导入完成：成功 X 跳过 Y」
+ *   ⑥c 古腾堡粘 Markdown 的那篇 → 标题/粗体/围栏/字面图片/表格都还原成真 Markdown
  *   ⑦ 全程 0 JS 错误、0 意外 HTTP>=400
  * 收尾：删掉导入的文章与关联站点。
  */
@@ -33,7 +36,11 @@ function check(name, ok, extra) {
 }
 
 const errors = [], httpBad = [];
-const TOTAL_POSTS = 12;
+const TOTAL_POSTS = 13;
+/** 中文 %xx slug 的样板文章（第 12 篇，验证前台路由多候选匹配） */
+const CN_POST = 12;
+/** 「Markdown 粘进古腾堡」的样板文章 */
+const GUTENBERG_POST = 13;
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64');
 
@@ -54,7 +61,7 @@ function startMockWp() {
       for (let i = 1; i <= TOTAL_POSTS; i++) {
         all.push({ id: i, title: { rendered: 'E2E WP Post ' + String(i).padStart(2, '0') },
           // 第 12 篇用 WP 风格的 %xx 中文 slug（WP 对中文标题就这么生成），验证前台路由多候选匹配
-          slug: i === TOTAL_POSTS ? 'e2e-wp-' + encodeURIComponent('文章十二') : 'e2e-wp-' + i,
+          slug: i === CN_POST ? 'e2e-wp-' + encodeURIComponent('文章十二') : 'e2e-wp-' + i,
           date: '2026-01-01T08:00:00', status: 'publish', link: 'http://x/?p=' + i });
       }
       const totalPages = Math.ceil(all.length / per);
@@ -68,6 +75,33 @@ function startMockWp() {
     if (m) {
       const id = parseInt(m[1], 10);
       const port = server.address().port;
+      const slug = id === CN_POST ? 'e2e-wp-' + encodeURIComponent('文章十二') : 'e2e-wp-' + id;
+      const meta = {
+        id, title: { rendered: 'E2E WP Post ' + String(id).padStart(2, '0') },
+        slug, status: 'publish', date_gmt: '2026-01-01T08:00:00',
+        excerpt: { rendered: '<p>摘要 ' + id + '</p>' },
+        _embedded: { 'wp:term': [ [], [{ name: 'E2ETag', taxonomy: 'post_tag' }] ] }
+      };
+      if (id === GUTENBERG_POST) {
+        // 作者把 Markdown 粘进古腾堡后的真实形态：每行一个 <p>，行首 # 被吃成 <strong>，
+        // **、```、![..](..)、|表格| 原样留成字面文本。raw 与 rendered 都是这个样子。
+        const g = [
+          '<p class="wp-block-paragraph"><strong># 标题一</strong></p>',
+          '<p class="wp-block-paragraph">正文：<strong>**要点**</strong>。</p>',
+          '<p class="wp-block-paragraph">1. <strong>**甲**</strong>：说明</p>',
+          '<p class="wp-block-paragraph">2. <strong>**乙**</strong>：说明</p>',
+          '<p class="wp-block-paragraph">```python</p>',
+          '<p class="wp-block-paragraph"># 注释别当标题</p>',
+          '<p class="wp-block-paragraph">&nbsp; &nbsp; x = 1</p>',
+          '<p class="wp-block-paragraph">```</p>',
+          '<p class="wp-block-paragraph">![外站图](http://cdn.external-wp-e2e.test/md.png)</p>',
+          '<p class="wp-block-paragraph"><img src="http://127.0.0.1:' + port + '/wp-content/uploads/e2e.png"/></p>',
+          '<p class="wp-block-paragraph">| 列A | 列B |</p>',
+          '<p class="wp-block-paragraph">|&#8212;&#8212;&#8212;|&#8212;&#8212;&#8212;|</p>',
+          '<p class="wp-block-paragraph">| <strong>**甲**</strong> | 1 |</p>'
+        ].join('\n');
+        return json(Object.assign(meta, { content: { raw: g, rendered: g } }));
+      }
       // 模拟装了 Markdown 插件的站点：content.raw 是编辑器里的 Markdown 原文，
       // content.rendered 是插件渲染后的 HTML。两段内容各带一个独有标记，便于断言导入取了哪一份。
       const raw = '正文 ' + id + ' RAW-MD\n\n'
@@ -77,14 +111,7 @@ function startMockWp() {
         + '<h2>小标题</h2>'
         + '<p><img src="http://127.0.0.1:' + port + '/wp-content/uploads/e2e.png"/></p>'
         + '<p><img src="http://cdn.external-wp-e2e.test/x.png"/></p>';
-      return json({
-        id, title: { rendered: 'E2E WP Post ' + String(id).padStart(2, '0') },
-        slug: id === TOTAL_POSTS ? 'e2e-wp-' + encodeURIComponent('文章十二') : 'e2e-wp-' + id,
-        status: 'publish', date_gmt: '2026-01-01T08:00:00',
-        content: { raw, rendered },
-        excerpt: { rendered: '<p>摘要 ' + id + '</p>' },
-        _embedded: { 'wp:term': [ [], [{ name: 'E2ETag', taxonomy: 'post_tag' }] ] }
-      });
+      return json(Object.assign(meta, { content: { raw, rendered } }));
     }
     res.statusCode = 404; res.end('{}');
   });
@@ -149,7 +176,7 @@ function startMockWp() {
     await page.waitForFunction(() =>
       document.querySelectorAll('#wpposts tbody tr').length > 0, { timeout: 15000 });
     const pagerInfo = await page.textContent('#wpposts-pager .pinfo');
-    check('③ 浏览到 mock 站点文章（共 12 篇）', /共 12 篇/.test(pagerInfo), pagerInfo.trim());
+    check('③ 浏览到 mock 站点文章（共 13 篇）', /共 13 篇/.test(pagerInfo), pagerInfo.trim());
     check('③ 每行有「导入」按钮', await page.evaluate(() =>
       document.querySelectorAll('#wpposts tbody button').length === 10));
     check('③ 发布时间选择器存在且默认「WP 原发布时间」', await page.evaluate(() => {
@@ -265,8 +292,8 @@ function startMockWp() {
     const logText = await page.textContent('#wp-progress-log');
     check('⑥ 进度日志出现「整站导入完成」', logText.includes('整站导入完成'), logText.split('\n').pop());
     const doneLine = logText.split('\n').find(l => l.includes('整站导入完成')) || '';
-    // 12 篇里 3 篇已导入（④ / ④b / ④c，跳过 3），其余 9 篇成功
-    check('⑥ 成功 9 篇、跳过 3 篇', /成功 9，更新 0，跳过 3/.test(doneLine), doneLine);
+    // 13 篇里 3 篇已导入（④ / ④b / ④c，跳过 3），其余 10 篇成功
+    check('⑥ 成功 10 篇、跳过 3 篇', /成功 10，更新 0，跳过 3/.test(doneLine), doneLine);
     await page.screenshot({ path: OUT + '/41-wp-progress-done.png', fullPage: true });
 
     // 清点导入的文章数（slug 前缀 e2e-wp-）
@@ -287,6 +314,37 @@ function startMockWp() {
     check('⑥b WP 风格中文 slug 详情页 200 且内容正确',
       artCn.status === 200 && artCn.hasTitle && !artCn.finalUrl.endsWith('/'),
       JSON.stringify(artCn).slice(0, 120));
+
+    // ---------- ⑥c 「Markdown 粘进古腾堡」的文章：必须按还原式转换，不能把 Markdown 语法转义掉 ----------
+    const artMd = await page.evaluate(async () => {
+      const r = await fetch('/api/admin/articles?size=200', { headers: { Authorization: 'Bearer ' + token } });
+      const d = await r.json();
+      const a = d.content.find(x => x.slug === 'e2e-wp-13');
+      return a ? a.content : '';
+    });
+    check('⑥c 标题/粗体还原（无 **# 标题**、无 HTML 与实体残留）',
+      artMd.includes('# 标题一') && artMd.includes('正文：**要点**。')
+      && !artMd.includes('**# 标题一**') && !artMd.includes('wp-block-paragraph') && !artMd.includes('&nbsp;'),
+      artMd.slice(0, 120));
+    check('⑥c 列表项紧凑（1. **甲**：说明\\n2. **乙**：说明）',
+      artMd.includes('1. **甲**：说明\n2. **乙**：说明'), artMd.slice(0, 200));
+    check('⑥c 围栏变成真代码块（块内 # 注释与缩进保留）',
+      artMd.includes('```python\n# 注释别当标题\n    x = 1\n```'), artMd.slice(0, 200));
+    check('⑥c 字面 Markdown 图片保留外链、站点图落盘为 /media/',
+      artMd.includes('![外站图](http://cdn.external-wp-e2e.test/md.png)') && /!\[\]\(\/media\/[\w.]+\)/.test(artMd),
+      artMd.slice(0, 200));
+    check('⑥c 表格行连续、分隔行还原为 ---（GFM 表格可渲染）',
+      artMd.includes('| 列A | 列B |\n|---|---|\n| **甲** | 1 |'), artMd.slice(0, 200));
+    // 详情页真实渲染一遍：标题 / 代码块 / 表格 / 图片都要出现在 HTML 里
+    const artPage = await page.evaluate(async () => {
+      const r = await fetch('/article/e2e-wp-13');
+      const html = await r.text();
+      return { status: r.status, html };
+    });
+    check('⑥c 详情页渲染出 h1 / 代码块 / 表格 / 图片',
+      artPage.status === 200 && artPage.html.includes('<h1>标题一</h1>')
+      && artPage.html.includes('<pre') && artPage.html.includes('<table>')
+      && artPage.html.includes('<img src="/media/'), 'status=' + artPage.status);
 
     // ---------- ⑦ 控制台干净 ----------
     check('⑦ 无 JS 错误', errors.length === 0, errors.slice(0, 3).join(' ; '));

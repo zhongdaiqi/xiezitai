@@ -21,8 +21,15 @@ import java.util.regex.Pattern;
  * 无法识别的标签一律剥离但保留文字；{@code iframe/video/audio} 等富媒体原样保留
  * （Markdown 允许内联 HTML）。Gutenberg 的 {@code <!-- wp:xxx -->} 块注释会被清理。
  *
- * <p><b>转义策略：</b>文本节点里的 Markdown 元字符（反斜杠、星号、下划线、反引号、方括号、
- * 尖括号）会加反斜杠转义 —— 优先保证「渲染出来和 WordPress 一致」，而不是源码好看。
+ * <p><b>两种转换模式：</b>
+ * <ul>
+ *   <li>{@link #convert(String)} —— <b>普通式</b>：正文是真 HTML，文本节点里的 Markdown 元字符
+ *       （反斜杠、星号、下划线、反引号、方括号、尖括号）一律加反斜杠转义，优先保证
+ *       「渲染出来和源站一致」，而不是源码好看。</li>
+ *   <li>{@link #convertMarkdownWrapped(String)} —— <b>还原式</b>：正文本身就是 Markdown，
+ *       只是被编辑器逐行包进了 HTML（详见 {@link #looksLikeMarkdownInHtml(String)}）。
+ *       此时不转义元字符，反而要把被编辑器弄坏的语法还原回来。</li>
+ * </ul>
  */
 public final class HtmlToMarkdown {
 
@@ -43,18 +50,73 @@ public final class HtmlToMarkdown {
         return s != null && BLOCK_TAG.matcher(s).find();
     }
 
-    /** HTML → Markdown；入参为空时返回空串 */
+    /**
+     * 「Markdown 被 HTML 包裹」的强特征 —— 用于挑转换模式。
+     *
+     * <p>典型来源：作者把 Markdown 粘进 WordPress 古腾堡（或某些富文本编辑器）后，编辑器
+     * 逐行把文本包成 {@code <p>}、把行首 {@code #} 变成 {@code <strong>}，而
+     * {@code **}、<code>```</code>、{@code ![..](..)} 这些标记<b>原样留成了字面文本</b>。
+     *
+     * <p>这种正文如果按普通式转换（元字符全部转义），会把本来就是正确的 Markdown 语法一起
+     * 转义掉，页面依然是坏的（{@code **# 标题**} 渲染出来还是字面量）。
+     *
+     * <p>四个判据都是「正常 HTML 正文里几乎不可能出现」的组合，误判概率很低。
+     */
+    private static final Pattern[] MD_IN_HTML_SIGNALS = {
+            Pattern.compile("(?is)<(?:strong|b)\\b[^>]*>\\s*#{1,6}\\s"),                    // <strong># 标题</strong>
+            Pattern.compile("(?is)<(?:strong|b)\\b[^>]*>\\s*\\*\\*[^<]"),                  // <strong>**粗体**</strong>
+            Pattern.compile("(?is)<(?:p|div|li)\\b[^>]*>\\s*`{3,}"),                        // <p>```python
+            Pattern.compile("(?is)<(?:p|div|li)\\b[^>]*>\\s*!\\[[^\\]]*\\]\\([^)]{1,500}\\)"), // <p>![图](url)
+    };
+
+    /** 正文是不是「HTML 里裹着 Markdown 字面文本」（决定用还原式还是普通式转换） */
+    public static boolean looksLikeMarkdownInHtml(String s) {
+        if (s == null || s.isBlank()) return false;
+        for (Pattern p : MD_IN_HTML_SIGNALS) {
+            if (p.matcher(s).find()) return true;
+        }
+        return false;
+    }
+
+    /** HTML → Markdown（普通式：文本里的 Markdown 元字符一律转义）；入参为空时返回空串 */
     public static String convert(String html) {
         if (html == null || html.isBlank()) return "";
-        return new Conv().run(html);
+        return new Conv(false).run(html);
+    }
+
+    /**
+     * HTML → Markdown（还原式）：正文本身是 Markdown，只是被 HTML 逐行包住了。
+     *
+     * <p>与普通式的差别：<b>不</b>转义元字符，并额外做这些「抢救」：
+     * <ul>
+     *   <li>{@code <strong># 标题</strong>} → {@code # 标题}（行首 {@code #} 被编辑器吃成了加粗）</li>
+     *   <li>{@code <strong>**粗体**</strong>} → {@code **粗体**}（去掉重复的外层加粗，保留字面标记）</li>
+     *   <li>{@code <p>```python</p>} 这类孤立围栏行 → 真正的代码块，块内内容原样保留（含缩进、{@code #} 注释）</li>
+     *   <li>被「智能标点」弄坏的 {@code ———} 表格分隔行 / {@code –} 列表符号 → 还原成 {@code ---} / {@code -}</li>
+     *   <li>{@code ![图](url)}、{@code 1. 项}、{@code |表格|} 等字面 Markdown 原样输出，交给渲染器正常解析</li>
+     * </ul>
+     */
+    public static String convertMarkdownWrapped(String html) {
+        if (html == null || html.isBlank()) return "";
+        return new Conv(true).run(html);
     }
 
     /* ==================================================================== */
 
     private static final class Conv {
 
+        /** 还原式：正文本身就是 Markdown（不转义元字符，见 convertMarkdownWrapped） */
+        private final boolean preserve;
+
+        /** 还原式专用：当前是否处于「被 HTML 包住的代码围栏」内部 */
+        private boolean inFence;
+
         /** 预抽出的「原样内容」：代码块、行内代码 */
         private final List<String> codes = new ArrayList<>();
+
+        Conv(boolean preserve) {
+            this.preserve = preserve;
+        }
 
         private static final String PH_OPEN = "\u0001";
         private static final String PH_CLOSE = "\u0002";
@@ -73,7 +135,24 @@ public final class HtmlToMarkdown {
             String s = stripNoise(html);
             s = hoistPre(s);
             s = hoistInlineCode(s);
-            return tidy(blocks(s));
+            String md = tidy(blocks(s));
+            return preserve ? tighten(md) : md;
+        }
+
+        /**
+         * 还原式收尾：每个 Markdown 行都被包成了独立的 {@code <p>}，转换出来行与行之间全是空行。
+         * 空行会让 <b>GFM 表格</b>（要求表头/分隔/数据行连续）和 <b>紧凑列表</b> 失效，所以把
+         * 连续的表格行、连续的列表项之间的空行去掉。
+         */
+        private static String tighten(String md) {
+            String prev;
+            String s = md;
+            do {
+                prev = s;
+                s = s.replaceAll("(?m)^(\\s*\\|.*\\|)\\n\\n(?=\\s*\\|)", "$1\n");
+                s = s.replaceAll("(?m)^(\\s*(?:\\d+[.)]|[-*+]) \\S.*)\\n\\n(?=\\s*(?:\\d+[.)]|[-*+]) \\S)", "$1\n");
+            } while (!s.equals(prev));
+            return s;
         }
 
         /* ---------------- 预处理 ---------------- */
@@ -159,8 +238,35 @@ public final class HtmlToMarkdown {
                     }
                     case "p" -> {
                         int close = findClose(s, after, name);
-                        String body = inline(s.substring(after, close)).trim();
-                        if (!body.isEmpty()) out.append("\n\n").append(body).append("\n\n");
+                        String raw = s.substring(after, close);
+                        boolean handled = false;
+                        if (preserve) {
+                            String line = plainText(raw);
+                            String lang = fenceLine(line.strip());
+                            if (lang != null) {                       // 整行就是 ```lang / ```
+                                if (!inFence) {
+                                    inFence = true;
+                                    out.append("\n\n```").append(lang).append('\n');
+                                } else {
+                                    inFence = false;
+                                    out.append("```\n\n");
+                                }
+                                handled = true;
+                            } else if (inFence) {                     // 围栏内部：原样保留（缩进、# 注释都不能动）
+                                out.append(repairLine(rstrip(line))).append('\n');
+                                handled = true;
+                            } else {
+                                String head = headingInBold(raw);
+                                if (head != null) {
+                                    out.append("\n\n").append(head).append("\n\n");
+                                    handled = true;
+                                }
+                            }
+                        }
+                        if (!handled) {
+                            String body = inline(raw).trim();
+                            if (!body.isEmpty()) out.append("\n\n").append(preserve ? repairLine(body) : body).append("\n\n");
+                        }
                         i = afterTag(s, close);
                     }
                     case "ul", "ol" -> {
@@ -363,7 +469,11 @@ public final class HtmlToMarkdown {
             s = sub(s, Pattern.compile("(?is)<br\\s*/?>"), m -> "  \n", local);
 
             // 成对行内样式
-            s = style(s, "strong|b", "**", local);
+            if (preserve) {
+                s = strongStyle(s, local);                 // 还原式：要额外修「外层 strong + 内层字面 **」
+            } else {
+                s = style(s, "strong|b", "**", local);
+            }
             s = style(s, "em|i|cite|var", "*", local);
             s = style(s, "del|s|strike", "~~", local);
 
@@ -378,13 +488,40 @@ public final class HtmlToMarkdown {
             return sub(s, p, m -> mark + inline(m.group(2)).trim() + mark, local);
         }
 
+        /** 已经是 Markdown 粗体：<strong>**X**</strong> */
+        private static final Pattern MD_BOLD = Pattern.compile("(?s)^\\*\\*.*\\*\\*$");
+        /** 已经是 Markdown 标题：<strong>## X</strong> */
+        private static final Pattern MD_ATX = Pattern.compile("(?s)^#{1,6}\\s.*$");
+
+        /**
+         * 还原式的 {@code <strong>} 处理。
+         *
+         * <p>编辑器把 {@code **X**} 转成了 {@code <strong>X</strong>}，但如果原文是
+         * {@code # 标题} 或 {@code **X**} 本身，转换后就变成 {@code <strong># 标题</strong>} /
+         * {@code <strong>**X**</strong>} —— 里面那层标记是「本来就对的 Markdown」，必须原样放行，
+         * 不能再包一层 {@code **}（否则变成 {@code **\*\*X\*\***}，渲染出来还是字面星号）。
+         */
+        private String strongStyle(String s, List<String> local) {
+            return sub(s, Pattern.compile("(?is)<(strong|b)\\b[^>]*>(.*?)</\\1\\s*>"), m -> {
+                String inner = inline(m.group(2)).trim();
+                if (inner.isEmpty()) return "";
+                if (MD_BOLD.matcher(inner).matches() || MD_ATX.matcher(inner).matches()) return inner;
+                return "**" + inner + "**";
+            }, local);
+        }
+
         private static String normInline(String t) {
             String s = decodeEntities(t).replace('\u00A0', ' ');
             s = s.replaceAll("[ \\t\\n\\u000b\\f]+", " ");
             return s.strip();
         }
 
-        private static String esc(String t) {
+        private String esc(String t) {
+            if (preserve) {
+                // 还原式：正文本身是 Markdown，星号/井号/方括号/反引号都是语法，不能转义；
+                // 只挡一下 < > ，避免文本里的尖括号被当成内联 HTML。
+                return t.replace("<", "\\<").replace(">", "\\>");
+            }
             StringBuilder sb = new StringBuilder(t.length() + 8);
             for (int i = 0; i < t.length(); i++) {
                 char c = t.charAt(i);
@@ -408,6 +545,62 @@ public final class HtmlToMarkdown {
             } while (m.find());
             m.appendTail(sb);
             return sb.toString();
+        }
+
+        /* ---------------- 还原式专用：抢救被编辑器弄坏的 Markdown ---------------- */
+
+        /** 整行就是一个代码围栏（```lang）；语言可省略 */
+        private static final Pattern FENCE_PLAIN = Pattern.compile("^`{3,}\\s*([A-Za-z0-9+#._-]*)$");
+        /** wptexturize（智能标点）会把 ``` 变成 “`，这里一并认出来 */
+        private static final Pattern FENCE_TEXTURIZED =
+                Pattern.compile("^[\u201C\u201D\u2018\u2019]`{1,4}\\s*([A-Za-z0-9+#._-]*)$");
+        /** 整段只有一个 <strong>/<b> 包裹 */
+        private static final Pattern BOLD_ONLY =
+                Pattern.compile("(?is)^\\s*<(strong|b)\\b[^>]*>(.*?)</\\1\\s*>\\s*$");
+
+        /** 纯文本：解码实体、{@code <br>} 转换行、去掉标签；<b>不</b>压缩空白（代码行要留缩进） */
+        private static String plainText(String h) {
+            String t = h.replaceAll("(?is)<br\\s*/?>", "\n").replaceAll("(?is)<[^>]+>", "");
+            return decodeEntities(t).replace('\u00A0', ' ');
+        }
+
+        private static String rstrip(String s) {
+            int b = s.length();
+            while (b > 0 && (s.charAt(b - 1) == ' ' || s.charAt(b - 1) == '\t')) b--;
+            return s.substring(0, b);
+        }
+
+        /** 整行是不是围栏标记 → 返回语言（可能为空串）；不是则 null */
+        private static String fenceLine(String t) {
+            Matcher m = FENCE_PLAIN.matcher(t);
+            if (!m.matches()) m = FENCE_TEXTURIZED.matcher(t);
+            return m.matches() ? (m.group(1) == null ? "" : m.group(1)) : null;
+        }
+
+        /** 整段是 {@code <strong># 标题</strong>} 这种「行首 # 被吃成加粗」的写法 → 还原成 ATX 标题 */
+        private String headingInBold(String raw) {
+            Matcher m = BOLD_ONLY.matcher(raw);
+            if (!m.matches()) return null;
+            String plain = plainText(m.group(2)).trim();
+            if (!MD_ATX.matcher(plain).matches()) return null;
+            int level = 0;
+            while (level < plain.length() && plain.charAt(level) == '#') level++;
+            return "#".repeat(Math.min(level, 6)) + " " + plain.substring(level).trim();
+        }
+
+        /**
+         * 还原被「智能标点」弄坏的 Markdown：{@code ———} 表格分隔行 → {@code ---}，
+         * 行首的 {@code –}/{@code —} 列表符号 → {@code -}。（post_content 原文一般没这问题，
+         * 但只拿得到 content.rendered 时就是这个样子。）
+         */
+        private static String repairLine(String t) {
+            if (t.indexOf('\u2014') < 0 && t.indexOf('\u2013') < 0) return t;
+            String s = t;
+            if (s.matches("^\\s*\\|[-|:\\s\u2013\u2014]+\\|\\s*$")) {
+                s = s.replace('\u2014', '-').replace('\u2013', '-');
+            }
+            s = s.replaceFirst("^(\\s*)[\u2013\u2014]([ \\t]+)(?=\\S)", "$1-$2");
+            return s;
         }
 
         /* ---------------- 标签属性 / 工具 ---------------- */

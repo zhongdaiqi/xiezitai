@@ -1448,6 +1448,32 @@ class XiezitaiApplicationTests {
                 + "\"content\":{\"rendered\":\"<p>wp style body</p>\"},\"excerpt\":{\"rendered\":\"\"}}";
         server.createContext("/wp-json/wp/v2/posts/104", ex ->
                 respond(ex, 200, "application/json", post104.getBytes(StandardCharsets.UTF_8)));
+        // 105：作者把 Markdown 粘进古腾堡 —— 每行成了 <p>，行首 # 被吃成 <strong>，
+        //      **、```、![..](..) 原样留成字面文本（raw 与 rendered 都是这种形状）。
+        //      这类正文必须走「还原式」转换，否则入库的是被转义过的伪 Markdown。
+        String gutenberg = "<!-- wp:paragraph -->\n"
+                + "<p class=\"wp-block-paragraph\"><strong># 标题一</strong></p>\n"
+                + "<!-- /wp:paragraph -->\n"
+                + "<p class=\"wp-block-paragraph\">正文：<strong>**要点**</strong>。</p>\n"
+                + "<p class=\"wp-block-paragraph\">1. <strong>**甲**</strong>：说明</p>\n"
+                + "<p class=\"wp-block-paragraph\">2. <strong>**乙**</strong>：说明</p>\n"
+                + "<p class=\"wp-block-paragraph\">```python</p>\n"
+                + "<p class=\"wp-block-paragraph\"># 注释别当标题</p>\n"
+                + "<p class=\"wp-block-paragraph\">&nbsp; &nbsp; x = 1</p>\n"
+                + "<p class=\"wp-block-paragraph\">```</p>\n"
+                + "<p class=\"wp-block-paragraph\">![外站图](http://cdn.external.com/md.png)</p>\n"
+                + "<p class=\"wp-block-paragraph\">![站点图](" + base + "/wp-content/uploads/2026/01/pic.png)</p>\n"
+                + "<p class=\"wp-block-paragraph\"><img src=\"" + base + "/wp-content/uploads/2026/01/pic.png\"/></p>\n"
+                + "<p class=\"wp-block-paragraph\">| 列A | 列B |</p>\n"
+                + "<p class=\"wp-block-paragraph\">|&#8212;&#8212;&#8212;|&#8212;&#8212;&#8212;|</p>\n"
+                + "<p class=\"wp-block-paragraph\">| <strong>**甲**</strong> | 1 |</p>";
+        String gutenbergJson = gutenberg.replace("\"", "\\\"").replace("\n", "\\n");
+        String post105 = "{\"id\":105,\"title\":{\"rendered\":\"Gutenberg Pasted MD\"},\"slug\":\"wp-gutenberg-105\","
+                + "\"status\":\"publish\",\"date_gmt\":\"2026-02-02T09:00:00\","
+                + "\"content\":{\"raw\":\"" + gutenbergJson + "\",\"rendered\":\"" + gutenbergJson + "\"},"
+                + "\"excerpt\":{\"rendered\":\"\"}}";
+        server.createContext("/wp-json/wp/v2/posts/105", ex ->
+                respond(ex, 200, "application/json", post105.getBytes(StandardCharsets.UTF_8)));
         server.createContext("/wp-content/uploads/2026/01/pic.png", ex -> respond(ex, 200, "image/png", PNG_1X1));
         server.createContext("/wp-content/uploads/2026/01/cover.png", ex -> respond(ex, 200, "image/png", PNG_1X1));
         server.createContext("/wp-content/uploads/2026/01/doc.pdf", ex ->
@@ -1627,6 +1653,32 @@ class XiezitaiApplicationTests {
                     .as("%xx 字面 slug 应已解码为真中文入库").isPresent();
             mvc.perform(get("/article/你好世界"))
                     .andExpect(status().isOk());
+
+            // ⑨ 「Markdown 粘进古腾堡」的正文：HTML 只是外壳，里面全是字面 Markdown。
+            //    必须走还原式转换 —— 标题/粗体/围栏/字面图片/表格都要还原成真 Markdown。
+            MvcResult impG = mvc.perform(post("/api/admin/wp/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", 105)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.imported").value(true))
+                    .andReturn();
+            madeArticles.add(om.readTree(impG.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path("articleId").asLong());
+            String mdG = articles.findBySlug("wp-gutenberg-105").orElseThrow().getContent();
+            assertThat(mdG).as("还原式转换后的正文: " + mdG)
+                    .contains("# 标题一")
+                    .contains("正文：**要点**。")
+                    .contains("1. **甲**：说明\n2. **乙**：说明")
+                    .contains("```python\n# 注释别当标题\n    x = 1\n```")
+                    .contains("![外站图](http://cdn.external.com/md.png)")
+                    .contains("| 列A | 列B |\n|---|---|\n| **甲** | 1 |")
+                    .doesNotContain("**# 标题一**")
+                    .doesNotContain("wp-block-paragraph")
+                    .doesNotContain("&nbsp;");
+            // 还原式带出来的字面 Markdown 图片同样要本地化（与正文 <img> 同字节 → 共用一份）
+            assertThat(mdG).as("字面 Markdown 图片应本地化: " + mdG)
+                    .containsPattern("!\\[站点图\\]\\(/media/[0-9a-f]{16}\\.png\\)");
         } finally {
             server.stop(0);
             for (Long id : madeArticles) articles.deleteById(id);
@@ -1702,6 +1754,62 @@ class XiezitaiApplicationTests {
         // 空输入不炸
         assertThat(cn.xiezitai.service.HtmlToMarkdown.convert(null)).isEmpty();
         assertThat(cn.xiezitai.service.HtmlToMarkdown.convert("   ")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("HTML→Markdown：Markdown 被逐行包进 <p> 时按还原式转换")
+    void htmlToMarkdownSalvagesMarkdownWrappedInHtml() {
+        // 作者把 Markdown 粘进古腾堡后的真实形状：每行一个 <p>，行首 # 被吃成 <strong>，
+        // **、```、![..](..)、|表格| 原样留成字面文本。
+        String html = "<!-- wp:paragraph --><p class=\"wp-block-paragraph\"><strong># 标题一</strong></p><!-- /wp:paragraph -->"
+                + "<p class=\"wp-block-paragraph\"><strong>## 1. 小节</strong></p>"
+                + "<p class=\"wp-block-paragraph\">正文：<strong>**要点**</strong>。</p>"
+                + "<p class=\"wp-block-paragraph\">1. <strong>**甲**</strong>：说明</p>"
+                + "<p class=\"wp-block-paragraph\">2. <strong>**乙**</strong>：说明</p>"
+                + "<p class=\"wp-block-paragraph\">```python</p>"
+                + "<p class=\"wp-block-paragraph\"># 注释别当标题</p>"
+                + "<p class=\"wp-block-paragraph\">&nbsp; &nbsp; x = 1</p>"
+                + "<p class=\"wp-block-paragraph\">```</p>"
+                + "<p class=\"wp-block-paragraph\">![外站图](http://cdn.external.com/md.png)</p>"
+                + "<p class=\"wp-block-paragraph\">| 列A | 列B |</p>"
+                + "<p class=\"wp-block-paragraph\">|&#8212;&#8212;&#8212;|&#8212;&#8212;&#8212;|</p>"
+                + "<p class=\"wp-block-paragraph\">| <strong>**甲**</strong> | 1 |</p>"
+                + "<p class=\"wp-block-paragraph\"><strong>**原始查询**</strong>：</p>"
+                + "<p class=\"wp-block-paragraph\">```</p>"
+                + "<p class=\"wp-block-paragraph\">1. 围栏里的一行</p>"
+                + "<p class=\"wp-block-paragraph\">```</p>";
+
+        // 识别：强特征命中 → 走还原式；普通 HTML 正文不能被误判
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.looksLikeMarkdownInHtml(html)).isTrue();
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.looksLikeMarkdownInHtml(
+                "<p>普通 <strong>加粗</strong> 正文，还有 <code>x</code></p>")).isFalse();
+
+        String md = cn.xiezitai.service.HtmlToMarkdown.convertMarkdownWrapped(html);
+
+        // 被吃成加粗的标题还原成 ATX 标题（不能留 **# 标题**）
+        assertThat(md).as("正文: " + md).contains("# 标题一").contains("## 1. 小节")
+                .doesNotContain("**# 标题一**").doesNotContain("<strong>");
+        // 外层 strong + 内层字面 ** → 去掉重复加粗，保留一层
+        assertThat(md).contains("正文：**要点**。").contains("**原始查询**：");
+        // 行内 strong 在行首时不能变成标题
+        assertThat(md).contains("**原始查询**：");
+        // 列表项之间不留空行（否则是 loose list）
+        assertThat(md).contains("1. **甲**：说明\n2. **乙**：说明");
+        // 围栏 → 真代码块；块内 # 注释与缩进原样保留
+        assertThat(md).contains("```python\n# 注释别当标题\n    x = 1\n```");
+        // 字面 Markdown 图片原样保留；围栏内的 1. 不会被当成列表
+        assertThat(md).contains("![外站图](http://cdn.external.com/md.png)");
+        assertThat(md).contains("```\n1. 围栏里的一行\n```");
+        // 表格：分隔行的 「———」 要还原成 ---，且行与行之间不能有空行（否则 GFM 表格失效）
+        assertThat(md).contains("| 列A | 列B |\n|---|---|\n| **甲** | 1 |");
+        // 还原式不转义 Markdown 元字符（这些本来就是语法）
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convertMarkdownWrapped("<p>2*3 与 [方括号]</p>"))
+                .isEqualTo("2*3 与 [方括号]");
+        // 普通式仍然照旧转义
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convert("<p>2*3 与 [方括号]</p>"))
+                .isEqualTo("2\\*3 与 \\[方括号\\]");
+        // 空输入不炸
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convertMarkdownWrapped(null)).isEmpty();
     }
 
     /* ==================== 博客园关联与导入（MetaWeblog） ==================== */
