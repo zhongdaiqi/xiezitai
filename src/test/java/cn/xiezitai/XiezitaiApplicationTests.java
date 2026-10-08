@@ -355,10 +355,14 @@ class XiezitaiApplicationTests {
         mvc.perform(get("/api/articles/" + slug))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.title").value(title));
-        // 服务端渲染详情页
-        mvc.perform(get("/article/" + slug))
+        // 服务端渲染详情页：规范地址就是根级 slug（不再有 /article/ 前缀）
+        mvc.perform(get("/" + slug))
                 .andExpect(status().isOk())
                 .andExpect(content().string(org.hamcrest.Matchers.containsString(title)));
+        // 历史 /article/<slug> 永久搬家：301 到根级规范地址
+        mvc.perform(get("/article/" + slug))
+                .andExpect(status().isMovedPermanently())
+                .andExpect(header().string("Location", "/" + slug));
 
         assertThat(articles.findBySlug(slug).orElseThrow().getViewCount()).isGreaterThanOrEqualTo(1L);
     }
@@ -376,7 +380,9 @@ class XiezitaiApplicationTests {
                 .path("slug").asText();
 
         mvc.perform(get("/api/articles/" + slug)).andExpect(status().isNotFound());
+        // 草稿在历史地址上依旧只是「回首页」，不会把未发布内容漏出去
         mvc.perform(get("/article/" + slug)).andExpect(status().is3xxRedirection());
+        mvc.perform(get("/" + slug)).andExpect(status().is3xxRedirection());
     }
 
     @Test
@@ -392,7 +398,7 @@ class XiezitaiApplicationTests {
         String slug = om.readTree(created.getResponse().getContentAsString(StandardCharsets.UTF_8))
                 .path("slug").asText();
 
-        String html = mvc.perform(get("/article/" + slug)).andExpect(status().isOk()).andReturn()
+        String html = mvc.perform(get("/" + slug)).andExpect(status().isOk()).andReturn()
                 .getResponse().getContentAsString(StandardCharsets.UTF_8);
         assertThat(html).contains("type=\"checkbox\"");                    // 扩展生效
         assertThat(html).contains("disabled");                             // 只读，不提交
@@ -691,8 +697,12 @@ class XiezitaiApplicationTests {
 
         mvc.perform(get("/api/pages/" + slug)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.title").value("关于我们"));
-        mvc.perform(get("/page/" + slug)).andExpect(status().isOk())
+        mvc.perform(get("/" + slug)).andExpect(status().isOk())
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("关于")));
+        // 历史 /page/<slug> 301 到根级
+        mvc.perform(get("/page/" + slug))
+                .andExpect(status().isMovedPermanently())
+                .andExpect(header().string("Location", "/" + slug));
 
         mvc.perform(delete("/api/admin/pages/" + id).header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk());
@@ -1717,7 +1727,7 @@ class XiezitaiApplicationTests {
                     .path("articleId").asLong());
             assertThat(articles.findBySlugIgnoreCase(cnSlug))
                     .as("%xx 字面 slug 应已解码为真中文入库").isPresent();
-            mvc.perform(get("/article/你好世界"))
+            mvc.perform(get("/你好世界"))
                     .andExpect(status().isOk());
 
             // ⑨ 「Markdown 粘进古腾堡」的正文：HTML 只是外壳，里面全是字面 Markdown。
@@ -1787,7 +1797,7 @@ class XiezitaiApplicationTests {
                     .as("旧的 %xx slug 不应残留").isEmpty();
             assertThat(articles.count()).as("更新模式不新增文章").isEqualTo(countBeforeLegacy);
 
-            mvc.perform(get("/article/你好-legacy")).andExpect(status().isOk());
+            mvc.perform(get("/你好-legacy")).andExpect(status().isOk());
             // 旧的 %xx 链接依然可用：容器先解码一次、前台路由的多候选再兜一层解码。
             // 这里只断言候选逻辑 —— MockMvc 会把 URL 里的 % 再编码成 %25，与真实容器的行为不同，
             // 直接 perform 一个 %xx 路径会被防火墙挡成 400，测不出真实链路。
@@ -2141,7 +2151,7 @@ class XiezitaiApplicationTests {
             assertThat(second.getPublishedAt()).as("useWpDate=false 应为当前时间").isNotNull();
             assertThat(second.getPublishedAt().toLocalDate())
                     .isEqualTo(java.time.LocalDate.now());
-            mvc.perform(get("/article/" + second.getSlug()))
+            mvc.perform(get("/" + second.getSlug()))
                     .andExpect(status().isOk());
 
             // ⑧ 整站导入：启动 202 → 轮询进度到 DONE → 两篇都已导入过 → 全部跳过
@@ -2196,7 +2206,7 @@ class XiezitaiApplicationTests {
         assertThat(repost).contains("原文链接：[标题 *含* 特殊字符]("
                 + distService.articleUrl("dist-body-测试") + ")");
         assertThat(distService.articleUrl("dist-body-测试")).as("中文 slug 要百分号编码")
-                .isEqualTo(distService.siteUrl() + "/article/dist-body-%E6%B5%8B%E8%AF%95");
+                .isEqualTo(distService.siteUrl() + "/dist-body-%E6%B5%8B%E8%AF%95");
 
         String html = distService.buildBody(a, "repost", "html");
         assertThat(html).as("转 HTML 后不该有 Markdown 语法残留").contains("<p>正文</p>")
@@ -2345,7 +2355,7 @@ class XiezitaiApplicationTests {
                 assertThat(t.path("ready").asBoolean()).as("两个目标都应具备发文凭据").isTrue();
                 assertThat(t.path("dist").isNull()).as("首次分发前不该有分发记录").isTrue();
             }
-            assertThat(targets.path("sourceUrl").asText()).isEqualTo(siteUrl + "/article/dist-e2e-article");
+            assertThat(targets.path("sourceUrl").asText()).isEqualTo(siteUrl + "/dist-e2e-article");
 
             // ④ 一次发往两个目标，转载 + Markdown
             MvcResult run = mvc.perform(post("/api/admin/dist/run")
@@ -2556,7 +2566,7 @@ class XiezitaiApplicationTests {
             assertThat(mine.path("title").asText()).isEqualTo("写字台导出测试 " + sfx);
             assertThat(mine.path("cover").asText()).isEqualTo(siteRoot + "/media/cover-export.png");
             assertThat(mine.path("tags").asText()).isEqualTo("Java,导出");
-            assertThat(mine.path("url").asText()).isEqualTo("/article/xz-export-" + sfx);
+            assertThat(mine.path("url").asText()).isEqualTo("/xz-export-" + sfx);
 
             // ③ 关键词过滤：只命中这一篇
             MvcResult s = mvc.perform(get("/api/v1/articles")
@@ -2847,6 +2857,83 @@ class XiezitaiApplicationTests {
                     } catch (Exception ignore) { /* 清理失败无伤大雅 */ }
                     fileRepo.deleteById(fe.getId());
                 });
+            }
+        }
+    }
+
+    /* ==================== 根级 slug 路由（/why-self-host、/links） ==================== */
+
+    /**
+     * 文章/页面搬到根级，必须同时满足四件事，少一件线上就出事：
+     * <ol>
+     *   <li>根级 slug 直接打开（文章与页面各一条，且页面里带 canonical）；</li>
+     *   <li>历史 {@code /article/xxx}、{@code /page/xxx} 用 <b>301</b> 永久搬走，Location 指向根级；</li>
+     *   <li><b>根级静态文件与框架端点没被兜底路由吃掉</b> —— 这是本改造最大的坑：
+     *       {@code @RequestMapping} 的优先级高于静态资源处理器，正则里少放行一个文件，
+     *       {@code /admin.html} 就会变成「找不到文章 → 回首页」，整个后台打不开；</li>
+     *   <li>sitemap 输出的是新根级地址（含中文 slug 的百分号编码）。</li>
+     * </ol>
+     */
+    @Test
+    @DisplayName("根级 slug 路由：规范地址 / 老路径 301 / 静态文件不被吞 / sitemap 同步")
+    void rootSlugRoutingKeepsStaticAndLegacyAlive() throws Exception {
+        String token = loginToken(ADMIN, ADMIN_PWD);
+        String sfx = String.valueOf(System.currentTimeMillis() % 1000000);
+        String artSlug = "root-slug-" + sfx;
+        String pageSlug = "root-page-" + sfx;
+        Long artId = null;
+        Long pageId = null;
+        try {
+            MvcResult cr = mvc.perform(post("/api/admin/articles").header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("title", "根级路由 " + sfx, "slug", artSlug,
+                                    "content", "根级正文段落", "status", "PUBLISHED"))))
+                    .andExpect(status().isOk()).andReturn();
+            artId = om.readTree(cr.getResponse().getContentAsString(StandardCharsets.UTF_8)).path("id").asLong();
+
+            MvcResult pr = mvc.perform(post("/api/admin/pages").header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("title", "根级页面 " + sfx, "slug", pageSlug,
+                                    "content", "**页面**正文", "published", "true"))))
+                    .andExpect(status().isOk()).andReturn();
+            pageId = om.readTree(pr.getResponse().getContentAsString(StandardCharsets.UTF_8)).path("id").asLong();
+
+            // ① 根级地址可用，且页面里声明了根级 canonical
+            mvc.perform(get("/" + artSlug)).andExpect(status().isOk())
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("根级正文段落")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("rel=\"canonical\"")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("/" + artSlug + "\"")));
+            mvc.perform(get("/" + pageSlug)).andExpect(status().isOk())
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("页面")));
+
+            // ② 老路径 301 到根级
+            mvc.perform(get("/article/" + artSlug))
+                    .andExpect(status().isMovedPermanently())
+                    .andExpect(header().string("Location", "/" + artSlug));
+            mvc.perform(get("/page/" + pageSlug))
+                    .andExpect(status().isMovedPermanently())
+                    .andExpect(header().string("Location", "/" + pageSlug));
+
+            // ③ 根级静态文件 / 框架端点必须原样可用（= 兜底路由正则的放行名单）
+            mvc.perform(get("/admin.html")).andExpect(status().isOk());
+            mvc.perform(get("/favicon.svg")).andExpect(status().isOk());
+            mvc.perform(get("/robots.txt")).andExpect(status().isOk())
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("Sitemap:")));
+            mvc.perform(get("/sitemap.xml")).andExpect(status().isOk())
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("/" + artSlug)))
+                    .andExpect(content().string(org.hamcrest.Matchers.not(
+                            org.hamcrest.Matchers.containsString("/article/" + artSlug))));
+            // 多段路径不该被根级兜底路由截胡
+            mvc.perform(get("/api/articles")).andExpect(status().isOk());
+
+            // ④ 不存在的根级 slug 回首页（与改造前的行为一致），不抛 404
+            mvc.perform(get("/no-such-slug-" + sfx)).andExpect(status().is3xxRedirection());
+        } finally {
+            if (artId != null) {
+                mvc.perform(delete("/api/admin/articles/" + artId).header("Authorization", "Bearer " + token));
+            }
+            if (pageId != null) {
+                mvc.perform(delete("/api/admin/pages/" + pageId).header("Authorization", "Bearer " + token));
             }
         }
     }

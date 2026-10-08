@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <title th:text="${page.title + ' - 写字台'}">写字台</title>
+    <!-- 规范地址是根级 slug；历史 /page/xxx 会 301 过来 -->
+    <link rel="canonical" th:if="${canonicalUrl != null}" th:href="${canonicalUrl}">
     <link rel="stylesheet" href="/vendor/github-markdown-css/github-markdown-light.min.css">
     <link rel="stylesheet" href="/vendor/highlight/github.min.css">
     <!-- 代码块高亮（本地内置，禁 CDN）：库 → 补充语言包 → 增强脚本，defer 保证按序执行 -->
@@ -46,7 +48,7 @@
 <div class="wrap">
     <div class="top">
         <a href="/">← 写字台</a>
-        <a th:each="p : ${navPages}" th:href="@{'/page/' + ${p.slug}}" th:text="${p.title}"
+        <a th:each="p : ${navPages}" th:href="@{'/' + ${p.slug}}" th:text="${p.title}"
            th:classappend="${p.slug == page.slug} ? 'cur'"></a>
     </div>
     <h1 th:text="${page.title}"></h1>

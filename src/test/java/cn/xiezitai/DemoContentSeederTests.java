@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -70,23 +71,30 @@ class DemoContentSeederTests {
         assertThat(articles.count()).isEqualTo(4);
 
         // 3) 公开页面能渲染出来（模板新增了 navPages，这里顺带守住）
+        //    文章与页面现在都挂在根级 slug 上（/welcome、/about、/links）
         mvc.perform(get("/")).andExpect(status().isOk())
                 .andExpect(content().string(containsString("欢迎来到写字台")))
-                .andExpect(content().string(containsString("href=\"/page/about\"")))
-                .andExpect(content().string(containsString("href=\"/page/links\"")));
+                .andExpect(content().string(containsString("href=\"/about\"")))
+                .andExpect(content().string(containsString("href=\"/links\"")));
 
-        mvc.perform(get("/article/welcome")).andExpect(status().isOk())
+        mvc.perform(get("/welcome")).andExpect(status().isOk())
                 .andExpect(content().string(containsString("这是什么")))
                 .andExpect(content().string(containsString("夜航船")))
                 .andExpect(content().string(containsString("回复 @")))
                 // 待审核的那条不该出现在前台
                 .andExpect(content().string(org.hamcrest.Matchers.not(containsString("请问支持画流程图吗"))));
 
-        mvc.perform(get("/page/about")).andExpect(status().isOk())
+        // 历史地址仍然可用：301 到根级规范地址
+        mvc.perform(get("/article/welcome"))
+                .andExpect(status().isMovedPermanently())
+                .andExpect(header().string("Location", "/welcome"));
+
+        mvc.perform(get("/about")).andExpect(status().isOk())
                 .andExpect(content().string(containsString("关于这个站点")));
 
         mvc.perform(get("/sitemap.xml")).andExpect(status().isOk())
-                .andExpect(content().string(containsString("/article/markdown-guide")))
-                .andExpect(content().string(containsString("/page/links")));
+                .andExpect(content().string(containsString("/markdown-guide")))
+                .andExpect(content().string(containsString("/links")))
+                .andExpect(content().string(org.hamcrest.Matchers.not(containsString("/article/markdown-guide"))));
     }
 }

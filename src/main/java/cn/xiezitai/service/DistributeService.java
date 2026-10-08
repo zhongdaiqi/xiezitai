@@ -13,8 +13,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -100,10 +98,9 @@ public class DistributeService {
 
     public String siteUrl() { return siteUrl; }
 
-    /** 文章在本站的公开链接（slug 可能含中文，这里百分号编码） */
+    /** 文章在本站的公开链接（根级 slug；中文/编码形态的处理统一走 {@link SlugUtil}） */
     public String articleUrl(String slug) {
-        String s = slug == null ? "" : slug;
-        return siteUrl + "/article/" + URLEncoder.encode(s, StandardCharsets.UTF_8).replace("+", "%20");
+        return SlugUtil.publicUrl(siteUrl, slug);
     }
 
     /* ================= 目标清单（含已分发状态） ================= */

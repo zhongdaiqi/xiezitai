@@ -112,10 +112,68 @@ public class PageViewController {
         return s.length() > MAX_KEYWORD ? s.substring(0, MAX_KEYWORD) : s;
     }
 
+    /**
+     * 文章与页面的**规范地址**：直接挂在根级（{@code /why-self-host}、{@code /links}）。
+     *
+     * <p>这条兜底路由有两个坑，改之前务必先看清楚：
+     * <ol>
+     *   <li><b>必须显式放过根级静态文件</b>。{@code @RequestMapping} 的优先级（order 0）高于静态资源
+     *       处理器（{@code LOWEST_PRECEDENCE - 1}），少了负向断言的话 {@code /admin.html}、
+     *       {@code /favicon.svg} 会被当成 slug 吃掉 —— 后台直接打不开。
+     *       <b>以后往 {@code static/} 根目录加文件，记得把文件名补进下面这串断言。</b></li>
+     *   <li><b>变量正则里不能写 {@code /}</b>。PathPattern 会把正则里的 {@code /} 当路径分隔符，
+     *       直接抛 {@code PatternParseException}；好在 PathPattern 本身就保证变量只吃**一个**路径段，
+     *       所以 {@code .+} 已经够用（{@code /a/b} 这种多段路径压根不会命中这条路由）。</li>
+     * </ol>
+     */
+    @GetMapping("/{slug:(?!admin\\.html$|index\\.html$|favicon\\.svg$|favicon\\.ico$|robots\\.txt$|sitemap\\.xml$|error$).+}")
+    public String rootSlug(@PathVariable String slug, Model model, jakarta.servlet.http.HttpServletRequest request) {
+        String s = slug.replaceAll("/+$", "");
+        Article a = findArticleFlexible(s).filter(ArticleService::isPublished).orElse(null);
+        if (a != null) return renderArticle(a, model, request);
+
+        PageEntity p = findPageFlexible(s).filter(PageEntity::isPublished).orElse(null);
+        if (p != null) return renderPage(p, model);
+
+        // 未命中的根级路径：与历史行为保持一致，回首页而不是抛 404（老站有很多 /xxx 的旧引用）
+        return "redirect:/";
+    }
+
+    /**
+     * 历史地址 {@code /article/{slug}} → <b>301</b> 到根级规范地址。
+     *
+     * <p>用 301（永久搬家）而不是 302：老链接、搜索引擎里已有的收录、外部转载过的引用都能平滑过渡，
+     * 权重跟着走到新地址。找不到就回首页 —— 与改造前的行为完全一致。
+     */
     @GetMapping("/article/{slug}")
-    public String article(@PathVariable String slug, Model model, jakarta.servlet.http.HttpServletRequest request) {
-        Article a = findArticleFlexible(slug).orElse(null);
-        if (a == null || !ArticleService.isPublished(a)) return "redirect:/";
+    public org.springframework.http.ResponseEntity<?> legacyArticle(@PathVariable String slug) {
+        Article a = findArticleFlexible(slug).filter(ArticleService::isPublished).orElse(null);
+        return movedPermanently(a == null ? "/" : publicPath(a.getSlug()));
+    }
+
+    /** 历史地址 {@code /page/{slug}} → 301 到根级规范地址，语义同 {@link #legacyArticle} */
+    @GetMapping("/page/{slug}")
+    public org.springframework.http.ResponseEntity<?> legacyPage(@PathVariable String slug) {
+        PageEntity p = findPageFlexible(slug).filter(PageEntity::isPublished).orElse(null);
+        return movedPermanently(p == null ? "/" : publicPath(p.getSlug()));
+    }
+
+    /**
+     * 301 + {@code Location}。
+     *
+     * <p>Location 用 {@link java.net.URI} 构造（而不是交给 RedirectView 去拼）：路径里如果已经是
+     * {@code %e4%bd%a0...} 形态的老 slug，被容器再编一层会变成 {@code %25e4...}，
+     * 直接被 Spring 的 StrictHttpFirewall 拦成 400。
+     */
+    private org.springframework.http.ResponseEntity<?> movedPermanently(String location) {
+        return org.springframework.http.ResponseEntity
+                .status(org.springframework.http.HttpStatus.MOVED_PERMANENTLY)
+                .location(java.net.URI.create(location))
+                .build();
+    }
+
+    /** 文章详情渲染（根级规范地址与其它入口共用一份逻辑） */
+    private String renderArticle(Article a, Model model, jakarta.servlet.http.HttpServletRequest request) {
         articleService.increaseView(a);
         notifyVisit(a, request);
         model.addAttribute("article", a);
@@ -129,8 +187,27 @@ public class PageViewController {
         model.addAttribute("commentCount", cn.xiezitai.dto.CommentNode.count(threads));
         // 封面同时作为社交分享图（og:image）
         model.addAttribute("ogImage", absoluteUrl(a.getCover()));
+        model.addAttribute("canonicalUrl", siteRoot() + publicPath(a.getSlug()));
         model.addAttribute("siteHost", siteHost());
         return "article";
+    }
+
+    /** 自定义页面渲染 */
+    private String renderPage(PageEntity p, Model model) {
+        model.addAttribute("page", p);
+        model.addAttribute("navPages", navPages());
+        model.addAttribute("contentHtml", md.toHtml(p.getContent()));
+        model.addAttribute("canonicalUrl", siteRoot() + publicPath(p.getSlug()));
+        return "page";
+    }
+
+    /**
+     * slug → 可安全放进 {@code Location} 头 / sitemap 的站内路径。
+     * 编码规则的实现与理由集中在 {@link cn.xiezitai.service.SlugUtil#publicPath(String)}，
+     * 分发尾注、开放 API、sitemap 三处共用同一套，避免各编各的。
+     */
+    public static String publicPath(String slug) {
+        return cn.xiezitai.service.SlugUtil.publicPath(slug);
     }
 
     /** 封面可能是外部地址（AI 生成）或站内相对地址（/media/xxx）；后者补上站点根，拼成绝对 URL */
@@ -177,16 +254,6 @@ public class PageViewController {
         String xff = request.getHeader("X-Forwarded-For");
         if (xff != null && !xff.isBlank()) return xff.split(",")[0].trim();
         return request.getRemoteAddr();
-    }
-
-    @GetMapping("/page/{slug}")
-    public String page(@PathVariable String slug, Model model) {
-        PageEntity p = findPageFlexible(slug).filter(PageEntity::isPublished).orElse(null);
-        if (p == null) return "redirect:/";
-        model.addAttribute("page", p);
-        model.addAttribute("navPages", navPages());
-        model.addAttribute("contentHtml", md.toHtml(p.getContent()));
-        return "page";
     }
 
     /**
@@ -261,11 +328,12 @@ public class PageViewController {
         StringBuilder sb = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         sb.append("<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
         sb.append("  <url><loc>").append(root).append("/</loc></url>\n");
+        // 文章/页面都挂在根级；slug 里的中文走 publicPath 编码（已是 %xx 形态的老 slug 原样保留）
         articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(0, 500)).forEach(a ->
-                sb.append("  <url><loc>").append(root).append("/article/").append(a.getSlug())
+                sb.append("  <url><loc>").append(root).append(publicPath(a.getSlug()))
                         .append("</loc><lastmod>").append(a.getUpdatedAt()).append("</lastmod></url>\n"));
         pages.findAll().stream().filter(PageEntity::isPublished).forEach(p ->
-                sb.append("  <url><loc>").append(root).append("/page/").append(p.getSlug()).append("</loc></url>\n"));
+                sb.append("  <url><loc>").append(root).append(publicPath(p.getSlug())).append("</loc></url>\n"));
         sb.append("</urlset>");
         return sb.toString();
     }

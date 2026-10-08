@@ -76,7 +76,7 @@ public class OpenApiController {
         Article saved = articles.save(a);
         articleService.publishNotify(saved, user.getUsername());
         return ResponseEntity.ok(Map.of("id", saved.getId(), "slug", saved.getSlug(),
-                "url", "/article/" + saved.getSlug()));
+                "url", cn.xiezitai.service.SlugUtil.publicPath(saved.getSlug())));
     }
 
     /* ---------- 1.5 外部读取（供其它写字台 / 外部系统同步文章） ---------- */
@@ -139,7 +139,7 @@ public class OpenApiController {
         m.put("tags", a.getTags());
         m.put("cover", coverUrl(a.getCover()));
         m.put("publishedAt", a.getPublishedAt() == null ? null : a.getPublishedAt().toString());
-        m.put("url", "/article/" + a.getSlug());
+        m.put("url", cn.xiezitai.service.SlugUtil.publicPath(a.getSlug()));
         return m;
     }
 
@@ -230,7 +230,8 @@ public class OpenApiController {
                     a.setPublishedAt(LocalDateTime.now());
                     Article saved = articles.save(a);
                     articleService.publishNotify(saved, user.getUsername());
-                    yield content(String.format("已发布: /article/%s", saved.getSlug()));
+                    yield content(String.format("已发布: %s",
+                            cn.xiezitai.service.SlugUtil.publicPath(saved.getSlug())));
                 }
                 case "list_articles" -> {
                     int limit = args.path("limit").asInt(10);
@@ -240,7 +241,8 @@ public class OpenApiController {
                             .getContent();
                     List<String> lines = new ArrayList<>();
                     for (Article a : list) {
-                        lines.add(String.format("- [%s](/article/%s) (%s)", a.getTitle(), a.getSlug(), a.getPublishedAt()));
+                        lines.add(String.format("- [%s](%s) (%s)", a.getTitle(),
+                                cn.xiezitai.service.SlugUtil.publicPath(a.getSlug()), a.getPublishedAt()));
                     }
                     yield content(String.join("\n", lines));
                 }

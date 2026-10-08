@@ -7,6 +7,9 @@
     <title th:text="${article.title + ' - 写字台'}">写字台</title>
     <meta name="description" th:content="${article.seoDescription != null ? article.seoDescription : article.summary}">
     <meta name="keywords" th:content="${article.seoKeywords}">
+    <!-- SEO：文章规范地址就是根级 slug；历史 /article/xxx 会 301 过来，这里再声明一次避免重复内容 -->
+    <link rel="canonical" th:if="${canonicalUrl != null}" th:href="${canonicalUrl}">
+    <meta property="og:url" th:if="${canonicalUrl != null}" th:content="${canonicalUrl}">
     <meta property="og:title" th:content="${article.title}">
     <meta property="og:type" content="article">
     <meta property="og:image" th:if="${ogImage != null and !ogImage.isEmpty()}" th:content="${ogImage}">
@@ -116,7 +119,7 @@
     <div class="top">
         <div class="nav-left">
             <a href="/">← 写字台</a>
-            <a th:each="p : ${navPages}" th:href="@{'/page/' + ${p.slug}}" th:text="${p.title}"></a>
+            <a th:each="p : ${navPages}" th:href="@{'/' + ${p.slug}}" th:text="${p.title}"></a>
         </div>
         <div class="userbox" id="userBox"></div>
     </div>

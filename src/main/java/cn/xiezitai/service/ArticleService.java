@@ -45,8 +45,8 @@ public class ArticleService {
     }
 
     public void publishNotify(Article article, String actor) {
-        notify.notifyEvent("article", "**写字台文章发布**\n> [" + article.getTitle() + "](/article/"
-                + article.getSlug() + ")\n> 作者: " + actor);
+        notify.notifyEvent("article", "**写字台文章发布**\n> [" + article.getTitle() + "]("
+                + SlugUtil.publicPath(article.getSlug()) + ")\n> 作者: " + actor);
     }
 
     public void increaseView(Article article) {

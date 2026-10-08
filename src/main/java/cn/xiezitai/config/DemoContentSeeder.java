@@ -307,7 +307,7 @@ public class DemoContentSeeder {
             - 排版、样式、功能自己说了算
             - 代价是：服务器要自己维护，备份要自己记得做
 
-            最后一条才是真正的门槛。所以我把「备份」写进了[部署与维护清单](/article/deploy-checklist)，
+            最后一条才是真正的门槛。所以我把「备份」写进了[部署与维护清单](/deploy-checklist)，
             每次上线前都要过一遍。
 
             ## 成本

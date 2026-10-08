@@ -73,7 +73,7 @@
         <div class="sub">写字台 <span th:text="${siteHost}">xiezitai.cn</span> · 把想法摊开来写</div>
         <nav>
             <a href="/">文章</a>
-            <a th:each="p : ${navPages}" th:href="@{'/page/' + ${p.slug}}" th:text="${p.title}"></a>
+            <a th:each="p : ${navPages}" th:href="@{'/' + ${p.slug}}" th:text="${p.title}"></a>
             <a href="/admin.html">后台</a>
         </nav>
         <!-- 站内搜索：纯 GET 表单，服务端渲染出结果 —— 链接可分享、可被爬虫抓取，不依赖 JS -->
@@ -93,14 +93,14 @@
        th:text="${searching ? '没有找到匹配「' + q + '」的文章，换个关键词试试。' : '还没有发布的文章。'}">还没有发布的文章。</p>
 
     <article th:each="a : ${articles}">
-        <h2><a th:href="@{'/article/' + ${a.slug}}" th:text="${a.title}"></a></h2>
+        <h2><a th:href="@{'/' + ${a.slug}}" th:text="${a.title}"></a></h2>
         <div class="meta">
             <span th:text="${a.author}"></span> ·
             <span th:text="${#temporals.format(a.publishedAt, 'yyyy-MM-dd')}"></span> ·
             <span th:text="${a.viewCount} + ' 次阅读'"></span>
         </div>
         <div class="prose" th:utext="${htmls[a.id]}"></div>
-        <a class="more" th:href="@{'/article/' + ${a.slug}}">继续阅读 →</a>
+        <a class="more" th:href="@{'/' + ${a.slug}}">继续阅读 →</a>
     </article>
 
     <nav class="pager" th:if="${totalPages > 1}" aria-label="分页导航">

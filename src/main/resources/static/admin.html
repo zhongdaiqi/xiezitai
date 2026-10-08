@@ -1493,7 +1493,7 @@ function renderArticleRows(list) {
             .map(t => '<span class="mini-tag">' + escapeHtml(t) + '</span>').join('');
         const tr = document.createElement('tr');
         // 标题下方留一个空的徽标位（#dist-badge-<id>），渲染完由 loadDistBadges 异步填「已分发 · 站点名」
-        tr.innerHTML = `<td><a href="/article/${slugHref(a.slug)}" target="_blank">${escapeHtml(a.title)}</a>
+        tr.innerHTML = `<td><a href="/${slugHref(a.slug)}" target="_blank">${escapeHtml(a.title)}</a>
                 <div class="dist-badge" id="dist-badge-${a.id}"></div></td>
             <td>${tagHtml || '<span class="muted">—</span>'}</td>
             <td>${BADGE[a.status] || escapeHtml(a.status)}</td><td class="t-time">${fmtTime(a.updatedAt)}</td>
@@ -1781,7 +1781,7 @@ function renderPageRows(list) {
     list.forEach(p => {
         pagesCache[p.id] = p;   // 正文含引号时不能再塞进 onclick 属性（会逃逸 → 存储型 XSS）
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td><a href="/page/${slugHref(p.slug)}" target="_blank">${escapeHtml(p.title)}</a></td>
+        tr.innerHTML = `<td><a href="/${slugHref(p.slug)}" target="_blank">${escapeHtml(p.title)}</a></td>
             <td>${escapeHtml(p.slug || '')}</td>
             <td>${p.published ? '<span class="badge b-pub">已发布</span>' : '<span class="badge b-draft">未发布</span>'}</td>
             <td class="t-time">${fmtTime(p.updatedAt)}</td>

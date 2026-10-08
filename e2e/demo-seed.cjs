@@ -32,13 +32,21 @@ const shot = n => 'e2e/out/' + n;
   check('首页文章条数 = 4', articleCount === 4, 'count=' + articleCount);
   check('首页摘要里有任务清单复选框', (await page.$$('article input[type=checkbox]')).length > 0);
 
+  // 根级 slug 是兜底路由（/{slug}），绝不能被它吃掉根级静态文件 —— 否则整个后台打不开
+  const adminSt = await page.request.get(BASE + '/admin.html');
+  check('根级静态文件 /admin.html 未被 slug 路由吞掉', adminSt.status() === 200, 'status=' + adminSt.status());
+  const iconSt = await page.request.get(BASE + '/favicon.svg');
+  check('根级静态文件 /favicon.svg 未被 slug 路由吞掉', iconSt.status() === 200, 'status=' + iconSt.status());
+
   const navHrefs = await page.$$eval('nav a', as => as.map(a => a.textContent.trim() + '|' + a.getAttribute('href')));
-  check('导航含「关于」→ /page/about', navHrefs.includes('关于|/page/about'), navHrefs.join(' '));
-  check('导航含「友链」→ /page/links', navHrefs.includes('友链|/page/links'));
+  check('导航含「关于」→ /about', navHrefs.includes('关于|/about'), navHrefs.join(' '));
+  check('导航含「友链」→ /links', navHrefs.includes('友链|/links'));
   await page.screenshot({ path: shot('demo-home.png'), fullPage: true });
 
-  /* ---------------- 文章页 ---------------- */
+  /* ---------------- 文章页 ----------------
+     故意先走历史地址 /article/welcome：顺带验证 301 到根级规范地址（真浏览器才测得出重定向链路） */
   await page.goto(BASE + '/article/welcome', { waitUntil: 'domcontentloaded' });
+  check('历史 /article/welcome 已 301 到 /welcome', page.url() === BASE + '/welcome', page.url());
   const artText = await page.innerText('body');
   check('文章页含二级标题「这是什么」', artText.includes('这是什么'));
   check('文章页表格已渲染', (await page.$$('.markdown-body table')).length > 0);
@@ -55,7 +63,7 @@ const shot = n => 'e2e/out/' + n;
   await page.screenshot({ path: shot('demo-article.png'), fullPage: true });
 
   /* ---------------- 自定义页面 ---------------- */
-  await page.goto(BASE + '/page/about', { waitUntil: 'domcontentloaded' });
+  await page.goto(BASE + '/about', { waitUntil: 'domcontentloaded' });
   const aboutText = await page.innerText('body');
   check('关于页渲染正常', aboutText.includes('关于这个站点'));
   const aboutNav = await page.$$eval('.top a', as => as.map(a => a.textContent.trim()));

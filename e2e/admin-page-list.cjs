@@ -117,9 +117,11 @@ let uiMadeId = null;                         // UI 新建并删除的那条（�
     const seedTitles = await rowTitles();
     log('SEED_ROWS=' + JSON.stringify(seedTitles));
     check('② 列表渲染出种子页面（关于 / 友链，>= 2 行）', seedTitles.length >= 2, seedTitles.join(' , '));
-    check('② 标题是 /page/<slug> 链接', await page.evaluate(() => {
+    check('② 标题是根级 /<slug> 链接', await page.evaluate(() => {
       const a = document.querySelector('#pglist tbody td:first-child a');
-      return !!a && /\/page\//.test(a.getAttribute('href'));
+      if (!a) return false;
+      const h = a.getAttribute('href') || '';
+      return /^\/[^/]+\/?$/.test(h) && !/^\/(page|article)\//.test(h);
     }));
     check('② 状态列有徽章（已发布 / 未发布）', await page.evaluate(() =>
       document.querySelectorAll('#pglist tbody .badge').length > 0));

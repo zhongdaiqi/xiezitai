@@ -253,7 +253,8 @@ function startMockCn() {
       && !wpCreate.body.content.includes('](/media/'),
       wpCreate ? wpCreate.body.content.slice(0, 180) : '(no create call)');
     check('② WP 正文尾部带转载链接（含原文 slug）',
-      !!wpCreate && wpCreate.body.content.includes('本文由') && wpCreate.body.content.includes('/article/' + SLUG),
+      !!wpCreate && wpCreate.body.content.includes('本文由')
+      && wpCreate.body.content.includes(siteUrl + '/' + SLUG),
       wpCreate ? wpCreate.body.content.slice(-140) : '');
     check('② WP 标签已同步为 term id',
       mockWp.calls.some(c => c.kind === 'tag' && c.body.name === 'Java')
