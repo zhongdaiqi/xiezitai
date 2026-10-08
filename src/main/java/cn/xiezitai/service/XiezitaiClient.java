@@ -26,6 +26,8 @@ import java.util.Map;
  * <ul>
  *   <li>{@code GET /api/v1/articles}                文章列表（分页 / 关键词，返回 JSON）</li>
  *   <li>{@code GET /api/v1/articles/{id}}           单篇文章（正文是 Markdown 原文）</li>
+ *   <li>{@code POST /api/v1/publish}                发布一篇新文章（分发用）</li>
+ *   <li>{@code PUT /api/v1/articles/{id}}           更新自己发过的文章（分发「更新」用）</li>
  *   <li>{@code GET /media/xxx}                      媒体文件下载</li>
  * </ul>
  * 鉴权统一用 {@code X-API-Token} 请求头（与发布接口同一个 Token）。
@@ -49,6 +51,9 @@ public class XiezitaiClient {
 
     /** 文章列表的一页结果 */
     public record ArticlesPage(List<Map<String, Object>> items, long total, int totalPages) {}
+
+    /** 发布 / 更新成功后对方回来的文章标识；{@code url} 已补成绝对地址 */
+    public record RemoteArticle(long id, String slug, String url) {}
 
     /**
      * 从用户填写的「接口地址」推导开放 API 根（约定以 {@code /api/v1} 结尾）。
@@ -151,6 +156,60 @@ public class XiezitaiClient {
     /** 取单篇文章（正文已经是 Markdown 原文，媒体链接已被对方绝对化） */
     public JsonNode fetchArticle(XzSite site, long id) throws IOException, InterruptedException {
         return getJson(site, "/articles/" + id);
+    }
+
+    /* ---------- 分发：往对方站点写文章 ---------- */
+
+    /**
+     * 往对方写字台**发一篇新文章**（{@code POST /api/v1/publish}）。
+     *
+     * <p>payload 就是发布接口的字段：{@code title} / {@code content} / {@code summary} / {@code slug} 等。
+     * 正文必须是 Markdown —— 对方入库后由前台按 Markdown 渲染。
+     *
+     * <p>不传 slug 时由对方按标题生成（同 slug 撞车对方会自动加序号）。
+     */
+    public RemoteArticle publishArticle(XzSite site, Map<String, String> payload)
+            throws IOException, InterruptedException {
+        return write(site, "POST", "/publish", payload);
+    }
+
+    /**
+     * 更新对方站点上的一篇文章（{@code PUT /api/v1/articles/{id}}）。
+     *
+     * <p>对方只允许更新「该 Token 所属账号自己发的」文章，别人的会回 403 —— 所以这里
+     * 必须用「发出去时记下的远端 id」，不能瞎猜。
+     */
+    public RemoteArticle updateArticle(XzSite site, long id, Map<String, String> payload)
+            throws IOException, InterruptedException {
+        return write(site, "PUT", "/articles/" + id, payload);
+    }
+
+    /** POST/PUT 一个开放 API 端点（JSON 进、JSON 出），把返回的 url 补成绝对地址 */
+    private RemoteArticle write(XzSite site, String method, String pathAndQuery,
+                                Map<String, String> payload) throws IOException, InterruptedException {
+        String root = apiRoot(site.getApiUrl());
+        if (root.isEmpty()) throw new IOException("接口地址不合法：" + site.getApiUrl());
+        String token = site.getApiToken();
+        if (token == null || token.isBlank()) throw new IOException("该账号未配置对接密钥，无法分发");
+        String body = mapper.writeValueAsString(payload);
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(root + pathAndQuery))
+                .timeout(Duration.ofSeconds(60))
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json; charset=utf-8")
+                .header("User-Agent", "xiezitai-xz-dist")
+                .header("X-API-Token", token.trim())
+                .method(method, HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                .build();
+        HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        if (res.statusCode() < 200 || res.statusCode() >= 300) {
+            throw new IOException("对方接口返回 HTTP " + res.statusCode() + "：" + snippet(res.body()));
+        }
+        JsonNode n = mapper.readTree(res.body());
+        String rel = n.path("url").asText("");
+        String origin = origin(site.getApiUrl());
+        String url = rel.startsWith("/") ? origin + rel : rel;
+        return new RemoteArticle(n.path("id").asLong(0), n.path("slug").asText(""), url);
     }
 
     /**

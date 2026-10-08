@@ -66,7 +66,7 @@ public class OpenApiController {
         a.setTitle(title);
         a.setContent(content);
         a.setSlug(body.get("slug") == null || body.get("slug").isBlank()
-                ? articleService.uniqueSlug(title) : body.get("slug"));
+                ? articleService.uniqueSlug(title) : uniqueSlugFor(body.get("slug")));
         a.setSummary(body.get("summary"));
         a.setCover(body.get("cover"));
         a.setSeoKeywords(body.get("keywords"));
@@ -75,6 +75,55 @@ public class OpenApiController {
         a.setPublishedAt(LocalDateTime.now());
         Article saved = articles.save(a);
         articleService.publishNotify(saved, user.getUsername());
+        return ResponseEntity.ok(Map.of("id", saved.getId(), "slug", saved.getSlug(),
+                "url", cn.xiezitai.service.SlugUtil.publicPath(saved.getSlug())));
+    }
+
+    /**
+     * 外部显式指定的 slug 撞车时自动加序号（{@code base-2}、{@code base-3}…）。
+     *
+     * <p>为什么必须兜这一手：同一条原文往**同一台**写字台发两次（分发的「分发一个新文章」）
+     * 必然带同一个 slug，而 {@code articles.slug} 上有唯一索引 —— 不兜底就是
+     * {@code DataIntegrityViolationException} → 500，调用方还不知道为什么失败。
+     */
+    private String uniqueSlugFor(String desired) {
+        String base = desired.trim();
+        String slug = base;
+        int i = 1;
+        while (articles.existsBySlug(slug)) slug = base + "-" + (++i);
+        return slug;
+    }
+
+    /**
+     * 更新**自己发布的**一篇文章（文章分发渠道的「更新之前分发的文章」用它）。
+     *
+     * <p>与 publish 的区别：不新建、不改 slug、不发通知；只认「Token 所属账号 == 文章作者」，
+     * 别人的文章一律 403 —— 否则任何一个持有 Token 的账号都能篡改全站文章。
+     */
+    @PutMapping("/articles/{id}")
+    public ResponseEntity<?> updateArticle(
+            @RequestHeader(value = "X-API-Token", required = false) String token,
+            @PathVariable long id,
+            @RequestBody Map<String, String> body) {
+        User user = authByToken(token);
+        if (user == null) return ResponseEntity.status(401).body(Map.of("error", "无效的 API Token"));
+        Article a = articles.findById(id).orElse(null);
+        if (a == null) return ResponseEntity.status(404).body(Map.of("error", "文章不存在"));
+        if (a.getAuthor() == null || !a.getAuthor().equals(user.getUsername())) {
+            return ResponseEntity.status(403).body(Map.of("error", "只能更新自己发布的文章"));
+        }
+        String title = body.getOrDefault("title", "").trim();
+        String content = body.getOrDefault("content", "").trim();
+        if (title.isEmpty() || content.isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "title 与 content 必填"));
+        }
+        a.setTitle(title);
+        a.setContent(content);
+        // 没传的字段保持原值（分发时摘要为空就不该把对方已有的摘要抹掉）
+        if (body.get("summary") != null) a.setSummary(body.get("summary"));
+        if (body.get("cover") != null) a.setCover(body.get("cover"));
+        if (body.get("keywords") != null) a.setSeoKeywords(body.get("keywords"));
+        Article saved = articles.save(a);
         return ResponseEntity.ok(Map.of("id", saved.getId(), "slug", saved.getSlug(),
                 "url", cn.xiezitai.service.SlugUtil.publicPath(saved.getSlug())));
     }

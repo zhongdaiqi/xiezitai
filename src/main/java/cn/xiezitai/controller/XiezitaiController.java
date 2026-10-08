@@ -1,6 +1,8 @@
 package cn.xiezitai.controller;
 
+import cn.xiezitai.entity.DistRecord;
 import cn.xiezitai.entity.XzSite;
+import cn.xiezitai.repository.DistRecordRepository;
 import cn.xiezitai.repository.XzSiteRepository;
 import cn.xiezitai.service.XiezitaiClient;
 import cn.xiezitai.service.XiezitaiImportService;
@@ -17,6 +19,13 @@ import java.util.Map;
 /**
  * 写字台账号关联与导入接口（/api/admin/xz/**，登录后可用）。
  *
+ * <p>这里关联的账号有两个用途：
+ * <ol>
+ *   <li><b>导入源</b> —— 浏览对方文章并按单篇 / 整站导入本站（{@code /sites/{id}/posts|import|import-all}）；</li>
+ *   <li><b>分发目标</b> —— 出现在「文章分发」弹窗的目标清单里（见 {@code /api/admin/dist/targets}），
+ *       往对方写文章走 {@code POST /api/v1/publish} 与 {@code PUT /api/v1/articles/{id}}。</li>
+ * </ol>
+ *
  * <p>对接密钥安全：{@link XzSite#getApiToken} 是 WRITE_ONLY，任何响应都不会带出明文；
  * 更新时密钥传空串表示「保持原值」。密钥只落库，绝不写进代码 / 配置 / git 仓库。
  */
@@ -29,11 +38,14 @@ public class XiezitaiController {
     private final XzSiteRepository sites;
     private final XiezitaiClient client;
     private final XiezitaiImportService imports;
+    private final DistRecordRepository distRecords;
 
-    public XiezitaiController(XzSiteRepository sites, XiezitaiClient client, XiezitaiImportService imports) {
+    public XiezitaiController(XzSiteRepository sites, XiezitaiClient client,
+                              XiezitaiImportService imports, DistRecordRepository distRecords) {
         this.sites = sites;
         this.client = client;
         this.imports = imports;
+        this.distRecords = distRecords;
     }
 
     /* ================= 账号管理 ================= */
@@ -100,6 +112,8 @@ public class XiezitaiController {
     @DeleteMapping("/sites/{id}")
     public ResponseEntity<?> delete(@PathVariable Long id) {
         if (!sites.existsById(id)) return ResponseEntity.notFound().build();
+        // 账号删了，指向它的分发记录也留不住 —— 留着只会变成列表里点不开的悬空徽标
+        distRecords.deleteByChannelAndTargetId(DistRecord.CHANNEL_XZ, id);
         sites.deleteById(id);
         return ResponseEntity.ok(Map.of("message", "已删除"));
     }

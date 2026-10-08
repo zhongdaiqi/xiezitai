@@ -17,6 +17,8 @@ import java.util.Set;
 /**
  * 文章分发接口（{@code /api/admin/dist/**}，登录后可用）。
  *
+ * <p>目标渠道三类：写字台账号（{@code xz}）、WordPress 站点（{@code wp}）、博客园账号（{@code cnblog}）。
+ *
  * <ul>
  *   <li>{@code GET /targets?articleId=} —— 可选目标清单 + 该文章在每个目标上的分发状态；</li>
  *   <li>{@code POST /run} —— 执行分发（可一次发多个目标，逐个回结果，单个失败不影响其余）；</li>

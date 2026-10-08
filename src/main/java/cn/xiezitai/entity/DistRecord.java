@@ -12,6 +12,9 @@ import java.time.LocalDateTime;
  * 于是「已分发过」只需要看这一行在不在；「更新之前分发的文章」用本行的 {@link #remotePostId}，
  * 「分发一个新文章」则用新拿到的远端 id 覆盖本行。
  *
+ * <p>三条渠道共用这一张表：{@link #CHANNEL_WP} / {@link #CHANNEL_CNBLOG} / {@link #CHANNEL_XZ}，
+ * 靠 {@code channel} 区分 {@link #targetId} 指向 wp_sites / cn_sites / xz_sites 哪张表。
+ *
  * <p>{@link #targetName} / {@link #targetUrl} 是**快照**：站点被删或改名后，
  * 历史记录仍然能显示成人看得懂的样子，不至于变成一条光秃秃的 id。
  */
@@ -27,6 +30,8 @@ public class DistRecord {
     public static final String CHANNEL_WP = "wp";
     /** 目标类型：博客园账号 */
     public static final String CHANNEL_CNBLOG = "cnblog";
+    /** 目标类型：另一台写字台账号（走它的开放 API {@code /api/v1/publish}） */
+    public static final String CHANNEL_XZ = "xz";
 
     /** 原文分发：正文原样发出 */
     public static final String MODE_ORIGINAL = "original";
@@ -46,11 +51,11 @@ public class DistRecord {
     @Column(nullable = false)
     private Long articleId;
 
-    /** 目标类型：wp / cnblog */
+    /** 目标类型：wp / cnblog / xz */
     @Column(nullable = false, length = 20)
     private String channel;
 
-    /** 目标 id：wp_sites.id 或 cn_sites.id */
+    /** 目标 id：wp_sites.id / cn_sites.id / xz_sites.id（按 channel 区分是哪张表） */
     @Column(nullable = false)
     private Long targetId;
 
@@ -58,11 +63,11 @@ public class DistRecord {
     @Column(length = 200)
     private String targetName;
 
-    /** 目标网址快照（站点根地址 / MetaWeblog 接口地址） */
+    /** 目标网址快照（站点根地址 / MetaWeblog 接口地址 / 写字台开放 API 地址） */
     @Column(length = 500)
     private String targetUrl;
 
-    /** 远端文章 id（WP post id / 博客园 postid）；「更新」时拿它调对方接口 */
+    /** 远端文章 id（WP post id / 博客园 postid / 写字台文章 id）；「更新」时拿它调对方接口 */
     private Long remotePostId;
 
     /** 远端文章链接（分发成功后回填，前端可直接点开核对） */

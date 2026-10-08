@@ -82,6 +82,8 @@ class XiezitaiApplicationTests {
     @Autowired TotpService totp;
     @Autowired LoginAttemptService attempts;
     @Autowired AiService ai;
+    @Autowired cn.xiezitai.repository.XzSiteRepository xzSiteRepo;
+    @Autowired cn.xiezitai.repository.DistRecordRepository distRecordRepo;
 
     /** 站点根地址取自配置 xiezitai.site-url：SEO 端点（robots/sitemap/og:image）与页脚都应由它驱动 */
     @Value("${xiezitai.site-url:https://xiezitai.cn}")
@@ -2936,5 +2938,245 @@ class XiezitaiApplicationTests {
                 mvc.perform(delete("/api/admin/pages/" + pageId).header("Authorization", "Bearer " + token));
             }
         }
+    }
+
+    /* ==================== 开放 API：更新自己发的文章 ====================
+       文章分发渠道的「更新之前分发的文章」就靠这个接口 —— 远端拿本地记下的文章 id 回调。 */
+
+    @Test
+    @DisplayName("开放 API：更新文章（仅限自己发的；显式 slug 撞车自动去重）")
+    void openApiUpdateArticle() throws Exception {
+        String token = loginToken(ADMIN, ADMIN_PWD);
+        String apiTok = apiToken(token);
+        String sfx = String.valueOf(System.nanoTime());
+        String dupSlug = "xz-dup-" + sfx;
+        Long id1 = null, id2 = null, foreignId = null;
+        try {
+            // ① 同 slug 连发两篇：第二条自动变 dupSlug-2（过去撞 articles.slug 唯一索引直接 500）
+            id1 = publishAndGetId(apiTok, "撞车一 " + sfx, dupSlug);
+            id2 = publishAndGetId(apiTok, "撞车二 " + sfx, dupSlug);
+            assertThat(articles.findById(id1).orElseThrow().getSlug()).isEqualTo(dupSlug);
+            assertThat(articles.findById(id2).orElseThrow().getSlug()).isEqualTo(dupSlug + "-2");
+
+            // ② 无 token → 401；缺 title/content → 400
+            mvc.perform(put("/api/v1/articles/" + id1).contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("title", "改", "content", "正文"))))
+                    .andExpect(status().isUnauthorized());
+            mvc.perform(put("/api/v1/articles/" + id1).header("X-API-Token", apiTok)
+                            .contentType(MediaType.APPLICATION_JSON).content(json(Map.of("title", " "))))
+                    .andExpect(status().isBadRequest());
+
+            // ③ 更新成功：正文被替换、slug 不动、url 仍是根级
+            mvc.perform(put("/api/v1/articles/" + id1).header("X-API-Token", apiTok)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("title", "改过的标题 " + sfx, "content", "改过的正文"))))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.slug").value(dupSlug))
+                    .andExpect(jsonPath("$.url").value("/" + dupSlug));
+            cn.xiezitai.entity.Article a1 = articles.findById(id1).orElseThrow();
+            assertThat(a1.getTitle()).isEqualTo("改过的标题 " + sfx);
+            assertThat(a1.getContent()).isEqualTo("改过的正文");
+            assertThat(a1.getAuthor()).isEqualTo(ADMIN);
+            mvc.perform(get("/" + dupSlug)).andExpect(status().isOk());
+
+            // ④ 别人的文章 → 403（不能拿着自己的 Token 改全站文章）；不存在 → 404
+            cn.xiezitai.entity.Article foreign = new cn.xiezitai.entity.Article();
+            foreign.setTitle("别人的文章 " + sfx);
+            foreign.setSlug("xz-foreign-" + sfx);
+            foreign.setContent("正文");
+            foreign.setAuthor("someone-else");
+            foreign.setStatus("PUBLISHED");
+            foreign.setPublishedAt(java.time.LocalDateTime.now());
+            foreignId = articles.save(foreign).getId();
+            mvc.perform(put("/api/v1/articles/" + foreignId).header("X-API-Token", apiTok)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("title", "改", "content", "正文"))))
+                    .andExpect(status().isForbidden());
+            mvc.perform(put("/api/v1/articles/99999999").header("X-API-Token", apiTok)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("title", "改", "content", "正文"))))
+                    .andExpect(status().isNotFound());
+        } finally {
+            for (Long id : new Long[]{id1, id2, foreignId}) {
+                if (id != null) articles.deleteById(id);
+            }
+        }
+    }
+
+    /** 用开放 API 发一篇（可指定 slug），返回新文章 id */
+    private Long publishAndGetId(String apiTok, String title, String slug) throws Exception {
+        MvcResult r = mvc.perform(post("/api/v1/publish").header("X-API-Token", apiTok)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("title", title, "slug", slug, "content", "正文 " + title))))
+                .andExpect(status().isOk()).andReturn();
+        return om.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8)).path("id").asLong();
+    }
+
+    /* ==================== 分发到写字台 ==================== */
+
+    @Test
+    @DisplayName("分发到写字台：目标清单 / Markdown 归一 / 转载尾注 / 更新复用远端 id / 徽标 / 删账号清记录")
+    void distributeToXzSite() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        int port = server.getAddress().getPort();
+        String base = "http://127.0.0.1:" + port;
+        String apiUrl = base + "/api/v1/publish";          // 用户填的是「发布接口地址」
+        final String xzToken = "xz-dist-token-0123456789abcdef";
+        final String sfx = String.valueOf(System.nanoTime());
+        final String srcSlug = "dist-xz-src-" + sfx;
+        final java.util.List<Map<String, Object>> calls =
+                java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        final long[] nextId = {700};
+
+        server.createContext("/api/v1", ex -> {
+            String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String path = ex.getRequestURI().getPath();
+            String method = ex.getRequestMethod();
+            if (!xzToken.equals(ex.getRequestHeaders().getFirst("X-API-Token"))) {
+                respond(ex, 401, "application/json",
+                        "{\"error\":\"无效的 API Token\"}".getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            if ("GET".equals(method) && path.equals("/api/v1/articles")) {   // 关联账号时的连通性校验
+                respond(ex, 200, "application/json",
+                        ("{\"user\":\"" + ADMIN + "\",\"total\":0,\"totalPages\":1,\"items\":[]}")
+                                .getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            if ("POST".equals(method) && path.equals("/api/v1/publish")) {
+                Map<String, Object> c = new java.util.LinkedHashMap<>();
+                c.put("kind", "publish");
+                c.put("body", body);
+                calls.add(c);
+                long id = ++nextId[0];
+                respond(ex, 200, "application/json",
+                        ("{\"id\":" + id + ",\"slug\":\"dist-xz-" + id + "\",\"url\":\"/dist-xz-" + id + "\"}")
+                                .getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            if ("PUT".equals(method) && path.startsWith("/api/v1/articles/")) {
+                long id = Long.parseLong(path.substring(path.lastIndexOf('/') + 1));
+                Map<String, Object> c = new java.util.LinkedHashMap<>();
+                c.put("kind", "update");
+                c.put("id", id);
+                c.put("body", body);
+                calls.add(c);
+                respond(ex, 200, "application/json",
+                        ("{\"id\":" + id + ",\"slug\":\"dist-xz-" + id + "\",\"url\":\"/dist-xz-" + id + "\"}")
+                                .getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            respond(ex, 404, "application/json", "{}".getBytes(StandardCharsets.UTF_8));
+        });
+        server.start();
+
+        String token = loginToken(ADMIN, ADMIN_PWD);
+        Long siteId = null, artId = null;
+        try {
+            // ① 关联写字台账号
+            MvcResult cr = mvc.perform(post("/api/admin/xz/sites")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("url", apiUrl, "username", ADMIN, "token", xzToken)))
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andReturn();
+            siteId = om.readTree(cr.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path("site").path("id").asLong();
+
+            // ② 建一篇带站内图片的已发布文章
+            MvcResult ar = mvc.perform(post("/api/admin/articles")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("title", "分发到写字台 " + sfx, "slug", srcSlug,
+                                    "status", "PUBLISHED", "summary", "摘要", "tags", "Java",
+                                    "content", "正文首段。\n\n![图](/media/dist-xz.png)\n")))
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andReturn();
+            artId = om.readTree(ar.getResponse().getContentAsString(StandardCharsets.UTF_8)).path("id").asLong();
+
+            // ③ 目标清单里出现这个写字台账号，凭据齐备且「未分发过」
+            MvcResult tr = mvc.perform(get("/api/admin/dist/targets?articleId=" + artId)
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode mine = null;
+            for (JsonNode n : om.readTree(tr.getResponse().getContentAsString(StandardCharsets.UTF_8)).path("targets")) {
+                if ("xz".equals(n.path("channel").asText()) && n.path("targetId").asLong() == siteId) mine = n;
+            }
+            assertThat(mine).isNotNull();
+            assertThat(mine.path("ready").asBoolean()).isTrue();
+            assertThat(mine.path("readyHint").asText()).isEmpty();
+            assertThat(mine.path("url").asText()).isEqualTo(apiUrl);
+            assertThat(mine.path("dist").isNull()).isTrue();
+
+            // ④ 转载 + 「转成 HTML」：写字台仍按 Markdown 发（附 warning），尾部带转载链接
+            JsonNode run1 = distRun(token, artId, "repost", "html", siteId, "create");
+            assertThat(run1.path("ok").asInt()).isEqualTo(1);
+            JsonNode res1 = run1.path("results").get(0);
+            assertThat(res1.path("channel").asText()).isEqualTo("xz");
+            assertThat(res1.path("remotePostId").asLong()).isEqualTo(701L);
+            assertThat(res1.path("remoteUrl").asText()).isEqualTo(base + "/dist-xz-701");
+            assertThat(res1.path("warnings").get(0).asText()).contains("Markdown");
+
+            String pubBody = (String) calls.stream()
+                    .filter(c -> "publish".equals(c.get("kind"))).findFirst().orElseThrow().get("body");
+            assertThat(pubBody).contains("正文首段。");                        // 发的是 Markdown 原文
+            assertThat(pubBody).doesNotContain("<p>");                        // 没有被渲染成 HTML
+            assertThat(pubBody).contains(siteRoot + "/media/dist-xz.png");     // 站内媒体已绝对化
+            assertThat(pubBody).doesNotContain("](/media/");
+            assertThat(pubBody).contains(siteRoot + "/" + srcSlug);            // 转载尾注指向本站原文
+            assertThat(pubBody).contains("本文由");
+            assertThat(pubBody).doesNotContain("\"slug\"");                    // 不传 slug，交给对方生成
+
+            // ⑤ 再分发选「更新」→ 走对方 PUT，远端 id 不变，正文不再带转载尾注
+            calls.clear();
+            JsonNode run2 = distRun(token, artId, "original", "markdown", siteId, "update");
+            assertThat(run2.path("ok").asInt()).isEqualTo(1);
+            assertThat(run2.path("results").get(0).path("updated").asBoolean()).isTrue();
+            assertThat(run2.path("results").get(0).path("remotePostId").asLong()).isEqualTo(701L);
+            assertThat(calls.stream().noneMatch(c -> "publish".equals(c.get("kind")))).isTrue();
+            Map<String, Object> updCall = calls.stream()
+                    .filter(c -> "update".equals(c.get("kind"))).findFirst().orElseThrow();
+            assertThat(updCall.get("id")).isEqualTo(701L);
+            assertThat((String) updCall.get("body")).doesNotContain("本文由");
+
+            // ⑥ 选「分发一个新文章」→ 又走对方 publish，拿到新的远端 id，updated=false
+            JsonNode run3 = distRun(token, artId, "original", "markdown", siteId, "create");
+            assertThat(run3.path("results").get(0).path("remotePostId").asLong()).isEqualTo(702L);
+            assertThat(run3.path("results").get(0).path("updated").asBoolean()).isFalse();
+
+            // ⑦ 文章列表徽标：显示分发到的账号名
+            MvcResult mr = mvc.perform(get("/api/admin/dist/map?ids=" + artId)
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode badges = om.readTree(mr.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path(String.valueOf(artId));
+            assertThat(badges.isArray()).isTrue();
+            assertThat(badges.get(0).asText()).isEqualTo(ADMIN + "@127.0.0.1");
+
+            // ⑧ 删账号 → 指向它的分发记录一并清掉（不留悬空徽标）
+            mvc.perform(delete("/api/admin/xz/sites/" + siteId).header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk());
+            siteId = null;
+            assertThat(distRecordRepo.findByArticleIdOrderByIdAsc(artId)).isEmpty();
+        } finally {
+            if (artId != null) {
+                mvc.perform(delete("/api/admin/articles/" + artId).header("Authorization", "Bearer " + token));
+            }
+            if (siteId != null) {
+                mvc.perform(delete("/api/admin/xz/sites/" + siteId).header("Authorization", "Bearer " + token));
+            }
+            server.stop(0);
+        }
+    }
+
+    /** 跑一次分发，返回响应的 JSON */
+    private JsonNode distRun(String token, Long articleId, String mode, String format,
+                             Long targetId, String action) throws Exception {
+        MvcResult r = mvc.perform(post("/api/admin/dist/run")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("articleId", articleId, "mode", mode, "format", format,
+                                "targets", java.util.List.of(Map.of("channel", "xz",
+                                        "targetId", targetId, "action", action)))))
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk()).andReturn();
+        return om.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8));
     }
 }

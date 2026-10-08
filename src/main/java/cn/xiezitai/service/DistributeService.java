@@ -4,10 +4,12 @@ import cn.xiezitai.entity.Article;
 import cn.xiezitai.entity.CnBlogSite;
 import cn.xiezitai.entity.DistRecord;
 import cn.xiezitai.entity.WpSite;
+import cn.xiezitai.entity.XzSite;
 import cn.xiezitai.repository.ArticleRepository;
 import cn.xiezitai.repository.CnBlogSiteRepository;
 import cn.xiezitai.repository.DistRecordRepository;
 import cn.xiezitai.repository.WpSiteRepository;
+import cn.xiezitai.repository.XzSiteRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -21,11 +23,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 文章分发：把本站的一篇文章推到关联的 WordPress 站点 / 博客园账号。
+ * 文章分发：把本站的一篇文章推到关联的**写字台账号 / WordPress 站点 / 博客园账号**。
  *
  * <p>三条约定（对应需求）：
  * <ol>
- *   <li><b>可多选目标</b>：一次请求可以同时发往多个 WP 站点与多个博客园账号；</li>
+ *   <li><b>可多选目标</b>：一次请求可以同时发往多个写字台、WP 站点与博客园账号；</li>
  *   <li><b>记住发过谁</b>：每对「文章 × 目标」在 {@code dist_records} 里落一行，
  *       于是「已分发过」的目标可以由用户选「更新之前分发的文章」（用记录里的远端 id 调对方的更新接口）
  *       还是「分发一个新文章」（新建后把这行指向新文章）；</li>
@@ -35,6 +37,9 @@ import java.util.Map;
  *
  * <p>正文里的站内媒体（{@code /media/xxx}）一律**补成绝对地址**再发出去 ——
  * 相对路径到了别人的域名下必然 404。地址前缀取 {@code xiezitai.site-url}。
+ *
+ * <p><b>正文格式按渠道归一</b>：写字台开放 API 收的就是 Markdown（对方前台按 Markdown 渲染），
+ * 所以 xz 渠道无视请求里的 {@code format}，一律按 Markdown 原文发；WP / 博客园照旧听用户的。
  */
 @Service
 public class DistributeService {
@@ -47,21 +52,27 @@ public class DistributeService {
     private final ArticleRepository articles;
     private final WpSiteRepository wpSites;
     private final CnBlogSiteRepository cnSites;
+    private final XzSiteRepository xzSites;
     private final DistRecordRepository records;
     private final WordPressClient wp;
     private final MetaWeblogClient cn;
+    private final XiezitaiClient xz;
     private final MarkdownService markdown;
 
     public DistributeService(ArticleRepository articles, WpSiteRepository wpSites,
-                             CnBlogSiteRepository cnSites, DistRecordRepository records,
-                             WordPressClient wp, MetaWeblogClient cn, MarkdownService markdown,
+                             CnBlogSiteRepository cnSites, XzSiteRepository xzSites,
+                             DistRecordRepository records,
+                             WordPressClient wp, MetaWeblogClient cn, XiezitaiClient xz,
+                             MarkdownService markdown,
                              @Value("${xiezitai.site-url:}") String siteUrl) {
         this.articles = articles;
         this.wpSites = wpSites;
         this.cnSites = cnSites;
+        this.xzSites = xzSites;
         this.records = records;
         this.wp = wp;
         this.cn = cn;
+        this.xz = xz;
         this.markdown = markdown;
         String u = siteUrl == null ? "" : siteUrl.trim();
         while (u.endsWith("/")) u = u.substring(0, u.length() - 1);
@@ -77,8 +88,10 @@ public class DistributeService {
     /* ================= 参数归一 ================= */
 
     public static String normalizeChannel(String c) {
-        return "cnblog".equalsIgnoreCase(String.valueOf(c).trim())
-                ? DistRecord.CHANNEL_CNBLOG : DistRecord.CHANNEL_WP;
+        String v = String.valueOf(c).trim().toLowerCase();
+        if ("cnblog".equals(v)) return DistRecord.CHANNEL_CNBLOG;
+        if ("xz".equals(v) || "xiezitai".equals(v)) return DistRecord.CHANNEL_XZ;
+        return DistRecord.CHANNEL_WP;
     }
 
     public static String normalizeMode(String m) {
@@ -112,6 +125,11 @@ public class DistributeService {
             mine.put(key(r.getChannel(), r.getTargetId()), r);
         }
         List<Map<String, Object>> out = new ArrayList<>();
+        for (XzSite s : xzSites.findAll()) {
+            boolean ready = notBlank(s.getApiUrl()) && notBlank(s.getApiToken());
+            out.add(describe(DistRecord.CHANNEL_XZ, s.getId(), siteName(s), s.getApiUrl(), ready,
+                    ready ? "" : "未配置对接密钥，只能浏览、不能分发", mine));
+        }
         for (WpSite s : wpSites.findAll()) {
             String name = s.getName() == null || s.getName().isBlank() ? s.getUrl() : s.getName();
             boolean ready = notBlank(s.getUsername()) && notBlank(s.getApiToken());
@@ -125,6 +143,15 @@ public class DistributeService {
                     ready ? "" : "未配置账号名 / 对接密钥，无法发文", mine));
         }
         return out;
+    }
+
+    /** 写字台账号的展示名：优先用户自定义名，否则「账号@接口主机」 */
+    private static String siteName(XzSite s) {
+        if (notBlank(s.getName())) return s.getName();
+        String host = XiezitaiClient.origin(s.getApiUrl()).replaceFirst("(?i)^https?://", "");
+        String user = notBlank(s.getUsername()) ? s.getUsername() : "";
+        if (host.isEmpty()) return user.isEmpty() ? ("写字台 #" + s.getId()) : host;
+        return user.isEmpty() ? host : user + "@" + host;
     }
 
     private Map<String, Object> describe(String channel, Long id, String name, String url,
@@ -159,7 +186,11 @@ public class DistributeService {
         if (articleIds == null || articleIds.isEmpty()) return out;
         for (DistRecord r : records.findByArticleIdIn(articleIds)) {
             String label = notBlank(r.getTargetName()) ? r.getTargetName()
-                    : (DistRecord.CHANNEL_CNBLOG.equals(r.getChannel()) ? "博客园" : "WordPress");
+                    : switch (String.valueOf(r.getChannel())) {
+                        case DistRecord.CHANNEL_CNBLOG -> "博客园";
+                        case DistRecord.CHANNEL_XZ -> "写字台";
+                        default -> "WordPress";
+                    };
             out.computeIfAbsent(r.getArticleId(), k -> new ArrayList<>()).add(label);
         }
         return out;
@@ -235,13 +266,12 @@ public class DistributeService {
                 .orElseThrow(() -> new IllegalStateException("文章不存在（可能已被删除）"));
         String m = normalizeMode(mode);
         String f = normalizeFormat(format);
-        String body = buildBody(a, m, f);
-        if (body.isBlank()) throw new IllegalStateException("这篇文章正文为空，没什么可分发的");
+        if (buildBody(a, m, f).isBlank()) throw new IllegalStateException("这篇文章正文为空，没什么可分发的");
 
         List<Map<String, Object>> results = new ArrayList<>();
         int ok = 0, failed = 0;
         for (DistTarget t : targets) {
-            Map<String, Object> r = runOne(a, t, m, f, body);
+            Map<String, Object> r = runOne(a, t, m, f);
             results.add(r);
             if (Boolean.TRUE.equals(r.get("ok"))) ok++; else failed++;
         }
@@ -255,7 +285,7 @@ public class DistributeService {
         return out;
     }
 
-    private Map<String, Object> runOne(Article a, DistTarget t, String mode, String format, String body) {
+    private Map<String, Object> runOne(Article a, DistTarget t, String mode, String format) {
         String channel = normalizeChannel(t.channel());
         String action = normalizeAction(t.action());
         List<String> warnings = new ArrayList<>();
@@ -264,6 +294,11 @@ public class DistributeService {
         out.put("targetId", t.targetId());
         out.put("action", action);
         try {
+            // 写字台开放 API 收的正文就是 Markdown（对方前台按 Markdown 渲染），
+            // 所以 xz 渠道无视请求里的 format —— 否则「转成 HTML」会把 HTML 标签当正文贴到对方站上。
+            String fmt = DistRecord.CHANNEL_XZ.equals(channel) ? DistRecord.FORMAT_MARKDOWN : format;
+            if (!fmt.equals(format)) warnings.add("写字台正文一律按 Markdown 发送，已忽略「转成 HTML」");
+            String body = buildBody(a, mode, fmt);
             RemoteResult rr;
             String name, url;
             if (DistRecord.CHANNEL_CNBLOG.equals(channel)) {
@@ -274,7 +309,16 @@ public class DistributeService {
                 }
                 name = notBlank(s.getName()) ? s.getName() : s.getUrl();
                 url = s.getUrl();
-                rr = distToCnBlog(a, s, action, body, format, warnings);
+                rr = distToCnBlog(a, s, action, body, fmt, warnings);
+            } else if (DistRecord.CHANNEL_XZ.equals(channel)) {
+                XzSite s = xzSites.findById(t.targetId())
+                        .orElseThrow(() -> new IllegalStateException("写字台账号已不存在（可能已被删除）"));
+                if (!notBlank(s.getApiUrl()) || !notBlank(s.getApiToken())) {
+                    throw new IllegalStateException("该账号未配置对接密钥，无法分发");
+                }
+                name = siteName(s);
+                url = s.getApiUrl();
+                rr = distToXz(a, s, action, body, warnings);
             } else {
                 WpSite s = wpSites.findById(t.targetId())
                         .orElseThrow(() -> new IllegalStateException("WordPress 站点已不存在（可能已被删除）"));
@@ -290,7 +334,7 @@ public class DistributeService {
             out.put("remoteUrl", rr.url());
             out.put("updated", "update".equals(action));
             out.put("ok", true);
-            saveRecord(a.getId(), channel, t.targetId(), name, url, rr, mode, format);
+            saveRecord(a.getId(), channel, t.targetId(), name, url, rr, mode, fmt);
         } catch (Exception e) {
             out.put("ok", false);
             out.put("message", friendly(e));
@@ -359,6 +403,42 @@ public class DistributeService {
             return new RemoteResult(0L, "");
         }
         return new RemoteResult(pid, remoteLinkQuietly(site, pid, ""));
+    }
+
+    /**
+     * 发往另一台写字台（走它的开放 API）。
+     *
+     * <p>与 WP / 博客园不同的是：<b>不传 slug</b>。
+     * <ul>
+     *   <li>「分发一个新文章」时，同一篇原文的 slug 在同一台写字台上已经存在，
+     *       带过去要么撞唯一索引（对方 500），要么被动改成 {@code xxx-2}（链接不直观）；</li>
+     *   <li>「更新」走的是远端文章 id，跟 slug 没关系；</li>
+     *   <li>让对端按标题自己生成 slug，两边各自唯一、互不干扰。</li>
+     * </ul>
+     * 远端链接以对方接口返回的 {@code url} 为准（已补成绝对地址）。
+     */
+    private RemoteResult distToXz(Article a, XzSite site, String action, String body,
+                                  List<String> warnings) throws Exception {
+        Map<String, String> payload = new LinkedHashMap<>();
+        payload.put("title", a.getTitle() == null ? "" : a.getTitle());
+        payload.put("content", body);
+        if (notBlank(a.getSummary())) payload.put("summary", a.getSummary());
+
+        DistRecord rec = records
+                .findByArticleIdAndChannelAndTargetId(a.getId(), DistRecord.CHANNEL_XZ, site.getId())
+                .orElse(null);
+        if ("update".equals(action) && rec != null && rec.getRemotePostId() != null && rec.getRemotePostId() > 0) {
+            XiezitaiClient.RemoteArticle ra = xz.updateArticle(site, rec.getRemotePostId(), payload);
+            return new RemoteResult(ra.id() > 0 ? ra.id() : rec.getRemotePostId(), ra.url());
+        }
+        if ("update".equals(action)) {
+            warnings.add("此前没有分发记录，「更新」自动改为新发一篇");
+        }
+        XiezitaiClient.RemoteArticle ra = xz.publishArticle(site, payload);
+        if (ra.id() <= 0) {
+            warnings.add("对方站点未返回文章 id，已发出但本站无法再对它做「更新」");
+        }
+        return new RemoteResult(ra.id(), ra.url());
     }
 
     /** 取远端链接失败不算分发失败（文章其实已经发出去了），退回旧值或空 */

@@ -186,7 +186,7 @@
         .lightbox .lb-cap { position: absolute; bottom: 18px; left: 0; right: 0; text-align: center;
                             color: #e5e7eb; font-size: 13px; padding: 0 24px; word-break: break-all; }
 
-        /* ---------- 文章分发（→ WordPress 站点 / 博客园账号） ---------- */
+        /* ---------- 文章分发（→ 写字台账号 / WordPress 站点 / 博客园账号） ---------- */
         /* 列表行标题下方的「已分发」胶囊：一眼看出这篇发过哪些地方，不用点开弹窗 */
         .dist-badge { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
         .dist-badge .dtag { display: inline-block; font-size: 11px; line-height: 18px; padding: 0 7px;
@@ -636,6 +636,8 @@
             </div>
             <p class="muted">对接密钥只保存在本站数据库，接口永不回传明文，也不会写入任何代码仓库；
                 在对方站点后台「设置 → 开放 API / MCP」里可以查看自己的 Token。同一站点可关联多个账号。</p>
+            <p class="muted">同一个账号也是<b>文章分发</b>的可选目标：在「文章」列表里点该行的分发图标，
+                就能把文章发到这里的某个写字台账号（可原文或转载，已发过的可选更新或另发新篇）。</p>
             <div class="table-wrap">
                 <table id="xzlist"><thead><tr><th>站点</th><th>账号</th><th>密钥</th><th>上次同步</th><th>操作</th></tr></thead><tbody></tbody></table>
             </div>
@@ -839,7 +841,7 @@
         </div>
     </div>
 
-    <!-- 分发弹窗：一篇文章 → 若干 WordPress 站点 / 博客园账号。
+    <!-- 分发弹窗：一篇文章 → 若干写字台账号 / WordPress 站点 / 博客园账号。
          已分发过的目标会带出「处理方式」（更新原来那篇 / 发一篇新的）与已发文章的链接；
          另可选「原文 / 转载」与「Markdown 原文 / 转成 HTML」。 -->
     <div class="modal" id="dist-modal">
@@ -873,7 +875,8 @@
                 <p class="muted" style="margin:0 0 4px;">正文里的站内图片会自动补成绝对地址，对方站点才看得到。
                     「转载分发」会在文末加一行「本文由写字台首发，原文链接：…」。</p>
                 <p class="muted" style="margin:0;">博客园与装了 Markdown 插件的 WP 站点请用「Markdown 原文」；
-                    没装 Markdown 插件的站点改用「转成 HTML」。<span id="dist-source-hint"></span></p>
+                    没装 Markdown 插件的站点改用「转成 HTML」。<b>写字台一律按 Markdown 原文发送</b>，不看这项。
+                    <span id="dist-source-hint"></span></p>
 
                 <div class="dist-result" id="dist-result" style="display:none;"></div>
 
@@ -1498,7 +1501,7 @@ function renderArticleRows(list) {
             <td>${tagHtml || '<span class="muted">—</span>'}</td>
             <td>${BADGE[a.status] || escapeHtml(a.status)}</td><td class="t-time">${fmtTime(a.updatedAt)}</td>
             <td>${actCell(
-                iconBtn('dist', '分发到 WordPress / 博客园', `openDist(${a.id})`)
+                iconBtn('dist', '分发到写字台 / WordPress / 博客园', `openDist(${a.id})`)
                 + iconBtn('edit', '编辑', `editArticle(${a.id})`)
                 + iconBtn('del', '删除', `delArticle(${a.id})`, true))}</td>`;
         tb.appendChild(tr);
@@ -2864,11 +2867,12 @@ function maybeLoadXz() {
     if (token) loadXzSites().catch(() => {});
 }
 
-/* ==================== 文章分发（→ WordPress 站点 / 博客园账号） ====================
+/* ==================== 文章分发（→ 写字台账号 / WordPress 站点 / 博客园账号） ====================
    从文章列表行点「分发」打开弹窗：
-     ① 勾选目标 —— WP 站点与博客园账号在同一张清单里，可多选；
+     ① 勾选目标 —— 写字台账号、WP 站点与博客园账号在同一张清单里，可多选；
      ② 已分发过的目标会自动勾上，并带出「处理方式」下拉：更新原来那篇 / 发一篇新的；
-     ③ 「原文 / 转载」决定正文尾部要不要带首发链接，「Markdown 原文 / 转成 HTML」决定正文形态。
+     ③ 「原文 / 转载」决定正文尾部要不要带首发链接，「Markdown 原文 / 转成 HTML」决定正文形态
+        （写字台固定按 Markdown 发，后端会忽略这项并回一条 warning）。
    分发是同步的（媒体多时几十秒），逐个目标回结果，一个失败不影响其它。 */
 let distArticleId = null;
 
@@ -2897,10 +2901,12 @@ function renderDistTargets(d) {
     const list = d.targets || [];
     if (!list.length) {
         $('dist-targets').innerHTML =
-            '<div class="dist-row muted">还没有关联任何 WordPress 站点或博客园账号，请先到「WordPress」/「博客园」面板关联。</div>';
+            '<div class="dist-row muted">还没有关联任何写字台账号、WordPress 站点或博客园账号，'
+            + '请先到「写字台」/「WordPress」/「博客园」面板关联。</div>';
         return;
     }
     const groups = [
+        { title: '写字台账号', items: list.filter(t => t.channel === 'xz') },
         { title: 'WordPress 站点', items: list.filter(t => t.channel === 'wp') },
         { title: '博客园账号', items: list.filter(t => t.channel === 'cnblog') },
     ];
@@ -2972,7 +2978,8 @@ async function runDist() {
 
 function renderDistResult(data) {
     $('dist-result').innerHTML = (data.results || []).map(r => {
-        const label = (r.channel === 'cnblog' ? '博客园 · ' : 'WordPress · ') + (r.targetName || ('#' + r.targetId));
+        const label = (r.channel === 'cnblog' ? '博客园 · '
+            : (r.channel === 'xz' ? '写字台 · ' : 'WordPress · ')) + (r.targetName || ('#' + r.targetId));
         if (!r.ok) {
             return '<div class="dline"><span class="dbad">✗</span> ' + escapeHtml(label)
                 + ' —— ' + escapeHtml(r.message || '失败') + '</div>';
