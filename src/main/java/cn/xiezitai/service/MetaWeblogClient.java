@@ -99,6 +99,30 @@ public class MetaWeblogClient {
         return toPost(m);
     }
 
+    /**
+     * 新建一篇博客园随笔，返回新的 postid（博客园返回的是字符串形态的数字）。
+     *
+     * @param struct 正文结构体：title / description / mt_keywords / categories 等
+     * @param publish true=直接发布，false=存草稿
+     */
+    public String newPost(CnBlogSite site, Map<String, Object> struct, boolean publish) throws Exception {
+        String blogid = blogIdOf(site);
+        Object r = call(site, "metaWeblog.newPost", blogid, nz(site.getUsername()),
+                nz(site.getAppKey()), struct, publish);
+        return r == null ? "" : String.valueOf(r).trim();
+    }
+
+    /**
+     * 更新一篇已有随笔。
+     *
+     * @return 博客园返回 true 表示更新成功；有些实现回空，按「没抛异常即成功」处理
+     */
+    public boolean editPost(CnBlogSite site, long postId, Map<String, Object> struct, boolean publish) throws Exception {
+        Object r = call(site, "metaWeblog.editPost", String.valueOf(postId), nz(site.getUsername()),
+                nz(site.getAppKey()), struct, publish);
+        return !(r instanceof Boolean b) || b;
+    }
+
     /** 整站导入：MetaWeblog 无分页游标，用「数量翻倍直到取不满」的策略拿全量文章 */
     public List<CnPost> fetchAllPosts(CnBlogSite site) throws Exception {
         List<CnPost> last = List.of();
@@ -182,15 +206,14 @@ public class MetaWeblogClient {
 
     /* ================= XML-RPC 传输 ================= */
 
-    /** 发一次 XML-RPC 调用并解析响应（params 只支持 string/int） */
+    /** 发一次 XML-RPC 调用并解析响应（params 支持 string/int/boolean/struct/array） */
     Object call(CnBlogSite site, String method, Object... params) throws Exception {
         StringBuilder xml = new StringBuilder();
         xml.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n")
                 .append("<methodCall><methodName>").append(escape(method)).append("</methodName><params>");
         for (Object p : params) {
             xml.append("<param><value>");
-            if (p instanceof Number) xml.append("<int>").append(p).append("</int>");
-            else xml.append("<string>").append(escape(p == null ? "" : String.valueOf(p))).append("</string>");
+            appendTyped(xml, p);
             xml.append("</value></param>");
         }
         xml.append("</params></methodCall>");
@@ -282,7 +305,46 @@ public class MetaWeblogClient {
         return null;
     }
 
+    /**
+     * 把 Java 值序列化成 XML-RPC 的「带类型元素」（不含外层 {@code <value>} 标签）。
+     *
+     * <p>发文要用 struct：{@code newPost(blogid, user, key, struct, publish)}，
+     * 而 struct 的每个 member 里还要再嵌一层 {@code <value>}，所以这里统一由本方法负责嵌套。
+     */
+    private static void appendTyped(StringBuilder sb, Object v) {
+        if (v instanceof Boolean b) {
+            sb.append("<boolean>").append(b ? "1" : "0").append("</boolean>");
+        } else if (v instanceof Number n) {
+            sb.append("<int>").append(n).append("</int>");
+        } else if (v instanceof Map<?, ?> m) {
+            sb.append("<struct>");
+            for (Map.Entry<?, ?> e : m.entrySet()) {
+                if (e.getValue() == null) continue;          // 空值不发，博客园对未知空字段更敏感
+                sb.append("<member><name>").append(escape(String.valueOf(e.getKey()))).append("</name><value>");
+                appendTyped(sb, e.getValue());
+                sb.append("</value></member>");
+            }
+            sb.append("</struct>");
+        } else if (v instanceof Iterable<?> it) {
+            sb.append("<array><data>");
+            for (Object o : it) {
+                sb.append("<value>");
+                appendTyped(sb, o);
+                sb.append("</value>");
+            }
+            sb.append("</data></array>");
+        } else {
+            sb.append("<string>").append(escape(v == null ? "" : String.valueOf(v))).append("</string>");
+        }
+    }
+
+    /**
+     * XML 转义。除了 {@code & < >}，还要**剔除 XML 1.0 不允许的控制字符** ——
+     * Markdown 正文里偶尔混进 {@code \u0000}~{@code \u001F} 之类（比如从别处粘贴带进来的），
+     * 直接发过去会让博客园那边解析失败，报一句莫名其妙的接口错误。
+     */
     private static String escape(String s) {
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+        String cleaned = s.replaceAll("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]", "");
+        return cleaned.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 }

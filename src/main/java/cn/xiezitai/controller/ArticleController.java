@@ -3,6 +3,7 @@ package cn.xiezitai.controller;
 import cn.xiezitai.entity.Article;
 import cn.xiezitai.entity.FileEntity;
 import cn.xiezitai.repository.ArticleRepository;
+import cn.xiezitai.repository.DistRecordRepository;
 import cn.xiezitai.service.AiService;
 import cn.xiezitai.service.AiTextCleaner;
 import cn.xiezitai.service.ArticleService;
@@ -31,13 +32,15 @@ public class ArticleController {
     private final ArticleService articleService;
     private final AiService ai;
     private final MediaStoreService media;
+    private final DistRecordRepository distRecords;
 
     public ArticleController(ArticleRepository articles, ArticleService articleService, AiService ai,
-                             MediaStoreService media) {
+                             MediaStoreService media, DistRecordRepository distRecords) {
         this.articles = articles;
         this.articleService = articleService;
         this.ai = ai;
         this.media = media;
+        this.distRecords = distRecords;
     }
 
     /* ================= 公开接口 ================= */
@@ -143,6 +146,8 @@ public class ArticleController {
 
     @DeleteMapping("/admin/articles/{id}")
     public ResponseEntity<?> delete(@PathVariable Long id) {
+        // 分发记录跟着文章一起走：留着的话「已分发」徽标会指向一篇不存在的文章
+        distRecords.deleteByArticleId(id);
         articles.deleteById(id);
         return ResponseEntity.ok(Map.of("message", "已删除"));
     }

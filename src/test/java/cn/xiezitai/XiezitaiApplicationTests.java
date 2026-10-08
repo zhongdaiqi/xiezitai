@@ -2114,4 +2114,324 @@ class XiezitaiApplicationTests {
             }
         }
     }
+
+    /* ==================== 文章分发（→ WordPress 站点 / 博客园账号） ==================== */
+
+    @Autowired cn.xiezitai.service.DistributeService distService;
+
+    @Test
+    @DisplayName("分发：正文绝对化与转载尾注")
+    void distBuildBody() {
+        cn.xiezitai.entity.Article a = new cn.xiezitai.entity.Article();
+        a.setTitle("标题 *含* 特殊字符");
+        a.setSlug("dist-body-测试");
+        a.setContent("正文\n\n![图](/media/abc.png)\n\n<img src=\"/media/d.mp4\">\n\n[外链](https://other.com/x.png)");
+
+        String original = distService.buildBody(a, "original", "markdown");
+        assertThat(original).contains(distService.siteUrl() + "/media/abc.png");
+        assertThat(original).contains("src=\"" + distService.siteUrl() + "/media/d.mp4\"");
+        assertThat(original).as("外链不该被改写").contains("(https://other.com/x.png)");
+        assertThat(original).as("原文分发不带转载尾注").doesNotContain("本文由");
+
+        String repost = distService.buildBody(a, "repost", "markdown");
+        assertThat(repost).contains("本文由 [写字台](" + distService.siteUrl() + ") 首发");
+        assertThat(repost).contains("原文链接：[标题 *含* 特殊字符]("
+                + distService.articleUrl("dist-body-测试") + ")");
+        assertThat(distService.articleUrl("dist-body-测试")).as("中文 slug 要百分号编码")
+                .isEqualTo(distService.siteUrl() + "/article/dist-body-%E6%B5%8B%E8%AF%95");
+
+        String html = distService.buildBody(a, "repost", "html");
+        assertThat(html).as("转 HTML 后不该有 Markdown 语法残留").contains("<p>正文</p>")
+                .contains("<img src=\"" + distService.siteUrl() + "/media/abc.png\"");
+        assertThat(html).contains("<blockquote><p>本文由 <a href=\"" + distService.siteUrl() + "\">写字台</a> 首发");
+        // 站点地址为空（没配 site-url）时不该往正文里塞半截地址
+        assertThat(cn.xiezitai.service.DistributeService.absolutizeMedia("![a](/media/x.png)", ""))
+                .isEqualTo("![a](/media/x.png)");
+    }
+
+    /**
+     * 假 WP 站点（支持建/改文章与建标签）+ 假博客园 MetaWeblog（支持 newPost/editPost），
+     * 走完整分发链路：目标清单 → 首次分发（原文/转载）→ 记录出现「已分发」→
+     * 再分发时选「更新」复用远端 id / 选「发新文章」换 id → 列表徽标。
+     */
+    @Test
+    @DisplayName("分发：多目标分发、已分发记录、更新与新文章、转载尾注")
+    void distributeToWpAndCnBlog() throws Exception {
+        java.util.List<String> wpCalls = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        java.util.List<String> cnCalls = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+
+        // ---------- 假 WP ----------
+        HttpServer wpServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        String wpBase = "http://127.0.0.1:" + wpServer.getAddress().getPort();
+        final String wpToken = "abcd efgh ijkl mnop";
+        final String wpAuth = "Basic " + Base64.getEncoder()
+                .encodeToString(("bob:" + wpToken).getBytes(StandardCharsets.UTF_8));
+        final java.util.concurrent.atomic.AtomicLong nextId = new java.util.concurrent.atomic.AtomicLong(900);
+        wpServer.createContext("/wp-json/", ex -> {
+            String path = ex.getRequestURI().getPath();
+            String method = ex.getRequestMethod();
+            String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String auth = ex.getRequestHeaders().getFirst("Authorization");
+            if (!wpAuth.equals(auth)) {
+                respond(ex, 401, "application/json", "{\"code\":\"rest_forbidden\"}".getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            if (path.equals("/wp-json/")) {
+                respond(ex, 200, "application/json",
+                        "{\"name\":\"Mock WP\",\"description\":\"d\"}".getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            if (path.equals("/wp-json/wp/v2/users/me")) {
+                respond(ex, 200, "application/json", "{\"name\":\"Bob\"}".getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            if (path.equals("/wp-json/wp/v2/tags") && "POST".equals(method)) {
+                wpCalls.add("TAG " + body);
+                respond(ex, 201, "application/json", "{\"id\":77,\"name\":\"t\"}".getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            if (path.equals("/wp-json/wp/v2/posts") && "POST".equals(method)) {
+                long id = nextId.incrementAndGet();
+                wpCalls.add("CREATE " + body);
+                respond(ex, 201, "application/json",
+                        ("{\"id\":" + id + ",\"link\":\"" + wpBase + "/?p=" + id + "\"}")
+                                .getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            if (path.startsWith("/wp-json/wp/v2/posts/") && "POST".equals(method)) {
+                String id = path.substring("/wp-json/wp/v2/posts/".length());
+                wpCalls.add("UPDATE " + id + " " + body);
+                respond(ex, 200, "application/json",
+                        ("{\"id\":" + id + ",\"link\":\"" + wpBase + "/?p=" + id + "\"}")
+                                .getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            respond(ex, 404, "application/json", "{}".getBytes(StandardCharsets.UTF_8));
+        });
+        wpServer.start();
+
+        // ---------- 假博客园 ----------
+        HttpServer cnServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        String cnBase = "http://127.0.0.1:" + cnServer.getAddress().getPort();
+        final String cnKey = "mock-cn-key-0123456789abcdef";
+        cnServer.createContext("/", ex -> {
+            String req = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            java.util.regex.Matcher mm = Pattern.compile("<methodName>([\\w.]+)</methodName>").matcher(req);
+            String method = mm.find() ? mm.group(1) : "";
+            String resp;
+            if (!req.contains(cnKey)) {
+                resp = xmlRpcFault("密钥错误");
+            } else if ("blogger.getUsersBlogs".equals(method)) {
+                resp = xmlRpcResp("<value><array><data><value><struct>"
+                        + "<member><name>blogid</name><value><string>879366</string></value></member>"
+                        + "<member><name>url</name>" + xmlStr(cnBase + "/") + "</member>"
+                        + "<member><name>blogName</name>" + xmlStr("MockCN") + "</member>"
+                        + "</struct></value></data></array></value>");
+            } else if ("metaWeblog.newPost".equals(method)) {
+                cnCalls.add("NEW " + req);
+                resp = xmlRpcResp("<value><string>555</string></value>");
+            } else if ("metaWeblog.editPost".equals(method)) {
+                cnCalls.add("EDIT " + req);
+                resp = xmlRpcResp("<value><boolean>1</boolean></value>");
+            } else if ("metaWeblog.getPost".equals(method)) {
+                resp = xmlRpcResp(cnPostXml(555, "CN Post", "<p>x</p>", "", "",
+                        "20260101T00:00:00", cnBase + "/p/555"));
+            } else {
+                resp = xmlRpcFault("unknown method: " + method);
+            }
+            respond(ex, 200, "text/xml", resp.getBytes(StandardCharsets.UTF_8));
+        });
+        cnServer.start();
+
+        String adminToken = loginToken(ADMIN, ADMIN_PWD);
+        Long wpSiteId = null, cnSiteId = null, articleId = null;
+        try {
+            // ① 关联两个目标（都要带凭据，否则不可分发）
+            MvcResult wpCreate = mvc.perform(post("/api/admin/wp/sites")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("url", wpBase, "username", "bob", "token", wpToken,
+                                    "name", "我的WP站")))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn();
+            wpSiteId = om.readTree(wpCreate.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path("site").path("id").asLong();
+            MvcResult cnCreate = mvc.perform(post("/api/admin/cnblogs/sites")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("url", cnBase + "/metaweblog/bob", "username", "bob",
+                                    "token", cnKey, "name", "我的博客园")))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn();
+            cnSiteId = om.readTree(cnCreate.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path("site").path("id").asLong();
+
+            // ② 一篇文章（正文带站内图，标签用于验证 WP 标签同步）
+            MvcResult art = mvc.perform(post("/api/admin/articles")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("title", "分发用例文章", "slug", "dist-e2e-article",
+                                    "content", "正文\n\n![图](/media/e2e-dist.png)",
+                                    "summary", "摘要", "status", "PUBLISHED", "tags", "Java,AI")))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn();
+            articleId = om.readTree(art.getResponse().getContentAsString(StandardCharsets.UTF_8)).path("id").asLong();
+
+            // ③ 目标清单：两个目标都在、都可用、都还没分发过
+            MvcResult tg = mvc.perform(get("/api/admin/dist/targets?articleId=" + articleId)
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode targets = om.readTree(tg.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            String siteUrl = targets.path("siteUrl").asText();
+            assertThat(targets.path("targets")).hasSize(2);
+            assertThat(targets.path("targets").get(0).path("channel").asText()).isEqualTo("wp");
+            assertThat(targets.path("targets").get(1).path("channel").asText()).isEqualTo("cnblog");
+            for (JsonNode t : targets.path("targets")) {
+                assertThat(t.path("ready").asBoolean()).as("两个目标都应具备发文凭据").isTrue();
+                assertThat(t.path("dist").isNull()).as("首次分发前不该有分发记录").isTrue();
+            }
+            assertThat(targets.path("sourceUrl").asText()).isEqualTo(siteUrl + "/article/dist-e2e-article");
+
+            // ④ 一次发往两个目标，转载 + Markdown
+            MvcResult run = mvc.perform(post("/api/admin/dist/run")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("articleId", articleId, "mode", "repost", "format", "markdown",
+                                    "targets", java.util.List.of(
+                                            Map.of("channel", "wp", "targetId", wpSiteId, "action", "create"),
+                                            Map.of("channel", "cnblog", "targetId", cnSiteId, "action", "create")))))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode runData = om.readTree(run.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            assertThat(runData.path("ok").asInt()).as("分发结果: " + runData).isEqualTo(2);
+            assertThat(runData.path("failed").asInt()).isEqualTo(0);
+            long wpRemoteId = runData.path("results").get(0).path("remotePostId").asLong();
+            assertThat(wpRemoteId).isPositive();
+            assertThat(runData.path("results").get(1).path("remotePostId").asLong()).isEqualTo(555L);
+            assertThat(runData.path("results").get(1).path("remoteUrl").asText()).isEqualTo(cnBase + "/p/555");
+
+            // WP 侧：正文媒体已绝对化、转载尾注在、标签换成了 term id
+            String wpCreateCall = wpCalls.stream().filter(s -> s.startsWith("CREATE")).findFirst().orElse("");
+            assertThat(wpCreateCall).contains(siteUrl + "/media/e2e-dist.png");
+            assertThat(wpCreateCall).contains("本文由 [写字台](" + siteUrl + ") 首发");
+            assertThat(wpCreateCall).contains("\"tags\":[77");
+            assertThat(wpCalls.stream().anyMatch(s -> s.startsWith("TAG") && s.contains("Java"))).isTrue();
+            // 博客园侧：正文是 Markdown 原文 + 分类带 [Markdown]（否则博客园会把源码当 HTML 贴出来）
+            String cnNewCall = cnCalls.stream().filter(s -> s.startsWith("NEW")).findFirst().orElse("");
+            assertThat(cnNewCall).contains("<name>categories</name>")
+                    .contains("<string>[Markdown]</string>");
+            assertThat(cnNewCall).contains("![图](" + siteUrl + "/media/e2e-dist.png)");
+
+            // ⑤ 再查目标：都变成「已分发过」，带上远端链接
+            JsonNode again = om.readTree(mvc.perform(get("/api/admin/dist/targets?articleId=" + articleId)
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn()
+                    .getResponse().getContentAsString(StandardCharsets.UTF_8));
+            assertThat(again.path("targets").get(0).path("dist").path("remotePostId").asLong()).isEqualTo(wpRemoteId);
+            assertThat(again.path("targets").get(0).path("dist").path("remoteUrl").asText()).contains("/?p=");
+            assertThat(again.path("targets").get(0).path("dist").path("distCount").asInt()).isEqualTo(1);
+
+            // ⑥ 选「更新之前分发的文章」：远端 id 不变，但走的是对方的更新接口
+            wpCalls.clear();
+            cnCalls.clear();
+            JsonNode upd = om.readTree(mvc.perform(post("/api/admin/dist/run")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("articleId", articleId, "mode", "original", "format", "markdown",
+                                    "targets", java.util.List.of(
+                                            Map.of("channel", "wp", "targetId", wpSiteId, "action", "update"),
+                                            Map.of("channel", "cnblog", "targetId", cnSiteId, "action", "update")))))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn()
+                    .getResponse().getContentAsString(StandardCharsets.UTF_8));
+            assertThat(upd.path("ok").asInt()).isEqualTo(2);
+            assertThat(upd.path("results").get(0).path("remotePostId").asLong()).isEqualTo(wpRemoteId);
+            assertThat(wpCalls.stream().anyMatch(s -> s.startsWith("UPDATE " + wpRemoteId))).isTrue();
+            assertThat(cnCalls.stream().anyMatch(s -> s.startsWith("EDIT"))).isTrue();
+            assertThat(wpCalls.stream().anyMatch(s -> s.startsWith("UPDATE") && s.contains("本文由")))
+                    .as("原文分发不能带转载尾注").isFalse();
+
+            // ⑦ 选「分发一个新文章」：远端 id 换成新的，记录跟着换
+            wpCalls.clear();
+            JsonNode fresh = om.readTree(mvc.perform(post("/api/admin/dist/run")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("articleId", articleId, "mode", "original", "format", "markdown",
+                                    "targets", java.util.List.of(
+                                            Map.of("channel", "wp", "targetId", wpSiteId, "action", "create")))))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn()
+                    .getResponse().getContentAsString(StandardCharsets.UTF_8));
+            long newRemoteId = fresh.path("results").get(0).path("remotePostId").asLong();
+            assertThat(newRemoteId).isNotEqualTo(wpRemoteId);
+            JsonNode after = om.readTree(mvc.perform(get("/api/admin/dist/targets?articleId=" + articleId)
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8));
+            assertThat(after.path("targets").get(0).path("dist").path("remotePostId").asLong()).isEqualTo(newRemoteId);
+            assertThat(after.path("targets").get(0).path("dist").path("distCount").asInt())
+                    .as("三次分发累计计数").isEqualTo(3);
+
+            // ⑧ 列表徽标：按 id 批量查出「已分发」的目标名，且删站点后记录一并清掉
+            String mapBody = mvc.perform(get("/api/admin/dist/map?ids=" + articleId)
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+            assertThat(mapBody).contains("我的博客园");
+            mvc.perform(delete("/api/admin/cnblogs/sites/" + cnSiteId)
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk());
+            String mapAfter = mvc.perform(get("/api/admin/dist/map?ids=" + articleId)
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+            assertThat(mapAfter).as("账号删了，指向它的分发记录也该没了").doesNotContain("我的博客园");
+            cnSiteId = null;
+
+            // ⑨ 边界：没选目标回 400；没配凭据的站点不可分发
+            mvc.perform(post("/api/admin/dist/run")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("articleId", articleId, "targets", java.util.List.of())))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isBadRequest());
+            MvcResult anonSite = mvc.perform(post("/api/admin/wp/sites")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("url", "http://127.0.0.1:1/anon-wp")))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn();
+            long anonId = om.readTree(anonSite.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path("site").path("id").asLong();
+            try {
+                JsonNode anonTargets = om.readTree(mvc.perform(get("/api/admin/dist/targets?articleId=" + articleId)
+                                .header("Authorization", "Bearer " + adminToken))
+                        .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8));
+                JsonNode anon = null;
+                for (JsonNode t : anonTargets.path("targets")) {
+                    if (t.path("targetId").asLong() == anonId) anon = t;
+                }
+                assertThat(anon).isNotNull();
+                assertThat(anon.path("ready").asBoolean()).as("匿名站点不能发文").isFalse();
+                String anonRun = mvc.perform(post("/api/admin/dist/run")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(json(Map.of("articleId", articleId, "targets",
+                                        java.util.List.of(Map.of("channel", "wp", "targetId", anonId, "action", "create")))))
+                                .header("Authorization", "Bearer " + adminToken))
+                        .andExpect(status().isOk()).andReturn().getResponse()
+                        .getContentAsString(StandardCharsets.UTF_8);
+                JsonNode anonResult = om.readTree(anonRun);
+                assertThat(anonResult.path("ok").asInt()).isEqualTo(0);
+                assertThat(anonResult.path("failed").asInt()).isEqualTo(1);
+                assertThat(anonResult.path("results").get(0).path("message").asText()).contains("未配置");
+            } finally {
+                mvc.perform(delete("/api/admin/wp/sites/" + anonId)
+                                .header("Authorization", "Bearer " + adminToken))
+                        .andExpect(status().isOk());
+            }
+        } finally {
+            wpServer.stop(0);
+            cnServer.stop(0);
+            if (articleId != null) articles.deleteById(articleId);
+            if (wpSiteId != null) {
+                mvc.perform(delete("/api/admin/wp/sites/" + wpSiteId)
+                                .header("Authorization", "Bearer " + adminToken))
+                        .andExpect(status().isOk());
+            }
+            if (cnSiteId != null) {
+                mvc.perform(delete("/api/admin/cnblogs/sites/" + cnSiteId)
+                                .header("Authorization", "Bearer " + adminToken))
+                        .andExpect(status().isOk());
+            }
+        }
+    }
 }

@@ -187,7 +187,105 @@ public class WordPressClient {
         }
     }
 
+    /* ================= 分发（写）：建文章 / 改文章 / 同步标签 ================= */
+
+    /** 远端文章的最小信息：id + 永久链接 */
+    public record RemotePost(long id, String link) {}
+
+    /**
+     * 向 WP REST 发一个 JSON 请求体，**不按状态码抛异常** —— 调用方需要自己看错误体
+     * （比如建标签时 {@code term_exists} 的 400 里带着已有 term_id，是有用信息不是失败）。
+     */
+    private HttpResponse<String> sendJson(WpSite site, String method, String pathAndQuery, String json)
+            throws IOException, InterruptedException {
+        HttpRequest.Builder b = HttpRequest.newBuilder()
+                .uri(URI.create(site.getUrl() + pathAndQuery))
+                .timeout(Duration.ofSeconds(60))
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json; charset=utf-8")
+                .header("User-Agent", "xiezitai-dist")
+                .method(method, HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8));
+        String auth = authHeader(site);
+        if (auth != null) b.header("Authorization", auth);
+        return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    /** 发送并要求 2xx，返回解析后的 JSON；非 2xx 抛带状态码与响应片段的 IOException */
+    private JsonNode sendJsonOk(WpSite site, String method, String pathAndQuery, Object payload)
+            throws IOException, InterruptedException {
+        HttpResponse<String> res = sendJson(site, method, pathAndQuery, mapper.writeValueAsString(payload));
+        if (res.statusCode() < 200 || res.statusCode() >= 300) {
+            throw new IOException("WP 接口返回 HTTP " + res.statusCode() + "：" + snippet(res.body()));
+        }
+        return mapper.readTree(res.body());
+    }
+
+    /** 新建文章（POST /wp/v2/posts） */
+    public RemotePost createPost(WpSite site, Map<String, Object> payload)
+            throws IOException, InterruptedException {
+        return toRemote(sendJsonOk(site, "POST", "/wp-json/wp/v2/posts", payload));
+    }
+
+    /** 更新已有文章（POST /wp/v2/posts/{id}，不用 PUT —— 部分主机/安全插件会拦 PUT） */
+    public RemotePost updatePost(WpSite site, long postId, Map<String, Object> payload)
+            throws IOException, InterruptedException {
+        return toRemote(sendJsonOk(site, "POST", "/wp-json/wp/v2/posts/" + postId, payload));
+    }
+
+    private static RemotePost toRemote(JsonNode n) {
+        return new RemotePost(n.path("id").asLong(), n.path("link").asText(""));
+    }
+
+    /**
+     * 把标签名换成 WP 的 term id。
+     *
+     * <p>WP REST 建文章时 {@code tags} 只认 id 数组、不认名字，所以得先把每个标签「落到」WP 上。
+     * 名字已存在时 WP 回 400 且错误体里带 {@code data.term_id}，直接拿来用即可（不用先查一遍）。
+     * 单个标签失败不影响发文，只往 warnings 里记一条。
+     */
+    public List<Long> ensureTagIds(WpSite site, List<String> names, List<String> warnings) {
+        List<Long> ids = new ArrayList<>();
+        if (names == null || names.isEmpty()) return ids;
+        for (String raw : names) {
+            if (raw == null || raw.isBlank()) continue;
+            String name = raw.trim();
+            try {
+                HttpResponse<String> res = sendJson(site, "POST", "/wp-json/wp/v2/tags",
+                        mapper.writeValueAsString(Map.of("name", name)));
+                if (res.statusCode() < 200 || res.statusCode() >= 300) {
+                    Long existing = termIdFromError(res.body());
+                    if (existing != null) { ids.add(existing); continue; }
+                    warnings.add("标签「" + name + "」同步失败（HTTP " + res.statusCode() + "），已跳过");
+                    continue;
+                }
+                long id = mapper.readTree(res.body()).path("id").asLong();
+                if (id > 0) ids.add(id);
+            } catch (Exception e) {
+                warnings.add("标签「" + name + "」同步失败，已跳过：" + e.getMessage());
+            }
+        }
+        return ids;
+    }
+
+    /** 从 400 term_exists 的错误体里取已有 term 的 id */
+    private Long termIdFromError(String body) {
+        if (body == null || body.isBlank()) return null;
+        try {
+            long id = mapper.readTree(body).path("data").path("term_id").asLong();
+            return id > 0 ? id : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     /* ================= 小工具 ================= */
+
+    /** 错误响应片段（单行、限长，免得把整页 HTML 塞进异常消息） */
+    private static String snippet(String body) {
+        String s = body == null ? "" : body;
+        if (s.length() > 200) s = s.substring(0, 200);
+        return s.replaceAll("\\s+", " ");
+    }
 
     /** WP 返回的标题/摘要是 HTML 转义过的（&#8217; 等），落库前还原 */
     public static String unescapeEntities(String s) {

@@ -186,6 +186,30 @@
         .lightbox .lb-cap { position: absolute; bottom: 18px; left: 0; right: 0; text-align: center;
                             color: #e5e7eb; font-size: 13px; padding: 0 24px; word-break: break-all; }
 
+        /* ---------- 文章分发（→ WordPress 站点 / 博客园账号） ---------- */
+        /* 列表行标题下方的「已分发」胶囊：一眼看出这篇发过哪些地方，不用点开弹窗 */
+        .dist-badge { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+        .dist-badge .dtag { display: inline-block; font-size: 11px; line-height: 18px; padding: 0 7px;
+                            border-radius: 9px; background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+        .dist-targets { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+        .dist-group { background: var(--bg); padding: 6px 12px; font-size: 12px; font-weight: 700;
+                      color: var(--muted); border-bottom: 1px solid var(--line); }
+        .dist-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+                    border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+        .dist-row:last-child { border-bottom: 0; }
+        .dist-row.off { opacity: .55; }
+        .dist-row input[type=checkbox] { width: 16px; height: 16px; flex: 0 0 auto; }
+        .dist-row label { cursor: pointer; flex: 1 1 240px; min-width: 0; }
+        .dist-row .dname { font-weight: 600; }
+        .dist-row .durl { color: var(--muted); font-size: 12px; word-break: break-all; }
+        .dist-row .dstate { font-size: 12px; }
+        .dist-row .dact { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+        .dist-result { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; }
+        .dist-result .dline { padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
+        .dist-result .dline:last-child { border-bottom: 0; }
+        .dist-result .dok { color: #16a34a; font-weight: 700; }
+        .dist-result .dbad { color: #b91c1c; font-weight: 700; }
+
         /* ---------- 窄屏（≤760px）：单列堆叠，压掉内联的固定宽 ---------- */
         @media (max-width: 760px) {
             #app { padding: 10px; }
@@ -694,6 +718,52 @@
                     <span class="muted" id="m-media-count"></span>
                 </div>
                 <div class="mgrid" id="m-media-grid"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 分发弹窗：一篇文章 → 若干 WordPress 站点 / 博客园账号。
+         已分发过的目标会带出「处理方式」（更新原来那篇 / 发一篇新的）与已发文章的链接；
+         另可选「原文 / 转载」与「Markdown 原文 / 转成 HTML」。 -->
+    <div class="modal" id="dist-modal">
+        <div class="modal-box">
+            <div class="modal-head">
+                <h3 id="dist-title">分发文章</h3>
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <span class="muted" id="dist-msg"></span>
+                    <button class="ghost" onclick="closeDist()">关闭</button>
+                </div>
+            </div>
+            <div class="modal-body">
+                <div class="sec-title">分发到（可多选）</div>
+                <div class="dist-targets" id="dist-targets"></div>
+
+                <div class="sec-title" style="margin-top:16px;">分发选项</div>
+                <div class="row">
+                    <label class="muted" style="font-size:13px; white-space:nowrap; display:inline-flex; align-items:center; gap:6px;">分发方式
+                        <select id="dist-mode">
+                            <option value="original" selected>原文分发</option>
+                            <option value="repost">转载分发（尾部附原文链接）</option>
+                        </select>
+                    </label>
+                    <label class="muted" style="font-size:13px; white-space:nowrap; display:inline-flex; align-items:center; gap:6px;">正文格式
+                        <select id="dist-format">
+                            <option value="markdown" selected>Markdown 原文</option>
+                            <option value="html">转成 HTML</option>
+                        </select>
+                    </label>
+                </div>
+                <p class="muted" style="margin:0 0 4px;">正文里的站内图片会自动补成绝对地址，对方站点才看得到。
+                    「转载分发」会在文末加一行「本文由写字台首发，原文链接：…」。</p>
+                <p class="muted" style="margin:0;">博客园与装了 Markdown 插件的 WP 站点请用「Markdown 原文」；
+                    没装 Markdown 插件的站点改用「转成 HTML」。<span id="dist-source-hint"></span></p>
+
+                <div class="dist-result" id="dist-result" style="display:none;"></div>
+
+                <div class="row" style="margin-top:14px;">
+                    <button class="primary" id="dist-run" onclick="runDist()">开始分发</button>
+                    <button class="ghost" onclick="closeDist()">取消</button>
+                </div>
             </div>
         </div>
     </div>
@@ -1261,12 +1331,37 @@ function renderArticleRows(list) {
         const tagHtml = (a.tags || '').split(',').map(s => s.trim()).filter(Boolean)
             .map(t => '<span class="mini-tag">' + escapeHtml(t) + '</span>').join('');
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td><a href="/article/${slugHref(a.slug)}" target="_blank">${escapeHtml(a.title)}</a></td>
+        // 标题下方留一个空的徽标位（#dist-badge-<id>），渲染完由 loadDistBadges 异步填「已分发 · 站点名」
+        tr.innerHTML = `<td><a href="/article/${slugHref(a.slug)}" target="_blank">${escapeHtml(a.title)}</a>
+                <div class="dist-badge" id="dist-badge-${a.id}"></div></td>
             <td>${tagHtml || '<span class="muted">—</span>'}</td>
             <td>${BADGE[a.status] || escapeHtml(a.status)}</td><td class="t-time">${fmtTime(a.updatedAt)}</td>
-            <td style="white-space:nowrap;"><button class="ghost" onclick="editArticle(${a.id})">编辑</button>
+            <td style="white-space:nowrap;"><button class="ghost" onclick="openDist(${a.id})">分发</button>
+                <button class="ghost" onclick="editArticle(${a.id})">编辑</button>
                 <button class="ghost" onclick="delArticle(${a.id})">删除</button></td>`;
         tb.appendChild(tr);
+    });
+    loadDistBadges(list.map(a => a.id));
+}
+
+/**
+ * 批量给列表行补「已分发」徽标。
+ *
+ * <p>分发记录不在文章实体上（挂在独立的 dist_records 表），文章列表接口返回的是完整实体，
+ * 硬塞进去会连带影响其它调用方；所以拆成一个按 id 批量查的轻接口，渲染完顺手刷一次。
+ * 徽标纯属锦上添花 —— 拉不到就安静地不显示，别为它弹 toast 打断用户。
+ */
+async function loadDistBadges(ids) {
+    if (!ids || !ids.length) return;
+    let map;
+    try {
+        map = await jget('/api/admin/dist/map?ids=' + ids.join(','));
+    } catch (e) { return; }
+    ids.forEach(id => {
+        const box = $('dist-badge-' + id);
+        if (!box) return;
+        box.innerHTML = (map[String(id)] || [])
+            .map(n => '<span class="dtag">已分发 · ' + escapeHtml(n) + '</span>').join('');
     });
 }
 
@@ -2277,6 +2372,130 @@ function renderCnProgress(p) {
 /* 进编辑面板时若已登录就顺带刷一次账号列表（switchTab 里调用） */
 function maybeLoadCn() {
     if (token) loadCnSites().catch(() => {});
+}
+
+/* ==================== 文章分发（→ WordPress 站点 / 博客园账号） ====================
+   从文章列表行点「分发」打开弹窗：
+     ① 勾选目标 —— WP 站点与博客园账号在同一张清单里，可多选；
+     ② 已分发过的目标会自动勾上，并带出「处理方式」下拉：更新原来那篇 / 发一篇新的；
+     ③ 「原文 / 转载」决定正文尾部要不要带首发链接，「Markdown 原文 / 转成 HTML」决定正文形态。
+   分发是同步的（媒体多时几十秒），逐个目标回结果，一个失败不影响其它。 */
+let distArticleId = null;
+
+async function openDist(articleId) {
+    distArticleId = articleId;
+    $('dist-msg').textContent = '';
+    $('dist-result').style.display = 'none';
+    $('dist-result').innerHTML = '';
+    $('dist-source-hint').textContent = '';
+    $('dist-title').textContent = '分发文章';
+    $('dist-targets').innerHTML = '<div class="dist-row muted">正在加载可分发目标…</div>';
+    $('dist-modal').classList.add('open');
+    try {
+        const d = await jget('/api/admin/dist/targets?articleId=' + articleId);
+        renderDistTargets(d);
+    } catch (e) {
+        $('dist-targets').innerHTML = '<div class="dist-row muted">加载失败：' + escapeHtml(e.message) + '</div>';
+    }
+}
+
+function closeDist() { $('dist-modal').classList.remove('open'); }
+
+function renderDistTargets(d) {
+    $('dist-title').textContent = '分发《' + (d.title || '') + '》';
+    $('dist-source-hint').textContent = '本站地址 ' + (d.siteUrl || '(未配置)') + '，原文 ' + (d.sourceUrl || '');
+    const list = d.targets || [];
+    if (!list.length) {
+        $('dist-targets').innerHTML =
+            '<div class="dist-row muted">还没有关联任何 WordPress 站点或博客园账号，请先到「WordPress」/「博客园」面板关联。</div>';
+        return;
+    }
+    const groups = [
+        { title: 'WordPress 站点', items: list.filter(t => t.channel === 'wp') },
+        { title: '博客园账号', items: list.filter(t => t.channel === 'cnblog') },
+    ];
+    let html = '';
+    groups.forEach(g => {
+        if (!g.items.length) return;
+        html += '<div class="dist-group">' + g.title + '（' + g.items.length + '）</div>';
+        g.items.forEach(t => { html += distRowHtml(t); });
+    });
+    $('dist-targets').innerHTML = html;
+}
+
+/** 一行目标：勾选框 + 名称/网址 + 状态 + （已分发时）处理方式下拉。默认勾上已分发过的。 */
+function distRowHtml(t) {
+    const cbId = 'dist-cb-' + t.channel + '-' + t.targetId;
+    const dist = t.dist;
+    let state;
+    if (!t.ready) {
+        state = '<span class="muted">' + escapeHtml(t.readyHint || '未配置凭据，无法发文') + '</span>';
+    } else if (dist) {
+        const link = dist.remoteUrl
+            ? ' · <a href="' + escapeHtml(dist.remoteUrl) + '" target="_blank" rel="noopener">查看已发文章</a>'
+            : '';
+        state = '<span class="muted">已分发过 ' + (dist.distCount || 1) + ' 次 · 上次 '
+            + escapeHtml(fmtTime(dist.lastDistAt)) + '</span>' + link;
+    } else {
+        state = '<span class="muted">未分发过</span>';
+    }
+    const act = dist ? '<span class="dact">处理方式'
+        + '<select id="dist-act-' + t.channel + '-' + t.targetId + '">'
+        + '<option value="update" selected>更新之前分发的文章</option>'
+        + '<option value="create">分发一个新文章</option>'
+        + '</select></span>' : '';
+    return '<div class="dist-row' + (t.ready ? '' : ' off') + '">'
+        + '<input type="checkbox" id="' + cbId + '" data-ch="' + t.channel + '" data-id="' + t.targetId + '"'
+        + (dist && t.ready ? ' checked' : '') + (t.ready ? '' : ' disabled') + '>'
+        + '<label for="' + cbId + '"><div class="dname">' + escapeHtml(t.name || '')
+        + '</div><div class="durl">' + escapeHtml(t.url || '') + '</div></label>'
+        + '<span class="dstate">' + state + '</span>' + act + '</div>';
+}
+
+async function runDist() {
+    const picked = [...document.querySelectorAll('#dist-targets input[type=checkbox]')]
+        .filter(b => b.checked && !b.disabled)
+        .map(b => {
+            const sel = $('dist-act-' + b.dataset.ch + '-' + b.dataset.id);
+            return { channel: b.dataset.ch, targetId: Number(b.dataset.id), action: sel ? sel.value : 'create' };
+        });
+    if (!picked.length) { toast('请至少勾选一个分发目标'); return; }
+    const btn = $('dist-run');
+    btn.disabled = true;
+    $('dist-msg').textContent = '正在分发，媒体较多时可能要几十秒…';
+    try {
+        const data = await jpost('/api/admin/dist/run', {
+            articleId: distArticleId, mode: $('dist-mode').value,
+            format: $('dist-format').value, targets: picked
+        });
+        if (data.error) { $('dist-msg').textContent = ''; toast(data.error); return; }
+        renderDistResult(data);
+        toast('分发完成：成功 ' + data.ok + ' 个，失败 ' + data.failed + ' 个');
+        loadArticles();                     // 刷新列表上的「已分发」徽标
+    } catch (e) {
+        $('dist-msg').textContent = '';
+        toast('分发失败：' + e.message);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function renderDistResult(data) {
+    $('dist-result').innerHTML = (data.results || []).map(r => {
+        const label = (r.channel === 'cnblog' ? '博客园 · ' : 'WordPress · ') + (r.targetName || ('#' + r.targetId));
+        if (!r.ok) {
+            return '<div class="dline"><span class="dbad">✗</span> ' + escapeHtml(label)
+                + ' —— ' + escapeHtml(r.message || '失败') + '</div>';
+        }
+        const link = r.remoteUrl
+            ? ' <a href="' + escapeHtml(r.remoteUrl) + '" target="_blank" rel="noopener">打开</a>' : '';
+        const warn = (r.warnings && r.warnings.length)
+            ? '<div class="muted">⚠ ' + escapeHtml(r.warnings.join('；')) + '</div>' : '';
+        return '<div class="dline"><span class="dok">✓</span> ' + escapeHtml(label) + ' —— '
+            + (r.updated ? '已更新原文章' : '已发布新文章') + link + warn + '</div>';
+    }).join('');
+    $('dist-result').style.display = '';
+    $('dist-msg').textContent = '成功 ' + data.ok + ' 个，失败 ' + data.failed + ' 个';
 }
 
 /* ---------- tabs ---------- */

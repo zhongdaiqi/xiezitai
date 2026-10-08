@@ -377,6 +377,7 @@ docker run -d --name xiezitai -p 8080:8080 \
 | 安全     | TOTP 两步验证（扫码/密钥绑定）；密码错误 3 次锁 5 分钟、5 次锁 10 分钟、10 次锁 1 小时；全量请求日志；文件魔数扫描 + 孤立文件检测；防篡改基线校验    |
 | 机器人    | 企业微信 webhook 通知（登录/文章/访问/注册/评论/上传），可逐项开关                                         |
 | AI     | OpenAI 兼容接口：润色纠错、摘要、封面图（公众号 900×383）、请求日志风险分析                                    |
+| 分发     | **把文章一键发到关联的 WordPress 站点 / 博客园账号**（可多选）：正文里的站内媒体自动补成绝对地址；可选**原文分发**或**转载分发**（文末附首发链接）；正文可按 Markdown 原文发或转成 HTML 发（发博客园时自动带 `[Markdown]` 分类，否则代码块/表格会被当 HTML 原样贴出）；**已分发过的目标会被记住**，下次可选「更新之前分发的文章」或「分发一个新文章」，文章列表行上用「已分发 · 站点名」徽标标出 |
 | 开放 API | `POST /api/v1/publish`，Header `X-API-Token`（后台「设置」页查看）                           |
 | MCP    | `POST /api/v1/mcp`，JSON-RPC 2.0，工具：publish_article / list_articles / get_article |
 | SEO    | 服务端渲染、robots.txt、sitemap.xml、OG 标签                                               |

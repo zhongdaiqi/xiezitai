@@ -1,6 +1,8 @@
 package cn.xiezitai.controller;
 
+import cn.xiezitai.entity.DistRecord;
 import cn.xiezitai.entity.WpSite;
+import cn.xiezitai.repository.DistRecordRepository;
 import cn.xiezitai.repository.WpSiteRepository;
 import cn.xiezitai.service.WordPressClient;
 import cn.xiezitai.service.WordPressImportService;
@@ -30,12 +32,14 @@ public class WordPressController {
     private final WpSiteRepository sites;
     private final WordPressClient client;
     private final WordPressImportService imports;
+    private final DistRecordRepository distRecords;
 
     public WordPressController(WpSiteRepository sites, WordPressClient client,
-                               WordPressImportService imports) {
+                               WordPressImportService imports, DistRecordRepository distRecords) {
         this.sites = sites;
         this.client = client;
         this.imports = imports;
+        this.distRecords = distRecords;
     }
 
     /* ================= 站点管理 ================= */
@@ -90,6 +94,8 @@ public class WordPressController {
     @DeleteMapping("/sites/{id}")
     public ResponseEntity<?> delete(@PathVariable Long id) {
         if (!sites.existsById(id)) return ResponseEntity.notFound().build();
+        // 指向该站点的分发记录一并清掉，避免列表上挂着一堆点不开的历史目标
+        distRecords.deleteByChannelAndTargetId(DistRecord.CHANNEL_WP, id);
         sites.deleteById(id);
         return ResponseEntity.ok(Map.of("message", "已删除"));
     }

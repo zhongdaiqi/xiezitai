@@ -1,7 +1,9 @@
 package cn.xiezitai.controller;
 
 import cn.xiezitai.entity.CnBlogSite;
+import cn.xiezitai.entity.DistRecord;
 import cn.xiezitai.repository.CnBlogSiteRepository;
+import cn.xiezitai.repository.DistRecordRepository;
 import cn.xiezitai.service.CnBlogImportService;
 import cn.xiezitai.service.MetaWeblogClient;
 import org.slf4j.Logger;
@@ -34,12 +36,14 @@ public class CnBlogController {
     private final CnBlogSiteRepository sites;
     private final MetaWeblogClient client;
     private final CnBlogImportService imports;
+    private final DistRecordRepository distRecords;
 
     public CnBlogController(CnBlogSiteRepository sites, MetaWeblogClient client,
-                            CnBlogImportService imports) {
+                            CnBlogImportService imports, DistRecordRepository distRecords) {
         this.sites = sites;
         this.client = client;
         this.imports = imports;
+        this.distRecords = distRecords;
     }
 
     /* ================= 账号管理 ================= */
@@ -94,6 +98,8 @@ public class CnBlogController {
     @DeleteMapping("/sites/{id}")
     public ResponseEntity<?> delete(@PathVariable Long id) {
         if (!sites.existsById(id)) return ResponseEntity.notFound().build();
+        // 指向该账号的分发记录一并清掉，避免列表上挂着一堆点不开的历史目标
+        distRecords.deleteByChannelAndTargetId(DistRecord.CHANNEL_CNBLOG, id);
         sites.deleteById(id);
         return ResponseEntity.ok(Map.of("message", "已删除"));
     }
