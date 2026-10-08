@@ -35,16 +35,15 @@ services:
       XIEZITAI_JWT_SECRET: ${XIEZITAI_JWT_SECRET:-please-change-me-0123456789abcdef}
       XIEZITAI_UPLOAD_DIR: /app/data/uploads
       XIEZITAI_SITE_URL: ${XIEZITAI_SITE_URL:-https://xiezitai.cn}
-      # 谷歌 Blogger 集成（可选）：OAuth 2.0 客户端凭据。.env 里的键名：
+      # 谷歌 Blogger 集成（可选）：OAuth 2.0 客户端凭据。.env 里就写这两个名字
+      # （全站只认这一种写法，不要用连字符，原因见 .env.example）：
       #   XIEZITAI_GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
       #   XIEZITAI_GOOGLE_CLIENT_SECRET=GOCSPX-xxxxxxxx
-      # 旧名 GOOGLE_XIEZITAI_CLIENT_ID / _SECRET 仍兼容（靠下面的嵌套默认值兜底），
-      # 但不要用连字符写法，原因见 .env.example。
-      # 这里两个值都缺省为空 = 后台显示「未配置 Google OAuth 客户端」，与不传等价，
+      # 两个值都缺省为空 = 后台显示「未配置 Google OAuth 客户端」，与不传等价，
       # 所以可以安全地写「默认空值」（不像上面 AI 那组会顶掉镜像内置默认）。
       # 仓库里没有也不会写真实的 id / secret；后台接口同样永不回显（只回「是否已配置」）。
-      XIEZITAI_GOOGLE_CLIENT_ID: ${XIEZITAI_GOOGLE_CLIENT_ID:-${GOOGLE_XIEZITAI_CLIENT_ID:-}}
-      XIEZITAI_GOOGLE_CLIENT_SECRET: ${XIEZITAI_GOOGLE_CLIENT_SECRET:-${GOOGLE_XIEZITAI_CLIENT_SECRET:-}}
+      XIEZITAI_GOOGLE_CLIENT_ID: ${XIEZITAI_GOOGLE_CLIENT_ID:-}
+      XIEZITAI_GOOGLE_CLIENT_SECRET: ${XIEZITAI_GOOGLE_CLIENT_SECRET:-}
     ports:
       - "8080:8080"
     volumes:

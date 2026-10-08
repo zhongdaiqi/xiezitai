@@ -440,11 +440,9 @@ XIEZITAI_GOOGLE_CLIENT_ID=xxxxxxxxxxxx.apps.googleusercontent.com
 XIEZITAI_GOOGLE_CLIENT_SECRET=GOCSPX-xxxxxxxxxxxxxxxx
 ```
 
-五份 `docker-compose.*.yml` 都按这个名字透传进容器，应用自己也读这个名字。
-**历史名 `GOOGLE_XIEZITAI_CLIENT_ID` / `GOOGLE_XIEZITAI_CLIENT_SECRET` 仍兼容**——compose 里用了
-嵌套默认值 `${XIEZITAI_GOOGLE_CLIENT_ID:-${GOOGLE_XIEZITAI_CLIENT_ID:-}}`，旧名的值会兜给新名，
-所以老的 `.env` 不改名也照样能跑（裸机 / JAR 直跑同理，应用按 `XIEZITAI_GOOGLE_CLIENT_ID` →
-`GOOGLE_XIEZITAI_CLIENT_ID` 的顺序取第一个有值的）。
+键名**全站只有这一种写法**（`XIEZITAI_GOOGLE_CLIENT_ID` / `XIEZITAI_GOOGLE_CLIENT_SECRET`）：
+五份 `docker-compose.*.yml` 按这个名字透传进容器，应用自己的 `application.yml` 也读这个名字，
+裸机 / JAR 直跑同样是它。**没有别名、没有历史名回退**——填错名字的唯一表现就是后台提示「未配置」。
 
 > ⚠️ **别用连字符写法**（`GOOGLE-XIEZITAI-CLIENT_ID`）。它既不是合法的环境变量名，
 > compose 的 `${}` 插值还会把 `-` 当成 `${变量-default}` 的分隔符——`${GOOGLE-XIEZITAI-CLIENT_ID:-}`
