@@ -355,6 +355,8 @@
                     <select id="a-status">
                         <option value="DRAFT">草稿</option>
                         <option value="PUBLISHED">发布</option>
+                        <option value="PENDING">待审核</option>
+                        <option value="REJECTED">已驳回</option>
                     </select>
                     <input type="hidden" id="a-id">
                 </div>
@@ -1547,7 +1549,8 @@ async function loadArticles(page) {
 function renderArticleRows(list) {
     const tb = document.querySelector('#alist tbody');
     tb.innerHTML = '';
-    const BADGE = { PUBLISHED: '<span class="badge b-pub">已发布</span>', DRAFT: '<span class="badge b-draft">草稿</span>' };
+    const BADGE = { PUBLISHED: '<span class="badge b-pub">已发布</span>', DRAFT: '<span class="badge b-draft">草稿</span>',
+                    PENDING: '<span class="badge b-pending">待审核</span>', REJECTED: '<span class="badge b-rejected">已驳回</span>' };
     if (!list.length) {
         const tip = (aListKw || aListStatus) ? '没有匹配的文章' : '还没有文章，点上方「+ 新建文章」开始写';
         tb.innerHTML = '<tr><td colspan="5" id="alist-empty">' + tip + '</td></tr>';
@@ -1560,12 +1563,16 @@ function renderArticleRows(list) {
             .map(t => '<span class="mini-tag">' + escapeHtml(t) + '</span>').join('');
         const tr = document.createElement('tr');
         // 标题下方留一个空的徽标位（#dist-badge-<id>），渲染完由 loadDistBadges 异步填「已分发 · 站点名」
+        const reviewBtns = a.status === 'PENDING'
+            ? iconBtn('pub', '通过审核并公开', `reviewArticle(${a.id}, 'approve')`)
+                + iconBtn('del', '驳回（作者会看到原因）', `reviewArticle(${a.id}, 'reject')`, true)
+            : '';
         tr.innerHTML = `<td><a href="/${slugHref(a.slug)}" target="_blank">${escapeHtml(a.title)}</a>
                 <div class="dist-badge" id="dist-badge-${a.id}"></div></td>
             <td>${tagHtml || '<span class="muted">—</span>'}</td>
             <td>${BADGE[a.status] || escapeHtml(a.status)}</td><td class="t-time">${fmtTime(a.updatedAt)}</td>
-            <td>${actCell(
-                iconBtn('dist', '分发到写字台 / Blogger / WordPress / 博客园', `openDist(${a.id})`)
+            <td>${actCell(reviewBtns
+                + iconBtn('dist', '分发到写字台 / Blogger / WordPress / 博客园', `openDist(${a.id})`)
                 + iconBtn('edit', '编辑', `editArticle(${a.id})`)
                 + iconBtn('del', '删除', `delArticle(${a.id})`, true))}</td>`;
         tb.appendChild(tr);
@@ -1726,6 +1733,20 @@ async function delArticle(id) {
     if (!confirm('确定删除？')) return;
     await api('/api/admin/articles/' + id, { method: 'DELETE' });
     delete articlesCache[id];
+    loadArticles();
+}
+/** 投稿审核：approve 公开 / reject 驳回（可填原因，作者在 App「我的文章」里会看到） */
+async function reviewArticle(id, action) {
+    const body = { action };
+    if (action === 'reject') {
+        const note = prompt('驳回原因（可留空，作者在 App 里会看到）：');
+        if (note === null) return;   // 点了取消就不动这篇文章
+        body.note = note;
+    } else if (!confirm('通过审核并公开这篇文章？')) return;
+    const r = await jpost('/api/admin/articles/' + id + '/review', body);
+    if (r && r.error) { toast('审核失败：' + r.error); return; }
+    delete articlesCache[id];
+    toast(action === 'approve' ? '已通过审核并公开' : '已驳回');
     loadArticles();
 }
 

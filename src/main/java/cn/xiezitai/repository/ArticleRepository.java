@@ -16,6 +16,9 @@ public interface ArticleRepository extends JpaRepository<Article, Long> {
     Page<Article> findAllByOrderByUpdatedAtDesc(Pageable pageable);
     boolean existsBySlug(String slug);
 
+    /** 「我的文章」（App 内作者看自己的全部状态：待审/驳回/已发布） */
+    Page<Article> findByAuthorOrderByUpdatedAtDesc(String author, Pageable pageable);
+
     /**
      * 后台文章列表：关键词（标题 / 摘要 / 正文 / 标签）+ 状态双条件过滤。
      *

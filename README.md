@@ -488,6 +488,25 @@ curl -s 'https://xiezitai.cn/api/v1/articles?page=1&size=5' -H 'X-API-Token: <�
 > **导出时正文与封面里的站内资源会补成绝对地址**（`/media/x.png` → `https://站点/media/x.png`）——
 > 对端（例如另一台写字台做「跨站导入」）据此判断哪些是本站自身文件、需要下载落盘，哪些是第三方外链应当原样保留。
 
+## 投稿审核与移动端（/api/my/**）
+
+为手机客户端（`zhongdaiqi/xiezitai-flutter`）提供的作者接口，整体要求登录（`Authorization: Bearer <JWT>`）。
+**权限模型：管理员发布直接公开；普通登录用户投稿进入待审核（PENDING），
+审核前只有作者本人和管理员可见；驳回后同样只有本人可见，作者可改后重投。**
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET /api/my/articles` | 我自己的文章（含待审 / 驳回），按更新时间倒序 |
+| `POST /api/my/articles` | 投稿：普通用户一律 `PENDING`（请求里的 `status` 不采纳）；管理员直接 `PUBLISHED` 并通知 |
+| `PUT /api/my/articles/{id}` | 改自己的文章（仅限作者）：普通用户改完回炉 `PENDING` 重新审核，防止「先过审再改内容」 |
+| `DELETE /api/my/articles/{id}` | 删自己的文章 |
+| `POST /api/admin/articles/{id}/review` | 审核投稿：`{"action":"approve"}` 公开 / `{"action":"reject","note":"原因"}` 驳回（原因作者可见） |
+
+可见性口径：文章状态新增 `PENDING`（待审核）与 `REJECTED`（已驳回）。
+`GET /api/articles/{slug}` 只有 `PUBLISHED` 对所有人可见；非公开文章仅作者与管理员可取（其余 404），
+且**预览不计入阅读数**。手机 App 取详情走的就是这条公开接口，所以阅读计数天然覆盖手机端，无需单独上报。
+管理后台「文章」列表支持按待审核 / 已驳回筛选，待审行内可直接通过或驳回。
+
 ## MCP 接入示例
 
 后台「设置 → 开放 API / MCP」会按当前登录账号把下面三份配置**实时生成好并支持一键复制**

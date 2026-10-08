@@ -2,8 +2,10 @@ package cn.xiezitai.controller;
 
 import cn.xiezitai.entity.Article;
 import cn.xiezitai.entity.FileEntity;
+import cn.xiezitai.entity.User;
 import cn.xiezitai.repository.ArticleRepository;
 import cn.xiezitai.repository.DistRecordRepository;
+import cn.xiezitai.repository.UserRepository;
 import cn.xiezitai.service.AiService;
 import cn.xiezitai.service.AiTextCleaner;
 import cn.xiezitai.service.ArticleService;
@@ -33,14 +35,16 @@ public class ArticleController {
     private final AiService ai;
     private final MediaStoreService media;
     private final DistRecordRepository distRecords;
+    private final UserRepository users;
 
     public ArticleController(ArticleRepository articles, ArticleService articleService, AiService ai,
-                             MediaStoreService media, DistRecordRepository distRecords) {
+                             MediaStoreService media, DistRecordRepository distRecords, UserRepository users) {
         this.articles = articles;
         this.articleService = articleService;
         this.ai = ai;
         this.media = media;
         this.distRecords = distRecords;
+        this.users = users;
     }
 
     /* ================= 公开接口 ================= */
@@ -51,12 +55,32 @@ public class ArticleController {
         return articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(page, size));
     }
 
+    /**
+     * 公开详情：只有 PUBLISHED 对所有人可见；
+     * PENDING / REJECTED（投稿流程）与 DRAFT 只对「作者本人 + 管理员」可见，
+     * 其余访问一律 404（不暴露「存在但没权限」）。预览自己的非公开文章**不计数**。
+     *
+     * <p>手机 App 与网页共用这条接口取正文，所以阅读计数天然覆盖手机端 ——
+     * 不需要单独的计数接口，也不会双计。
+     */
     @GetMapping("/articles/{slug}")
-    public ResponseEntity<Article> getPublic(@PathVariable String slug) {
+    public ResponseEntity<Article> getPublic(@PathVariable String slug, Authentication auth) {
         Article a = articles.findBySlug(slug).orElse(null);
-        if (a == null || !ArticleService.isPublished(a)) return ResponseEntity.notFound().build();
+        if (a == null) return ResponseEntity.notFound().build();
+        if (!ArticleService.isPublished(a)) {
+            if (!canPreview(auth, a)) return ResponseEntity.notFound().build();
+            return ResponseEntity.ok(a);
+        }
         articleService.increaseView(a);
         return ResponseEntity.ok(a);
+    }
+
+    /** 是否允许看这篇未公开文章：作者本人，或管理员 */
+    private boolean canPreview(Authentication auth, Article a) {
+        if (auth == null || auth.getName() == null) return false;
+        if (auth.getName().equals(a.getAuthor())) return true;
+        User u = users.findByUsername(auth.getName()).orElse(null);
+        return u != null && "ADMIN".equals(u.getRole());
     }
 
     /* ================= 管理接口 ================= */
@@ -150,6 +174,38 @@ public class ArticleController {
         distRecords.deleteByArticleId(id);
         articles.deleteById(id);
         return ResponseEntity.ok(Map.of("message", "已删除"));
+    }
+
+    /**
+     * 投稿审核（App / 后台通用）：approve → PUBLISHED 公开；reject → REJECTED（只有作者可见，可改后重投）。
+     * 幂等性不做强约束：重复 approve 一篇已发布的文章等价于无操作。
+     */
+    @PostMapping("/admin/articles/{id}/review")
+    public ResponseEntity<?> review(@PathVariable Long id, @RequestBody Map<String, String> body,
+                                    Authentication auth) {
+        User admin = users.findByUsername(auth.getName()).orElse(null);
+        if (admin == null || !"ADMIN".equals(admin.getRole())) {
+            return ResponseEntity.status(403).body(Map.of("error", "需要管理员权限"));
+        }
+        Article a = articles.findById(id).orElse(null);
+        if (a == null) return ResponseEntity.notFound().build();
+        String action = body.getOrDefault("action", "");
+        if ("approve".equals(action)) {
+            a.setStatus("PUBLISHED");
+            a.setPublishedAt(LocalDateTime.now());
+            a.setReviewNote(null);
+            Article saved = articles.save(a);
+            articleService.publishNotify(saved, admin.getUsername());
+            return ResponseEntity.ok(saved);
+        }
+        if ("reject".equals(action)) {
+            a.setStatus("REJECTED");
+            String note = body.getOrDefault("note", "").trim();
+            a.setReviewNote(note.isEmpty() ? null : note.substring(0, Math.min(note.length(), 300)));
+            articles.save(a);
+            return ResponseEntity.ok(a);
+        }
+        return ResponseEntity.badRequest().body(Map.of("error", "action 只支持 approve / reject"));
     }
 
     /** AI 润色 / 纠错 */

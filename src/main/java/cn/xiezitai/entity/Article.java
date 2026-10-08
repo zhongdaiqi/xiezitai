@@ -41,11 +41,24 @@ public class Article {
     @Column(length = 500)
     private String cover;
 
-    /** DRAFT / PUBLISHED */
+    /**
+     * DRAFT / PENDING / PUBLISHED / REJECTED。
+     *
+     * <ul>
+     *   <li>{@code DRAFT}    草稿（后台手工建文默认）</li>
+     *   <li>{@code PENDING}  待审核 —— 普通登录用户提交的文章，只有作者本人和管理员可见</li>
+     *   <li>{@code PUBLISHED}已发布（公开可见；必须带 publishedAt 才算真发布，见 ArticleService.isPublished）</li>
+     *   <li>{@code REJECTED} 已驳回 —— 审核没过，同样只有作者本人和管理员可见；作者改完可再次提交</li>
+     * </ul>
+     */
     private String status = "DRAFT";
 
     @Column(length = 50)
     private String author;
+
+    /** 驳回原因：审核驳回时写给作者看（App 内「我的文章」里展示） */
+    @Column(length = 300)
+    private String reviewNote;
 
     /** SEO */
     @Column(length = 500)
@@ -92,6 +105,8 @@ public class Article {
     public void setStatus(String status) { this.status = status; }
     public String getAuthor() { return author; }
     public void setAuthor(String author) { this.author = author; }
+    public String getReviewNote() { return reviewNote; }
+    public void setReviewNote(String reviewNote) { this.reviewNote = reviewNote; }
     public String getSeoKeywords() { return seoKeywords; }
     public void setSeoKeywords(String seoKeywords) { this.seoKeywords = seoKeywords; }
     public String getSeoDescription() { return seoDescription; }
