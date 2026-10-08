@@ -285,6 +285,7 @@
             <button class="tab" data-p="wp" onclick="switchTab(this)">WordPress</button>
             <button class="tab" data-p="cnblog" onclick="switchTab(this)">博客园</button>
             <button class="tab" data-p="xz" onclick="switchTab(this)">写字台</button>
+            <button class="tab" data-p="blogger" onclick="switchTab(this)">Blogger</button>
             <button class="tab" data-p="comments" onclick="switchTab(this)">评论</button>
             <button class="tab" data-p="users" onclick="switchTab(this)">用户</button>
             <button class="tab" data-p="security" onclick="switchTab(this)">安全</button>
@@ -686,6 +687,68 @@
         </div>
     </div>
 
+    <!-- 谷歌 Blogger：OAuth 2.0 授权关联多个博客 → 浏览 Blogger 文章 →
+         单篇导入 / 整站导入（进度轮询）。凭据是 OAuth 令牌（只落库、接口不回显，后端 WRITE_ONLY）；
+         client_id / client_secret 只从环境变量读，不进后台、不进仓库。 -->
+    <div class="panel" id="p-blogger">
+        <div class="card">
+            <div class="list-head">
+                <h3>谷歌 Blogger 博客 <span class="count" id="gblist-count"></span></h3>
+                <button class="primary" id="gb-oauth" onclick="startBloggerOAuth()">关联 Google 账号</button>
+            </div>
+            <p class="muted">点「关联 Google 账号」会弹出 Google 的授权页，同意后自动回到本站。
+                一个 Google 账号下的<b>所有博客</b>都会一并关联（不要的一个个解除即可）；
+                换另一个 Google 账号再点一次，就能再关联一批 —— 于是支持同时挂多个账号。</p>
+            <p class="muted">授权令牌只保存在本站数据库，接口永不回传明文，也不会写入任何代码仓库。
+                <span id="gb-status"></span></p>
+            <p class="muted">关联后的博客既是<b>导入源</b>（浏览它的文章，单篇或整站导入本站），
+                也是<b>文章分发</b>的可选目标（在「文章」列表里点该行的分发图标）。</p>
+            <div class="table-wrap">
+                <table id="gblist"><thead><tr><th>博客</th><th>Google 账号</th><th>授权</th><th>上次同步</th><th>操作</th></tr></thead><tbody></tbody></table>
+            </div>
+        </div>
+
+        <div class="card" id="gb-browse-card" style="display:none;">
+            <div class="list-head">
+                <h3 id="gb-browse-title">文章列表</h3>
+                <button class="primary" id="gb-import-all" onclick="gbImportAll()">整站导入</button>
+            </div>
+            <div class="alist-filter">
+                <label class="muted" style="font-size:13px; white-space:nowrap; display:inline-flex; align-items:center; gap:6px;">发布时间
+                    <select id="gb-date-mode" style="padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--card, #fff);">
+                        <option value="src" selected>用 Blogger 原发布时间</option>
+                        <option value="now">用当前时间</option>
+                    </select>
+                </label>
+                <label class="muted" style="font-size:13px; white-space:nowrap; display:inline-flex; align-items:center; gap:6px;">已存在时
+                    <select id="gb-conflict" style="padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--card, #fff);">
+                        <option value="skip" selected>跳过</option>
+                        <option value="update">用 Blogger 版本更新</option>
+                    </select>
+                </label>
+                <button class="ghost" onclick="gbTestSite()">测试连接</button>
+            </div>
+            <p class="muted" style="margin:0 0 10px;">Blogger 的正文是 HTML，导入时会自动还原成 Markdown
+                （代码块 / 表格 / 嵌套列表都会保留）；属于 Blogger 自家的图片会下载落盘到本站媒体库，
+                第三方图床的外链保持原样。</p>
+            <div class="table-wrap">
+                <table id="gbposts"><thead><tr><th>标题</th><th>发布日期</th><th>标签</th><th>操作</th></tr></thead><tbody></tbody></table>
+            </div>
+            <div class="pager" id="gbposts-pager"></div>
+
+            <!-- 整站导入进度：轮询 /api/admin/blogger/sites/{id}/progress（RUNNING 期间 1.2s 一次） -->
+            <div id="gb-progress" style="display:none; margin-top:14px;">
+                <div class="row" style="align-items:center;">
+                    <div style="flex:1; height:10px; background:var(--bg); border:1px solid var(--line); border-radius:6px; overflow:hidden;">
+                        <div id="gb-progress-bar" style="height:100%; width:0%; background:#2563eb; transition:width .4s;"></div>
+                    </div>
+                    <span class="muted" id="gb-progress-text"></span>
+                </div>
+                <pre id="gb-progress-log" style="background:var(--bg); padding:10px; border-radius:8px; font-size:12px; max-height:220px; overflow:auto; white-space:pre-wrap; margin-top:8px;"></pre>
+            </div>
+        </div>
+    </div>
+
     <!-- 评论 -->
     <div class="panel" id="p-comments">
         <div class="card">
@@ -841,7 +904,7 @@
         </div>
     </div>
 
-    <!-- 分发弹窗：一篇文章 → 若干写字台账号 / WordPress 站点 / 博客园账号。
+    <!-- 分发弹窗：一篇文章 → 若干写字台账号 / 谷歌 Blogger / WordPress 站点 / 博客园账号。
          已分发过的目标会带出「处理方式」（更新原来那篇 / 发一篇新的）与已发文章的链接；
          另可选「原文 / 转载」与「Markdown 原文 / 转成 HTML」。 -->
     <div class="modal" id="dist-modal">
@@ -875,7 +938,8 @@
                 <p class="muted" style="margin:0 0 4px;">正文里的站内图片会自动补成绝对地址，对方站点才看得到。
                     「转载分发」会在文末加一行「本文由写字台首发，原文链接：…」。</p>
                 <p class="muted" style="margin:0;">博客园与装了 Markdown 插件的 WP 站点请用「Markdown 原文」；
-                    没装 Markdown 插件的站点改用「转成 HTML」。<b>写字台一律按 Markdown 原文发送</b>，不看这项。
+                    没装 Markdown 插件的站点改用「转成 HTML」。<b>写字台一律按 Markdown 原文发送</b>、
+                    <b>Blogger 一律渲染成 HTML 发送</b>（Blogger 不认 Markdown），这两项都会被忽略。
                     <span id="dist-source-hint"></span></p>
 
                 <div class="dist-result" id="dist-result" style="display:none;"></div>
@@ -1501,7 +1565,7 @@ function renderArticleRows(list) {
             <td>${tagHtml || '<span class="muted">—</span>'}</td>
             <td>${BADGE[a.status] || escapeHtml(a.status)}</td><td class="t-time">${fmtTime(a.updatedAt)}</td>
             <td>${actCell(
-                iconBtn('dist', '分发到写字台 / WordPress / 博客园', `openDist(${a.id})`)
+                iconBtn('dist', '分发到写字台 / Blogger / WordPress / 博客园', `openDist(${a.id})`)
                 + iconBtn('edit', '编辑', `editArticle(${a.id})`)
                 + iconBtn('del', '删除', `delArticle(${a.id})`, true))}</td>`;
         tb.appendChild(tr);
@@ -2867,12 +2931,295 @@ function maybeLoadXz() {
     if (token) loadXzSites().catch(() => {});
 }
 
-/* ==================== 文章分发（→ 写字台账号 / WordPress 站点 / 博客园账号） ====================
+/* ==================== 谷歌 Blogger 账号关联与导入 ====================
+   授权走 OAuth 2.0：点「关联 Google 账号」→ 后端签发带签名 state 的授权地址 →
+   弹窗打开 Google 同意页 → 用户同意后 Google 302 回本站 /google/auth/redirect
+   （后端换令牌、列出该账号的所有博客、落库）→ 那一页用 postMessage 把结果送回本窗口
+   （见文件末尾的 message 监听）→ 这里刷新列表。
+   弹窗被浏览器拦截时退化为「当前标签页打开」，那种情况下回调页会自动跳回 #blogger。
+   导入与「写字台」面板同构：浏览（Blogger 用 pageToken 翻页）/ 单篇导入 / 整站导入（轮询进度）。 */
+let gbSites = [];
+let gbGroups = [];            // 按 Google 账号分组（「解除整个账号」按分组下标定位，不往内联属性里塞邮箱）
+let gbSiteId = null;          // 当前浏览/导入的博客
+let gbTokens = [''];          // pageToken 翻页的栈：下标 = 页码，值 = 该页起始 token
+let gbPage = 0, gbHasNext = false, gbTotal = -1;
+let gbPollTimer = null;
+
+async function loadBloggerSites() {
+    const list = await jget('/api/admin/blogger/sites');
+    gbSites = list || [];
+    $('gblist-count').textContent = gbSites.length ? '（' + gbSites.length + '）' : '';
+    $('gb-status').textContent = '';
+    $('gb-oauth').disabled = false;
+    try {
+        const st = await jget('/api/admin/blogger/status');
+        if (st && st.configured === false) {
+            $('gb-status').textContent = '⚠️ 本站尚未配置 Google OAuth 客户端（部署环境需要 '
+                + 'GOOGLE-XIEZITAI-CLIENTID / GOOGLE-XIEZITAI-CLIENT_SECRET），暂时无法发起关联。';
+            $('gb-oauth').disabled = true;
+        }
+    } catch (e) { /* 状态接口拿不到不影响列表展示 */ }
+
+    const tb = document.querySelector('#gblist tbody');
+    if (!gbSites.length) {
+        tb.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:center; padding:18px 0;">'
+            + '还没有关联谷歌 Blogger 博客，点右上角「关联 Google 账号」开始</td></tr>';
+        return;
+    }
+    // 按 Google 账号分组：一个账号下可能有多个博客，「解除整个账号」放在组头上
+    gbGroups = [];
+    gbSites.forEach(s => {
+        const key = s.googleEmail || '(未知账号)';
+        let g = gbGroups.find(x => x.key === key);
+        if (!g) { g = { key, items: [] }; gbGroups.push(g); }
+        g.items.push(s);
+    });
+    let html = '';
+    gbGroups.forEach((g, gi) => {
+        html += '<tr><td colspan="5" style="background:var(--bg); font-size:12px;">'
+            + 'Google 账号：' + escapeHtml(g.key) + '（' + g.items.length + ' 个博客）'
+            + '<button class="ghost" style="margin-left:10px; padding:2px 8px; font-size:12px;"'
+            + ' onclick="delBloggerAccount(' + gi + ')">解除整个账号</button></td></tr>';
+        html += g.items.map(s => '<tr>'
+            + '<td>' + escapeHtml(String(s.name || s.url || ('#' + s.id)))
+            + '<div class="muted" style="font-size:12px;">' + escapeHtml(String(s.url || '')) + '</div></td>'
+            + '<td class="muted">' + escapeHtml(String(s.googleEmail || '—')) + '</td>'
+            + '<td>' + (s.hasAuth ? '<span class="mini-tag">已授权</span>' : '<span class="muted">未授权</span>') + '</td>'
+            + '<td class="muted">' + (s.lastSyncAt
+                ? escapeHtml(String(s.lastSyncAt).replace('T', ' ').slice(0, 16)) : '—') + '</td>'
+            + '<td>' + actCell(
+                '<button class="ghost" onclick="browseBloggerSite(' + s.id + ')">浏览文章</button>'
+                + '<button class="ghost" onclick="gbTestSite(' + s.id + ')">测试连接</button>'
+                + iconBtn('del', '解除关联', 'delBloggerSite(' + s.id + ')', true)) + '</td>'
+            + '</tr>').join('');
+    });
+    tb.innerHTML = html;
+}
+
+/** 发起 Google 授权：先问后端要一个带签名 state 的授权地址，再在弹窗里打开 */
+async function startBloggerOAuth() {
+    const btn = $('gb-oauth');
+    btn.disabled = true;
+    try {
+        const res = await api('/api/admin/blogger/oauth/url', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) { toast(data.error || '发起授权失败'); return; }
+        const w = window.open(data.url, 'google-oauth', 'width=640,height=780,menubar=no,toolbar=no');
+        if (!w) {
+            toast('浏览器拦截了弹窗，改在当前页面打开 Google 授权页…');
+            location.href = data.url;      // 回调页在没有 opener 时会自动跳回 #blogger
+            return;
+        }
+        toast('已打开 Google 授权页，请在弹窗里选择账号并同意');
+    } catch (e) {
+        toast('发起授权失败：' + e.message);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+/** OAuth 回调页把结果 postMessage 回来（该页随后会自己关闭） */
+window.addEventListener('message', (e) => {
+    if (e.origin !== location.origin) return;
+    if (!e.data || e.data.type !== 'blogger-oauth') return;
+    const r = e.data.result || {};
+    toast((r.ok ? 'Google 授权成功：' : 'Google 授权未完成：') + (r.message || ''));
+    loadBloggerSites().catch(() => {});
+    if (r.ok && gbSites.length) switchTab(document.querySelector('.tab[data-p="blogger"]'));
+});
+
+async function delBloggerSite(id) {
+    const site = (gbSites || []).find(s => s.id === id);
+    const label = site ? (site.name || site.url) : ('#' + id);
+    if (!confirm('确定解除与博客「' + label + '」的关联？已导入的文章不受影响。')) return;
+    const res = await api('/api/admin/blogger/sites/' + id, { method: 'DELETE' });
+    if (res.ok) {
+        if (gbSiteId === id) closeBloggerBrowse();
+        toast('已解除关联');
+        loadBloggerSites();
+    } else toast('解除失败');
+}
+
+/** 解除整个 Google 账号（按分组下标取邮箱，不从内联属性里传字符串） */
+async function delBloggerAccount(gi) {
+    const g = (gbGroups || [])[gi];
+    if (!g) return;
+    if (!confirm('确定解除 Google 账号「' + g.key + '」下的全部 ' + g.items.length + ' 个博客关联？已导入的文章不受影响。')) return;
+    const res = await api('/api/admin/blogger/accounts?email=' + encodeURIComponent(g.key), { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+        closeBloggerBrowse();
+        toast(data.message || '已解除该账号下的博客关联');
+        loadBloggerSites();
+    } else toast(data.error || '解除失败');
+}
+
+async function gbTestSite(id) {
+    const sid = id || gbSiteId;
+    if (!sid) return;
+    toast('正在测试连接…');
+    const res = await api('/api/admin/blogger/sites/' + sid + '/test', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+        toast('连接正常：' + (data.blog || '') + (data.totalPosts >= 0 ? ' · 共 ' + data.totalPosts + ' 篇文章' : ''));
+    } else {
+        toast(data.error || '连接失败');
+    }
+}
+
+/* ---------- 浏览某个博客的文章 ---------- */
+function browseBloggerSite(id) {
+    gbSiteId = id;
+    const s = (gbSites || []).find(x => x.id === id) || {};
+    $('gb-browse-title').textContent = '文章列表 · ' + (s.name || s.url || '');
+    $('gb-browse-card').style.display = '';
+    gbTokens = [''];
+    loadBloggerPosts(0);
+    checkGbProgress();          // 若该博客此前有任务在跑，恢复进度条
+}
+
+function closeBloggerBrowse() {
+    gbSiteId = null;
+    $('gb-browse-card').style.display = 'none';
+    stopGbPoll();
+}
+
+async function loadBloggerPosts(page) {
+    if (!gbSiteId) return;
+    const token = gbTokens[page] || '';
+    const res = await api('/api/admin/blogger/sites/' + gbSiteId + '/posts'
+        + (token ? '?pageToken=' + encodeURIComponent(token) : ''));
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || '拉取文章列表失败'); return; }
+    gbPage = page;
+    gbTotal = typeof data.total === 'number' ? data.total : -1;
+    gbHasNext = !!data.nextPageToken;
+    if (gbHasNext) gbTokens[page + 1] = data.nextPageToken;      // 下一页的起始 token
+    else gbTokens = gbTokens.slice(0, page + 1);                 // 后面没有页了，把旧 token 丢掉
+
+    const tb = document.querySelector('#gbposts tbody');
+    if (!data.posts || !data.posts.length) {
+        tb.innerHTML = '<tr><td colspan="4" class="muted" style="text-align:center; padding:18px 0;">这个博客还没有已发布的文章</td></tr>';
+    } else {
+        tb.innerHTML = data.posts.map(p => `<tr>
+            <td><a href="${escapeHtml(p.url || '#')}" target="_blank" rel="noopener">${escapeHtml(p.title || '(无标题)')}</a></td>
+            <td>${escapeHtml(String(p.published || '').replace('T', ' ').slice(0, 16))}</td>
+            <td class="muted">${escapeHtml((p.labels || []).join(','))}</td>
+            <td><button class="ghost" onclick="gbImportOne('${escapeHtml(p.id)}')">导入</button></td>
+        </tr>`).join('');
+    }
+    // 翻页：Blogger 是 token 式翻页（没有总页数），只显示「第 N 页」与总数作参考
+    const from = gbTotal > 0 ? page * 50 + 1 : 0;
+    const to = gbTotal > 0 ? Math.min(page * 50 + 50, gbTotal) : 0;
+    $('gbposts-pager').innerHTML = `<span class="pinfo">`
+        + (gbTotal >= 0 ? `共 ${gbTotal} 篇 · 第 ${from}-${to} 条 · ` : '')
+        + `第 ${page + 1} 页</span>
+        <span class="pbtns">
+            <button class="ghost" onclick="loadBloggerPosts(0)" ${page <= 0 ? 'disabled' : ''}>首页</button>
+            <button class="ghost" onclick="loadBloggerPosts(${page - 1})" ${page <= 0 ? 'disabled' : ''}>上一页</button>
+            <button class="ghost" onclick="loadBloggerPosts(${page + 1})" ${gbHasNext ? '' : 'disabled'}>下一页</button>
+        </span>`;
+}
+
+/* ---------- 单篇导入 ---------- */
+function gbUseSrcDate() { return $('gb-date-mode').value !== 'now'; }
+function gbOnConflict() { return $('gb-conflict').value === 'update' ? 'update' : 'skip'; }
+
+async function gbImportOne(postId) {
+    toast('正在导入，媒体较多时可能需要几十秒…');
+    const res = await api('/api/admin/blogger/sites/' + gbSiteId + '/import', {
+        method: 'POST',
+        body: JSON.stringify({ postId: String(postId), useSrcDate: gbUseSrcDate(), onConflict: gbOnConflict() })
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || '导入失败'); return; }
+    if (data.imported) {
+        const tagNote = data.tags ? ' · 标签：' + data.tags : '';
+        toast((data.updated ? '已更新' : '导入成功') + '：《' + (data.title || '') + '》' + tagNote
+            + (data.warnings && data.warnings.length ? '（' + data.warnings.length + ' 条媒体警告，详见控制台）' : ''));
+        if (data.warnings && data.warnings.length) console.warn('Blogger 导入媒体警告：', data.warnings);
+    } else {
+        toast(data.message || '该文章已存在，已跳过');
+    }
+}
+
+/* ---------- 整站导入 + 进度轮询 ---------- */
+async function gbImportAll() {
+    if (!gbSiteId) return;
+    const dateNote = gbUseSrcDate() ? '发布时间沿用 Blogger 原发布时间' : '发布时间统一改为当前时间';
+    const conflictNote = gbOnConflict() === 'update'
+        ? '本地已存在的同 slug 文章会被 Blogger 版本覆盖更新'
+        : '本地已存在同 slug 的文章会自动跳过';
+    if (!confirm('开始整站导入？将把该博客的全部已发布文章导入本站，' + dateNote + '；' + conflictNote + '。'
+        + '文章多、图片多时会跑上一会儿，进度会显示在下面。')) return;
+    const res = await api('/api/admin/blogger/sites/' + gbSiteId + '/import-all', {
+        method: 'POST', body: JSON.stringify({ useSrcDate: gbUseSrcDate(), onConflict: gbOnConflict() })
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || '启动失败'); return; }
+    toast('整站导入已启动');
+    $('gb-progress').style.display = '';
+    renderGbProgress({ phase: 'RUNNING', total: -1, messages: ['任务已启动，正在统计文章总数…'] });
+    startGbPoll();
+}
+
+function startGbPoll() {
+    stopGbPoll();
+    gbPollTimer = setInterval(checkGbProgress, 1200);
+    checkGbProgress();
+}
+
+function stopGbPoll() {
+    if (gbPollTimer) { clearInterval(gbPollTimer); gbPollTimer = null; }
+}
+
+async function checkGbProgress() {
+    if (!gbSiteId) return;
+    let data;
+    try {
+        const res = await api('/api/admin/blogger/sites/' + gbSiteId + '/progress');
+        data = await res.json();
+    } catch (e) { return; }
+    if (!data || data.phase === 'IDLE') return;      // 没有任务：不动进度区
+    $('gb-progress').style.display = '';
+    renderGbProgress(data);
+    if (data.phase === 'RUNNING') {
+        if (!gbPollTimer) startGbPoll();
+    } else {
+        stopGbPoll();
+        if (data.phase === 'DONE') {
+            toast('整站导入完成：成功 ' + data.imported + '，更新 ' + (data.updated || 0)
+                + '，跳过 ' + data.skipped + '，失败 ' + data.failed);
+            loadBloggerSites();                      // 刷新「上次同步」
+        } else if (data.phase === 'FAILED') {
+            toast('整站导入中断：' + (data.error || '未知错误'));
+        }
+    }
+}
+
+function renderGbProgress(p) {
+    const total = p.total >= 0 ? p.total : null;
+    const pct = total ? Math.min(100, Math.round(p.done / total * 100)) : (p.phase === 'DONE' ? 100 : 0);
+    $('gb-progress-bar').style.width = pct + '%';
+    const statusLabel = { RUNNING: '导入中', DONE: '已完成', FAILED: '已中断' }[p.phase] || p.phase;
+    $('gb-progress-text').textContent = statusLabel
+        + (total ? ' ' + p.done + '/' + total + '（' + pct + '%）' : ' ' + p.done + ' 篇')
+        + (p.current ? ' · ' + p.current : '');
+    const lines = (p.messages || []).slice(-12);
+    $('gb-progress-log').textContent = lines.join('\n') + (lines.length ? '\n' : '');
+}
+
+/* 进 Blogger 面板时若已登录就顺带刷一次博客列表（switchTab 里调用） */
+function maybeLoadBlogger() {
+    if (token) loadBloggerSites().catch(() => {});
+}
+
+/* ==================== 文章分发（→ 写字台账号 / 谷歌 Blogger / WordPress 站点 / 博客园账号） ====================
    从文章列表行点「分发」打开弹窗：
-     ① 勾选目标 —— 写字台账号、WP 站点与博客园账号在同一张清单里，可多选；
+     ① 勾选目标 —— 写字台账号、Blogger 博客、WP 站点与博客园账号在同一张清单里，可多选；
      ② 已分发过的目标会自动勾上，并带出「处理方式」下拉：更新原来那篇 / 发一篇新的；
      ③ 「原文 / 转载」决定正文尾部要不要带首发链接，「Markdown 原文 / 转成 HTML」决定正文形态
-        （写字台固定按 Markdown 发，后端会忽略这项并回一条 warning）。
+        （写字台固定按 Markdown 发、Blogger 固定按 HTML 发，后端会忽略这项并回一条 warning）。
    分发是同步的（媒体多时几十秒），逐个目标回结果，一个失败不影响其它。 */
 let distArticleId = null;
 
@@ -2901,12 +3248,13 @@ function renderDistTargets(d) {
     const list = d.targets || [];
     if (!list.length) {
         $('dist-targets').innerHTML =
-            '<div class="dist-row muted">还没有关联任何写字台账号、WordPress 站点或博客园账号，'
-            + '请先到「写字台」/「WordPress」/「博客园」面板关联。</div>';
+            '<div class="dist-row muted">还没有关联任何写字台账号、谷歌 Blogger、WordPress 站点或博客园账号，'
+            + '请先到「写字台」/「Blogger」/「WordPress」/「博客园」面板关联。</div>';
         return;
     }
     const groups = [
         { title: '写字台账号', items: list.filter(t => t.channel === 'xz') },
+        { title: '谷歌 Blogger', items: list.filter(t => t.channel === 'blogger') },
         { title: 'WordPress 站点', items: list.filter(t => t.channel === 'wp') },
         { title: '博客园账号', items: list.filter(t => t.channel === 'cnblog') },
     ];
@@ -2979,7 +3327,8 @@ async function runDist() {
 function renderDistResult(data) {
     $('dist-result').innerHTML = (data.results || []).map(r => {
         const label = (r.channel === 'cnblog' ? '博客园 · '
-            : (r.channel === 'xz' ? '写字台 · ' : 'WordPress · ')) + (r.targetName || ('#' + r.targetId));
+            : (r.channel === 'xz' ? '写字台 · '
+            : (r.channel === 'blogger' ? 'Blogger · ' : 'WordPress · '))) + (r.targetName || ('#' + r.targetId));
         if (!r.ok) {
             return '<div class="dline"><span class="dbad">✗</span> ' + escapeHtml(label)
                 + ' —— ' + escapeHtml(r.message || '失败') + '</div>';
@@ -3007,6 +3356,7 @@ function switchTab(btn) {
     if (btn.dataset.p === 'wp') maybeLoadWp();
     if (btn.dataset.p === 'cnblog') maybeLoadCn();
     if (btn.dataset.p === 'xz') maybeLoadXz();
+    if (btn.dataset.p === 'blogger') maybeLoadBlogger();
     // hash 记录当前面板：刷新/分享链接都能落回原处（replaceState 不产生历史记录）
     history.replaceState(null, '', '#' + btn.dataset.p);
 }

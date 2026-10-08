@@ -1,11 +1,13 @@
 package cn.xiezitai.service;
 
 import cn.xiezitai.entity.Article;
+import cn.xiezitai.entity.BloggerSite;
 import cn.xiezitai.entity.CnBlogSite;
 import cn.xiezitai.entity.DistRecord;
 import cn.xiezitai.entity.WpSite;
 import cn.xiezitai.entity.XzSite;
 import cn.xiezitai.repository.ArticleRepository;
+import cn.xiezitai.repository.BloggerSiteRepository;
 import cn.xiezitai.repository.CnBlogSiteRepository;
 import cn.xiezitai.repository.DistRecordRepository;
 import cn.xiezitai.repository.WpSiteRepository;
@@ -23,11 +25,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 文章分发：把本站的一篇文章推到关联的**写字台账号 / WordPress 站点 / 博客园账号**。
+ * 文章分发：把本站的一篇文章推到关联的**写字台账号 / 谷歌 Blogger 博客 / WordPress 站点 / 博客园账号**。
  *
  * <p>三条约定（对应需求）：
  * <ol>
- *   <li><b>可多选目标</b>：一次请求可以同时发往多个写字台、WP 站点与博客园账号；</li>
+ *   <li><b>可多选目标</b>：一次请求可以同时发往多个写字台、Blogger 博客、WP 站点与博客园账号；</li>
  *   <li><b>记住发过谁</b>：每对「文章 × 目标」在 {@code dist_records} 里落一行，
  *       于是「已分发过」的目标可以由用户选「更新之前分发的文章」（用记录里的远端 id 调对方的更新接口）
  *       还是「分发一个新文章」（新建后把这行指向新文章）；</li>
@@ -38,8 +40,13 @@ import java.util.Map;
  * <p>正文里的站内媒体（{@code /media/xxx}）一律**补成绝对地址**再发出去 ——
  * 相对路径到了别人的域名下必然 404。地址前缀取 {@code xiezitai.site-url}。
  *
- * <p><b>正文格式按渠道归一</b>：写字台开放 API 收的就是 Markdown（对方前台按 Markdown 渲染），
- * 所以 xz 渠道无视请求里的 {@code format}，一律按 Markdown 原文发；WP / 博客园照旧听用户的。
+ * <p><b>正文格式按渠道归一</b>（这是个容易踩的坑，四个渠道的「正确形态」各不相同）：
+ * <ul>
+ *   <li><b>写字台</b>：开放 API 收的就是 Markdown（对方前台按 Markdown 渲染）→ 无视用户的「转成 HTML」；</li>
+ *   <li><b>Blogger</b>：Blogger 只认 HTML，Markdown 源码会被原样当正文贴出来 → 无视用户的「Markdown 原文」，
+ *       一律先渲染成 HTML；</li>
+ *   <li><b>WP / 博客园</b>：照用户的选项来。</li>
+ * </ul>
  */
 @Service
 public class DistributeService {
@@ -53,26 +60,32 @@ public class DistributeService {
     private final WpSiteRepository wpSites;
     private final CnBlogSiteRepository cnSites;
     private final XzSiteRepository xzSites;
+    private final BloggerSiteRepository bloggerSites;
     private final DistRecordRepository records;
     private final WordPressClient wp;
     private final MetaWeblogClient cn;
     private final XiezitaiClient xz;
+    private final BloggerClient blogger;
     private final MarkdownService markdown;
 
     public DistributeService(ArticleRepository articles, WpSiteRepository wpSites,
                              CnBlogSiteRepository cnSites, XzSiteRepository xzSites,
+                             BloggerSiteRepository bloggerSites,
                              DistRecordRepository records,
                              WordPressClient wp, MetaWeblogClient cn, XiezitaiClient xz,
+                             BloggerClient blogger,
                              MarkdownService markdown,
                              @Value("${xiezitai.site-url:}") String siteUrl) {
         this.articles = articles;
         this.wpSites = wpSites;
         this.cnSites = cnSites;
         this.xzSites = xzSites;
+        this.bloggerSites = bloggerSites;
         this.records = records;
         this.wp = wp;
         this.cn = cn;
         this.xz = xz;
+        this.blogger = blogger;
         this.markdown = markdown;
         String u = siteUrl == null ? "" : siteUrl.trim();
         while (u.endsWith("/")) u = u.substring(0, u.length() - 1);
@@ -82,8 +95,13 @@ public class DistributeService {
     /** 本次请求里的一个目标：发到哪、以及对已分发过的目标是「更新」还是「发新文章」 */
     public record DistTarget(String channel, Long targetId, String action) {}
 
-    /** 远端请求的结果 */
-    private record RemoteResult(long id, String url) {}
+    /**
+     * 远端请求的结果。
+     *
+     * @param id    远端文章 id 的数值形态（WP / 博客园 / 写字台；解析不出来时为 0）
+     * @param idStr 远端文章 id 的**权威字符串形态**（Blogger 的长数字串不会丢精度）
+     */
+    private record RemoteResult(long id, String idStr, String url) {}
 
     /* ================= 参数归一 ================= */
 
@@ -91,6 +109,7 @@ public class DistributeService {
         String v = String.valueOf(c).trim().toLowerCase();
         if ("cnblog".equals(v)) return DistRecord.CHANNEL_CNBLOG;
         if ("xz".equals(v) || "xiezitai".equals(v)) return DistRecord.CHANNEL_XZ;
+        if ("blogger".equals(v) || "google".equals(v) || "blogspot".equals(v)) return DistRecord.CHANNEL_BLOGGER;
         return DistRecord.CHANNEL_WP;
     }
 
@@ -130,6 +149,11 @@ public class DistributeService {
             out.add(describe(DistRecord.CHANNEL_XZ, s.getId(), siteName(s), s.getApiUrl(), ready,
                     ready ? "" : "未配置对接密钥，只能浏览、不能分发", mine));
         }
+        for (BloggerSite s : bloggerSites.findAll()) {
+            boolean ready = s.isHasAuth() && notBlank(s.getBlogId());
+            out.add(describe(DistRecord.CHANNEL_BLOGGER, s.getId(), bloggerName(s), s.getUrl(), ready,
+                    ready ? "" : "未完成 Google 授权（缺少刷新令牌），请到「Blogger」面板重新关联", mine));
+        }
         for (WpSite s : wpSites.findAll()) {
             String name = s.getName() == null || s.getName().isBlank() ? s.getUrl() : s.getName();
             boolean ready = notBlank(s.getUsername()) && notBlank(s.getApiToken());
@@ -154,6 +178,14 @@ public class DistributeService {
         return user.isEmpty() ? host : user + "@" + host;
     }
 
+    /** Blogger 博客的展示名：博客名 + Google 账号（同名博客可能分属不同账号，只有名字分不清） */
+    private static String bloggerName(BloggerSite s) {
+        String blog = notBlank(s.getName()) ? s.getName() : s.getUrl();
+        String email = notBlank(s.getGoogleEmail()) ? s.getGoogleEmail() : "";
+        if (!notBlank(s.getName()) && !notBlank(s.getUrl())) blog = "Blogger #" + s.getId();
+        return email.isEmpty() ? blog : blog + "（" + email + "）";
+    }
+
     private Map<String, Object> describe(String channel, Long id, String name, String url,
                                          boolean ready, String hint, Map<String, DistRecord> mine) {
         Map<String, Object> m = new LinkedHashMap<>();
@@ -169,6 +201,7 @@ public class DistributeService {
         } else {
             Map<String, Object> d = new LinkedHashMap<>();
             d.put("remotePostId", r.getRemotePostId());
+            d.put("remoteId", r.remoteId());
             d.put("remoteUrl", r.getRemoteUrl());
             d.put("mode", r.getMode());
             d.put("format", r.getFormat());
@@ -189,6 +222,7 @@ public class DistributeService {
                     : switch (String.valueOf(r.getChannel())) {
                         case DistRecord.CHANNEL_CNBLOG -> "博客园";
                         case DistRecord.CHANNEL_XZ -> "写字台";
+                        case DistRecord.CHANNEL_BLOGGER -> "Blogger";
                         default -> "WordPress";
                     };
             out.computeIfAbsent(r.getArticleId(), k -> new ArrayList<>()).add(label);
@@ -294,10 +328,18 @@ public class DistributeService {
         out.put("targetId", t.targetId());
         out.put("action", action);
         try {
-            // 写字台开放 API 收的正文就是 Markdown（对方前台按 Markdown 渲染），
-            // 所以 xz 渠道无视请求里的 format —— 否则「转成 HTML」会把 HTML 标签当正文贴到对方站上。
-            String fmt = DistRecord.CHANNEL_XZ.equals(channel) ? DistRecord.FORMAT_MARKDOWN : format;
-            if (!fmt.equals(format)) warnings.add("写字台正文一律按 Markdown 发送，已忽略「转成 HTML」");
+            // 正文格式按渠道归一（详见类注释）：写字台只认 Markdown，Blogger 只认 HTML。
+            // 一次分发里混着不同渠道时，这个归一保证「每个渠道收到的都是它真正能渲染的形态」。
+            String fmt = format;
+            if (DistRecord.CHANNEL_XZ.equals(channel)) {
+                fmt = DistRecord.FORMAT_MARKDOWN;
+                if (!fmt.equals(format)) warnings.add("写字台正文一律按 Markdown 发送，已忽略「转成 HTML」");
+            } else if (DistRecord.CHANNEL_BLOGGER.equals(channel)) {
+                fmt = DistRecord.FORMAT_HTML;
+                if (!fmt.equals(format)) {
+                    warnings.add("Blogger 不渲染 Markdown，正文一律渲染成 HTML 发送，已忽略「Markdown 原文」");
+                }
+            }
             String body = buildBody(a, mode, fmt);
             RemoteResult rr;
             String name, url;
@@ -319,6 +361,15 @@ public class DistributeService {
                 name = siteName(s);
                 url = s.getApiUrl();
                 rr = distToXz(a, s, action, body, warnings);
+            } else if (DistRecord.CHANNEL_BLOGGER.equals(channel)) {
+                BloggerSite s = bloggerSites.findById(t.targetId())
+                        .orElseThrow(() -> new IllegalStateException("Blogger 博客关联已不存在（可能已被解除）"));
+                if (!s.isHasAuth()) {
+                    throw new IllegalStateException("该博客未完成 Google 授权（缺少刷新令牌），请到「Blogger」面板重新关联");
+                }
+                name = bloggerName(s);
+                url = s.getUrl();
+                rr = distToBlogger(a, s, action, body, warnings);
             } else {
                 WpSite s = wpSites.findById(t.targetId())
                         .orElseThrow(() -> new IllegalStateException("WordPress 站点已不存在（可能已被删除）"));
@@ -331,6 +382,8 @@ public class DistributeService {
             }
             out.put("targetName", name);
             out.put("remotePostId", rr.id());
+            // 权威字符串形态（Blogger）；老渠道没有字符串 id 就退回数值形态，null 安全
+            out.put("remoteId", notBlank(rr.idStr()) ? rr.idStr() : String.valueOf(rr.id()));
             out.put("remoteUrl", rr.url());
             out.put("updated", "update".equals(action));
             out.put("ok", true);
@@ -363,13 +416,13 @@ public class DistributeService {
                 .orElse(null);
         if ("update".equals(action) && rec != null && rec.getRemotePostId() != null) {
             WordPressClient.RemotePost rp = wp.updatePost(site, rec.getRemotePostId(), payload);
-            return new RemoteResult(rp.id(), rp.link());
+            return new RemoteResult(rp.id(), null, rp.link());
         }
         if ("update".equals(action)) {
             warnings.add("此前没有分发记录，「更新」自动改为新发一篇");
         }
         WordPressClient.RemotePost rp = wp.createPost(site, payload);
-        return new RemoteResult(rp.id(), rp.link());
+        return new RemoteResult(rp.id(), null, rp.link());
     }
 
     private RemoteResult distToCnBlog(Article a, CnBlogSite site, String action, String body,
@@ -391,7 +444,8 @@ public class DistributeService {
                 .orElse(null);
         if ("update".equals(action) && rec != null && rec.getRemotePostId() != null) {
             cn.editPost(site, rec.getRemotePostId(), struct, true);
-            return new RemoteResult(rec.getRemotePostId(), remoteLinkQuietly(site, rec.getRemotePostId(), rec.getRemoteUrl()));
+            return new RemoteResult(rec.getRemotePostId(), null,
+                    remoteLinkQuietly(site, rec.getRemotePostId(), rec.getRemoteUrl()));
         }
         if ("update".equals(action)) {
             warnings.add("此前没有分发记录，「更新」自动改为新发一篇");
@@ -400,9 +454,9 @@ public class DistributeService {
         long pid = parseLong(newId, 0L);
         if (pid <= 0) {
             warnings.add("博客园未返回文章 id，已发文但本站无法再对它做「更新」");
-            return new RemoteResult(0L, "");
+            return new RemoteResult(0L, null, "");
         }
-        return new RemoteResult(pid, remoteLinkQuietly(site, pid, ""));
+        return new RemoteResult(pid, null, remoteLinkQuietly(site, pid, ""));
     }
 
     /**
@@ -429,7 +483,7 @@ public class DistributeService {
                 .orElse(null);
         if ("update".equals(action) && rec != null && rec.getRemotePostId() != null && rec.getRemotePostId() > 0) {
             XiezitaiClient.RemoteArticle ra = xz.updateArticle(site, rec.getRemotePostId(), payload);
-            return new RemoteResult(ra.id() > 0 ? ra.id() : rec.getRemotePostId(), ra.url());
+            return new RemoteResult(ra.id() > 0 ? ra.id() : rec.getRemotePostId(), null, ra.url());
         }
         if ("update".equals(action)) {
             warnings.add("此前没有分发记录，「更新」自动改为新发一篇");
@@ -438,7 +492,45 @@ public class DistributeService {
         if (ra.id() <= 0) {
             warnings.add("对方站点未返回文章 id，已发出但本站无法再对它做「更新」");
         }
-        return new RemoteResult(ra.id(), ra.url());
+        return new RemoteResult(ra.id(), null, ra.url());
+    }
+
+    /**
+     * 发往谷歌 Blogger（走 Blogger API v3，OAuth Bearer 鉴权）。
+     *
+     * <p>两个与其它渠道不同的点：
+     * <ul>
+     *   <li><b>正文是 HTML</b> —— 进来之前 {@link #runOne} 已经把 format 归一到 HTML 了；
+     *       标签用的是文章已有的标签。</li>
+     *   <li><b>远端 id 用字符串</b> —— Blogger 的文章 id 是长数字串，
+     *       {@link DistRecord#remoteId()} 取权威形态，避免数值溢出把「更新」打到别的文章上。</li>
+     * </ul>
+     * 「更新」走 {@code PATCH}（部分更新），没传的字段不会被清空。
+     */
+    private RemoteResult distToBlogger(Article a, BloggerSite site, String action, String body,
+                                       List<String> warnings) throws Exception {
+        String title = a.getTitle() == null ? "" : a.getTitle();
+        List<String> labels = Article.parseTags(a.getTags());
+        if (labels.size() > Article.MAX_TAGS) labels = labels.subList(0, Article.MAX_TAGS);
+
+        DistRecord rec = records
+                .findByArticleIdAndChannelAndTargetId(a.getId(), DistRecord.CHANNEL_BLOGGER, site.getId())
+                .orElse(null);
+        String remoteId = rec == null ? "" : rec.remoteId();
+        if ("update".equals(action) && !remoteId.isEmpty()) {
+            BloggerClient.RemotePost rp = blogger.patchPost(site, remoteId, title, body, labels);
+            // Blogger 的 PATCH 偶尔只回 id 不回 url；那种情况沿用上次记录的链接
+            String url = notBlank(rp.url()) ? rp.url() : (rec.getRemoteUrl() == null ? "" : rec.getRemoteUrl());
+            return new RemoteResult(parseLong(rp.id(), 0L), notBlank(rp.id()) ? rp.id() : remoteId, url);
+        }
+        if ("update".equals(action)) {
+            warnings.add("此前没有分发记录，「更新」自动改为新发一篇");
+        }
+        BloggerClient.RemotePost rp = blogger.createPost(site, title, body, labels);
+        if (!notBlank(rp.id())) {
+            warnings.add("Blogger 未返回文章 id，已发出但本站无法再对它做「更新」");
+        }
+        return new RemoteResult(parseLong(rp.id(), 0L), rp.id(), rp.url());
     }
 
     /** 取远端链接失败不算分发失败（文章其实已经发出去了），退回旧值或空 */
@@ -465,6 +557,7 @@ public class DistributeService {
         r.setTargetName(targetName);
         r.setTargetUrl(targetUrl);
         if (rr.id() > 0) r.setRemotePostId(rr.id());
+        if (notBlank(rr.idStr())) r.setRemotePostIdStr(rr.idStr());
         if (notBlank(rr.url())) r.setRemoteUrl(rr.url());
         r.setMode(mode);
         r.setFormat(format);

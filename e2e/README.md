@@ -63,6 +63,7 @@ $env:E2E_BASE='http://127.0.0.1:8099'
 | `distribute.cjs` | **文章分发**（本站 → WordPress 站点 / 博客园账号）：脚本内起假 WP 站点（REST 建/改文章 + 建标签，记录每次写请求体）与假博客园（XML-RPC newPost/editPost）→ 文章列表行有「分发」按钮 → 弹窗目标按「WordPress 站点 / 博客园账号」分组、均「未分发过」且默认不勾选 → 一次发往两个目标（转载 + Markdown）：WP 正文站内图已绝对化、尾部带转载链接、标签同步成 term id，博客园收到 Markdown 原文 + `[Markdown]` 分类 → 关弹窗后列表行出现「已分发 · 目标名」徽标 → 再开弹窗自动勾选、显示「已分发过 1 次」、处理方式默认「更新之前分发的文章」并给出已发文章链接 → 选「更新」走对方更新接口且远端 id 不变、切回原文分发后正文不再带转载尾注 → 选「分发一个新文章」拿到新远端 id、只勾一个目标时不会误发另一个；临时文章与两个关联目标跑完自删 |
 | `distribute-xz.cjs` | **文章分发 → 写字台账号**（本站 → 另一台写字台）：脚本内起 mock 写字台（`GET /api/v1/articles` 连通性校验 + `POST /api/v1/publish` 建 / `PUT /api/v1/articles/{id}` 改，记录请求体）→ 弹窗目标按「写字台账号」分组、未分发过时不显示「处理方式」→ 转载 + Markdown 分发：对方收到的是 **Markdown 原文**（不是 HTML）、站内图已绝对化、尾部带「本文由写字台首发 + 原文链接」、**不传 slug**（同一台站发多篇不撞 slug），结果面板标「写字台 · 账号名」→ 列表行出现「已分发」徽标 → 再开弹窗显示「已分发过 1 次」/自动勾选/默认「更新之前分发的文章」+ 已发文章链接 → 选「更新」走对方 `PUT` 且远端 id 不变、原文分发不带转载尾注 → **正文格式选「转成 HTML」时对方收到的仍是 Markdown**（面板给出 ⚠ 说明）→ 选「分发一个新文章」拿到新远端 id；临时文章与关联账号跑完自删 |
 | `xz-associate.cjs` | **写字台账号关联与跨站导入**（本站 ⇄ 另一台写字台）：脚本内起本地 mock 写字台（开放 API `/api/v1/articles` 列表与详情 + 媒体文件，校验 `X-API-Token`）→ 面板空态 → 关联账号（接口地址填的是**发布接口** `.../api/v1/publish`，后端自动推导 API 根；接口不回显 `apiToken` 字段、列表不含密钥串）→ 浏览文章（3 篇）→ 单篇导入（对方站点自身图片落盘换 /media/、**外站图保留外链**、标签 / 摘要 / 发布人 / 原发布时间）→ 切「当前时间」导入发布时间=今天 → 重复导入跳过 → 整站导入进度条到「已完成」（成功 1、跳过 2、失败 0；含中文 slug 文章）；导入文章与账号跑完自删 |
+| `blogger.cjs` | **谷歌 Blogger 关联 / 导入 / 分发**：脚本内起本地 mock「Google OAuth + Blogger API v3」（固定 `127.0.0.1:18633`，**被测实例必须按本节下方的 `XIEZITAI_GOOGLE_*` 指过来**）→ 「Blogger」tab 空态且提示已配置客户端 → 点关联开弹窗、授权地址带 `client_id` / `redirect_uri` / `access_type=offline` → 弹窗点同意 → 回调 `/google/auth/redirect` 后弹窗自关、父窗口列表刷出**同一 Google 账号下的 2 个博客**（按账号分组、`hasAuth=true`、接口不回显令牌明文）→ 浏览文章（`pageToken` 翻页：第 1 页 2 条含标签、底部「共 3 篇」、翻到第 2 页 1 条）→ 单篇导入（**HTML 还原成 Markdown**（`## 小标题`）、Blogger 自家图落盘 `/media/`、外站图保留外链、站内非媒体链接不下载、发布人用博客名不暴露邮箱、标签与摘要导入）→ 整站导入进度条跑到「已完成」（3/3、日志含「整站导入完成」、统计 成功 2 跳过 1 失败 0、三篇 slug 分别是链接末段 / 标题转写 / 文章 id 兜底）→ 文章列表分发：目标出现「谷歌 Blogger」分组、未分发过默认不勾 → 转载分发成功（远端 id 按**字符串**回传不丢精度、正文按 **HTML** 发送且带标签、尾部带转载链接、结果标「Blogger · 博客名」）→ 列表行出现「已分发 · 博客名」徽标 → 再开弹窗自动勾选并默认「更新之前分发的文章」→ 选「更新」走 Blogger `PATCH` 且远端 id 不变、原文分发不带转载尾注 → 解除 Google 账号关联（2 个博客一起解绑、分发记录一并清掉不留悬空徽标）；临时文章与关联跑完自删 |
 | `demo-seed.cjs` | 空库首启示例内容（4 文章 / 2 页面 / 5 评论） |
 | `shot-*.cjs` | 纯截图工具，无断言，供人工核对视觉 |
 
@@ -94,6 +95,35 @@ export XIEZITAI_AI_API_KEY='fake-key'
 export XIEZITAI_AI_MODEL='fake-chat'
 export XIEZITAI_AI_IMAGE_MODEL='fake-image'
 ```
+
+## 谷歌 Blogger 脚本：mock 的 OAuth 端点必须在启动时指过来
+
+`blogger.cjs` 在脚本内起了一个假的「Google OAuth + Blogger API v3」（`127.0.0.1:18633`）。
+和 WP / 博客园 / 写字台那几个脚本不同 —— 那些关联地址是**运行期存进数据库**的，而这个脚本要的是
+**Google 端点地址与客户端凭据**，它们属于**应用级配置（只能从环境变量读）**，所以被测实例必须带着下面这组配置启动：
+
+```bash
+export XIEZITAI_GOOGLE_AUTH_URI='http://127.0.0.1:18633/o/oauth2/v2/auth'
+export XIEZITAI_GOOGLE_TOKEN_URI='http://127.0.0.1:18633/token'
+export XIEZITAI_GOOGLE_API_BASE='http://127.0.0.1:18633/blogger/v3'
+export XIEZITAI_GOOGLE_CLIENT_ID='e2e-client-id.apps.googleusercontent.com'
+export XIEZITAI_GOOGLE_CLIENT_SECRET='e2e-client-secret'
+# 让 mock 主机（127.0.0.1）被当成「Blogger 自家主机」，这样它的图才会落盘 ——
+# 生产默认只认 blogspot.com / googleusercontent.com / ggpht.com
+export XIEZITAI_BLOGGER_MEDIA_HOSTS='127.0.0.1,blogspot.com,googleusercontent.com'
+```
+
+Windows PowerShell 等价写法：
+
+```powershell
+$env:XIEZITAI_GOOGLE_API_BASE='http://127.0.0.1:18633/blogger/v3'
+$env:XIEZITAI_GOOGLE_CLIENT_ID='e2e-client-id.apps.googleusercontent.com'
+$env:E2E_BASE='http://127.0.0.1:8099'
+& 'C:\Users\Administrator\.workbuddy\binaries\node\versions\22.22.2-3\node.exe' e2e/blogger.cjs
+```
+
+> 端口是写死的（`18633`，可用 `E2E_BLOGGER_MOCK_PORT` 改，但改了就要同步改启动参数）——
+> 脚本一起来就会占住它，所以**别同时跑两份**。生产部署不配这些变量即可（默认走 Google 官方地址）。
 
 ## 说明
 

@@ -49,6 +49,9 @@ public class SecurityConfig {
                 // 评论仅限登录用户（禁止匿名）；读接口仍是公开的
                 .requestMatchers(HttpMethod.POST, "/api/articles/*/comments").authenticated()
                 .requestMatchers("/api/v1/**").permitAll()   // 开放 API / MCP：内部用 token 鉴权
+                // Google OAuth 回调：浏览器从 Google 被 302 回来，带不了 Authorization 头，
+                // 所以必须公开 —— 安全性由后端校验的「签名 state」保证（见 GoogleOAuthController）
+                .requestMatchers("/google/**").permitAll()
                 // 管理端
                 .requestMatchers("/api/admin/**", "/api/auth/me", "/api/auth/totp/**", "/api/auth/password").authenticated()
                 .anyRequest().permitAll())

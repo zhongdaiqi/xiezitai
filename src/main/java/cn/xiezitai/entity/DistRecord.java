@@ -12,8 +12,9 @@ import java.time.LocalDateTime;
  * 于是「已分发过」只需要看这一行在不在；「更新之前分发的文章」用本行的 {@link #remotePostId}，
  * 「分发一个新文章」则用新拿到的远端 id 覆盖本行。
  *
- * <p>三条渠道共用这一张表：{@link #CHANNEL_WP} / {@link #CHANNEL_CNBLOG} / {@link #CHANNEL_XZ}，
- * 靠 {@code channel} 区分 {@link #targetId} 指向 wp_sites / cn_sites / xz_sites 哪张表。
+ * <p>四条渠道共用这一张表：{@link #CHANNEL_WP} / {@link #CHANNEL_CNBLOG} / {@link #CHANNEL_XZ} /
+ * {@link #CHANNEL_BLOGGER}，靠 {@code channel} 区分 {@link #targetId} 指向
+ * wp_sites / cn_sites / xz_sites / blogger_sites 哪张表。
  *
  * <p>{@link #targetName} / {@link #targetUrl} 是**快照**：站点被删或改名后，
  * 历史记录仍然能显示成人看得懂的样子，不至于变成一条光秃秃的 id。
@@ -32,6 +33,8 @@ public class DistRecord {
     public static final String CHANNEL_CNBLOG = "cnblog";
     /** 目标类型：另一台写字台账号（走它的开放 API {@code /api/v1/publish}） */
     public static final String CHANNEL_XZ = "xz";
+    /** 目标类型：谷歌 Blogger 博客（走 Blogger API v3，OAuth Bearer 鉴权） */
+    public static final String CHANNEL_BLOGGER = "blogger";
 
     /** 原文分发：正文原样发出 */
     public static final String MODE_ORIGINAL = "original";
@@ -51,11 +54,11 @@ public class DistRecord {
     @Column(nullable = false)
     private Long articleId;
 
-    /** 目标类型：wp / cnblog / xz */
+    /** 目标类型：wp / cnblog / xz / blogger */
     @Column(nullable = false, length = 20)
     private String channel;
 
-    /** 目标 id：wp_sites.id / cn_sites.id / xz_sites.id（按 channel 区分是哪张表） */
+    /** 目标 id：wp_sites.id / cn_sites.id / xz_sites.id / blogger_sites.id（按 channel 区分是哪张表） */
     @Column(nullable = false)
     private Long targetId;
 
@@ -69,6 +72,16 @@ public class DistRecord {
 
     /** 远端文章 id（WP post id / 博客园 postid / 写字台文章 id）；「更新」时拿它调对方接口 */
     private Long remotePostId;
+
+    /**
+     * 远端文章 id 的<b>字符串形态</b>（Blogger 用）。
+     *
+     * <p>Blogger 的文章 id 是 64 位整数串（19 位数字），塞进 {@link #remotePostId} 有溢出成负数的风险，
+     * 而一旦溢出，「更新」就会打到别人的文章上 —— 这种错还特别隐蔽。所以 Blogger 渠道一律用本字段，
+     * 需要拿远端 id 时走 {@link #remoteId()}（两者取其一）。
+     */
+    @Column(length = 64)
+    private String remotePostIdStr;
 
     /** 远端文章链接（分发成功后回填，前端可直接点开核对） */
     @Column(length = 800)
@@ -88,6 +101,17 @@ public class DistRecord {
     private LocalDateTime firstDistAt = LocalDateTime.now();
     private LocalDateTime lastDistAt = LocalDateTime.now();
 
+    /**
+     * 远端文章 id 的可用形态：优先字符串（Blogger），否则退回数值（WP / 博客园 / 写字台）。
+     *
+     * @return 形如 {@code "1234567890"}（转给远端接口用的原文）；没有记录时为空串
+     */
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    public String remoteId() {
+        if (remotePostIdStr != null && !remotePostIdStr.isBlank()) return remotePostIdStr;
+        return remotePostId == null || remotePostId <= 0 ? "" : String.valueOf(remotePostId);
+    }
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
     public Long getArticleId() { return articleId; }
@@ -102,6 +126,8 @@ public class DistRecord {
     public void setTargetUrl(String targetUrl) { this.targetUrl = targetUrl; }
     public Long getRemotePostId() { return remotePostId; }
     public void setRemotePostId(Long remotePostId) { this.remotePostId = remotePostId; }
+    public String getRemotePostIdStr() { return remotePostIdStr; }
+    public void setRemotePostIdStr(String remotePostIdStr) { this.remotePostIdStr = remotePostIdStr; }
     public String getRemoteUrl() { return remoteUrl; }
     public void setRemoteUrl(String remoteUrl) { this.remoteUrl = remoteUrl; }
     public String getMode() { return mode; }

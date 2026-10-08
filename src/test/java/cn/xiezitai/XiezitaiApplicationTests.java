@@ -63,8 +63,23 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
-@org.springframework.test.context.TestPropertySource(properties = "xiezitai.cn-media-hosts=127.0.0.1")
+@org.springframework.test.context.TestPropertySource(properties = {
+        "xiezitai.cn-media-hosts=127.0.0.1",
+        // 谷歌 Blogger 相关的端点指向本机假服务（见本类末尾的 ensureGoogleMock）。
+        // 端口固定，因为这几个地址是**应用级配置**（不像 WP / 写字台那样能把地址存在数据库里再改）。
+        "xiezitai.google.client-id=test-client-id.apps.googleusercontent.com",
+        "xiezitai.google.client-secret=test-client-secret",
+        "xiezitai.google.auth-uri=" + XiezitaiApplicationTests.GOOGLE_MOCK + "/o/oauth2/v2/auth",
+        "xiezitai.google.token-uri=" + XiezitaiApplicationTests.GOOGLE_MOCK + "/token",
+        "xiezitai.google.api-base=" + XiezitaiApplicationTests.GOOGLE_MOCK + "/blogger/v3",
+        // 把本机假服务的主机也算作「Blogger 来源站点自身」：它的图应当被下载落盘
+        "xiezitai.blogger-media-hosts=127.0.0.1,blogspot.com,googleusercontent.com"
+})
 class XiezitaiApplicationTests {
+
+    /** 假「Google OAuth + Blogger API」服务的基地址（端口见 GOOGLE_MOCK_PORT） */
+    static final int GOOGLE_MOCK_PORT = 18573;
+    static final String GOOGLE_MOCK = "http://127.0.0.1:" + GOOGLE_MOCK_PORT;
 
     private static final String ADMIN = "xiezitai";
     private static final String ADMIN_PWD = "xiexiexie";
@@ -83,6 +98,7 @@ class XiezitaiApplicationTests {
     @Autowired LoginAttemptService attempts;
     @Autowired AiService ai;
     @Autowired cn.xiezitai.repository.XzSiteRepository xzSiteRepo;
+    @Autowired cn.xiezitai.repository.BloggerSiteRepository bloggerRepo;
     @Autowired cn.xiezitai.repository.DistRecordRepository distRecordRepo;
 
     /** 站点根地址取自配置 xiezitai.site-url：SEO 端点（robots/sitemap/og:image）与页脚都应由它驱动 */
@@ -3178,5 +3194,520 @@ class XiezitaiApplicationTests {
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk()).andReturn();
         return om.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8));
+    }
+
+    /* ==================================================================== */
+    /*              谷歌 Blogger：OAuth 关联 / 导入 / 分发                    */
+    /* ==================================================================== */
+
+    private static final String BLOGGER_EMAIL = "e2e-blogger@example.com";
+    /** 故意用 19 位数字串当博客 / 文章 id：验证它们不会因为塞进 long 而丢精度 */
+    private static final String BLOG_ID_A = "1234567890123456789";
+    private static final String BLOG_ID_B = "9876543210987654321";
+    private static final String POST_ID_1 = "1111111111111111111";
+    private static final String POST_ID_2 = "2222222222222222222";
+    private static final String POST_ID_3 = "3333333333333333333";
+    private static final String NEW_POST_ID = "4444444444444444444";
+    private static final String[] MOCK_POST_IDS = {POST_ID_1, POST_ID_2, POST_ID_3};
+    private static final String[] MOCK_TITLES = {"Blogger E2E 第一篇", "Blogger E2E Second Post", "中文博客文章"};
+    private static final String[] MOCK_DATES = {"2026-01-01T08:00:00+08:00", "2026-02-02T09:30:00+08:00",
+            "2026-03-03T10:00:00+08:00"};
+    private static final String[] MOCK_LABELS = {"\"E2ETag\",\"Java\"", "", "\"中文标签\""};
+    /** 第一篇的 URL 末段是像样的 slug；第二、三篇用 Blogger 的通用末段，逼出「按标题转写」与「按 id 兜底」 */
+    private static final String[] MOCK_URLS = {
+            "https://e2e-blog-one.blogspot.com/2026/01/blogger-e2e-post-01.html",
+            "https://e2e-blog-one.blogspot.com/2026/02/blog-post.html",
+            "https://e2e-blog-one.blogspot.com/2026/03/blog-post_20.html"};
+    /** 外站图（不是 Blogger 自家的），导入时应当**保留外链** */
+    private static final String EXT_IMG = "http://cdn.external-blogger-e2e.test/ext.png";
+
+    private static HttpServer googleMock;
+    /** 假 Blogger 收到的写请求（分发用）：{kind=create|update, blogId, postId, body} */
+    private static final java.util.List<Map<String, Object>> bloggerWrites =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+    /** 假 Google 令牌端点最近一次收到的表单（用来核对 redirect_uri / grant_type） */
+    private static volatile String lastTokenForm = "";
+
+    /** 点开一个用例就用得上假服务：懒启动（端口固定，启动一次即可） */
+    private static synchronized void ensureGoogleMock() throws Exception {
+        if (googleMock != null) return;
+        HttpServer s = HttpServer.create(new InetSocketAddress("127.0.0.1", GOOGLE_MOCK_PORT), 0);
+
+        // ① OAuth 令牌端点（授权码换令牌 / refresh_token 续期都打这里）
+        s.createContext("/token", ex -> {
+            lastTokenForm = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String idToken = "h." + java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+                    ("{\"email\":\"" + BLOGGER_EMAIL + "\",\"name\":\"E2E Blogger\"}")
+                            .getBytes(StandardCharsets.UTF_8)) + ".s";
+            respond(ex, 200, "application/json",
+                    ("{\"access_token\":\"mock-access-token\",\"refresh_token\":\"mock-refresh-token\","
+                            + "\"expires_in\":3600,\"id_token\":\"" + idToken + "\"}")
+                            .getBytes(StandardCharsets.UTF_8));
+        });
+
+        // ② 该账号下可见的博客（一个账号挂两个博客，其中一个没有文章）
+        s.createContext("/blogger/v3/users/self/blogs", ex -> respond(ex, 200, "application/json",
+                ("{\"items\":[" + blogJson(BLOG_ID_A, "E2E Blogger 一号", 3) + ","
+                        + blogJson(BLOG_ID_B, "E2E Blogger 二号", 0) + "]}")
+                        .getBytes(StandardCharsets.UTF_8)));
+
+        // ③ 博客信息 / 文章列表 / 单篇 / 新建 / 更新
+        s.createContext("/blogger/v3/blogs/", XiezitaiApplicationTests::handleBloggerMock);
+
+        // ④ 「Blogger 自家」的图片（host=127.0.0.1 已被算作来源站点自身）
+        s.createContext("/img/photo.png", ex -> respond(ex, 200, "image/png", PNG_1X1));
+
+        s.setExecutor(null);
+        s.start();
+        googleMock = s;
+    }
+
+    private static String blogJson(String id, String name, long totalPosts) {
+        return "{\"id\":\"" + id + "\",\"name\":\"" + name + "\","
+                + "\"url\":\"https://" + ("E2E Blogger 一号".equals(name) ? "e2e-blog-one" : "e2e-blog-two")
+                + ".blogspot.com/\",\"posts\":{\"totalItems\":" + totalPosts + "}}";
+    }
+
+    private static String postBriefJson(int i) {
+        return "{\"id\":\"" + MOCK_POST_IDS[i] + "\",\"title\":\"" + MOCK_TITLES[i]
+                + "\",\"url\":\"" + MOCK_URLS[i] + "\",\"published\":\"" + MOCK_DATES[i]
+                + "\",\"updated\":\"" + MOCK_DATES[i] + "\",\"labels\":[" + MOCK_LABELS[i] + "]}";
+    }
+
+    /** 第一篇的正文：Blogger 自家图（应落盘）+ 外站图（应保留外链）+ 站内非媒体链接（不应下载） */
+    private static String mockContent(int i) {
+        if (i != 0) return "<p>第 " + (i + 1) + " 篇正文，<strong>加粗</strong>。</p>";
+        return "<h2>小标题</h2><p>开头一段正文。</p>"
+                + "<p><img src=\"" + GOOGLE_MOCK + "/img/photo.png\" alt=\"本站图\"></p>"
+                + "<p><img src=\"" + EXT_IMG + "\" alt=\"外站图\"></p>"
+                + "<p><a href=\"" + GOOGLE_MOCK + "/2026/01/other-post.html\">站内非媒体链接</a></p>";
+    }
+
+    private static int indexOfPost(String postId) {
+        for (int i = 0; i < MOCK_POST_IDS.length; i++) {
+            if (MOCK_POST_IDS[i].equals(postId)) return i;
+        }
+        return -1;
+    }
+
+    private static String queryOf(HttpExchange ex, String name) {
+        String q = ex.getRequestURI().getRawQuery();
+        if (q == null) return "";
+        for (String kv : q.split("&")) {
+            int eq = kv.indexOf('=');
+            if (eq > 0 && name.equals(kv.substring(0, eq))) {
+                return java.net.URLDecoder.decode(kv.substring(eq + 1), StandardCharsets.UTF_8);
+            }
+        }
+        return "";
+    }
+
+    private static void handleBloggerMock(HttpExchange ex) throws java.io.IOException {
+        String path = ex.getRequestURI().getPath();
+        String method = ex.getRequestMethod();
+        String[] seg = path.substring("/blogger/v3/blogs/".length()).split("/");
+        String blogId = seg[0];
+        String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        byte[] json = "{}".getBytes(StandardCharsets.UTF_8);
+
+        if (seg.length == 1) {                       // GET /blogs/{id} —— 博客信息（含文章总数）
+            long total = BLOG_ID_A.equals(blogId) ? 3 : 0;
+            json = blogJson(blogId, BLOG_ID_A.equals(blogId) ? "E2E Blogger 一号" : "E2E Blogger 二号", total)
+                    .getBytes(StandardCharsets.UTF_8);
+        } else if (seg.length == 2) {                // /blogs/{id}/posts
+            if ("POST".equals(method)) {             // 分发新建
+                bloggerWrites.add(new java.util.LinkedHashMap<>(Map.of("kind", "create", "blogId", blogId, "body", body)));
+                json = ("{\"id\":\"" + NEW_POST_ID
+                        + "\",\"url\":\"https://e2e-blog-one.blogspot.com/2026/10/dist-e2e.html\"}")
+                        .getBytes(StandardCharsets.UTF_8);
+            } else if (BLOG_ID_A.equals(blogId)) {   // 列表：第 1 页给 2 条 + nextPageToken，第 2 页给 1 条
+                String token = queryOf(ex, "pageToken");
+                // 第一页故意慢一点：让「整站导入进行中」这个状态在用例里可观测
+                // （否则任务可能已经跑完，就没法验证「同一博客不允许并发两个任务」了）
+                if (token.isEmpty()) {
+                    try {
+                        Thread.sleep(250);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                json = (token.isEmpty()
+                        ? "{\"items\":[" + postBriefJson(0) + "," + postBriefJson(1) + "],\"nextPageToken\":\"P2\"}"
+                        : "{\"items\":[" + postBriefJson(2) + "]}")
+                        .getBytes(StandardCharsets.UTF_8);
+            } else {
+                json = "{\"items\":[]}".getBytes(StandardCharsets.UTF_8);
+            }
+        } else if (seg.length == 3) {                // /blogs/{id}/posts/{postId}
+            String postId = seg[2];
+            if ("PATCH".equals(method)) {            // 分发更新
+                bloggerWrites.add(new java.util.LinkedHashMap<>(
+                        Map.of("kind", "update", "blogId", blogId, "postId", postId, "body", body)));
+                json = ("{\"id\":\"" + postId
+                        + "\",\"url\":\"https://e2e-blog-one.blogspot.com/2026/10/dist-e2e.html\"}")
+                        .getBytes(StandardCharsets.UTF_8);
+            } else {
+                int i = indexOfPost(postId);
+                json = ("{\"id\":\"" + postId + "\",\"title\":\"" + (i < 0 ? "?" : MOCK_TITLES[i])
+                        + "\",\"url\":\"" + (i < 0 ? "" : MOCK_URLS[i]) + "\",\"published\":\""
+                        + (i < 0 ? "" : MOCK_DATES[i]) + "\",\"labels\":[" + (i < 0 ? "" : MOCK_LABELS[i])
+                        + "],\"content\":\"" + mockContent(i).replace("\"", "\\\"") + "\"}")
+                        .getBytes(StandardCharsets.UTF_8);
+            }
+        } else {
+            respond(ex, 404, "application/json", json);
+            return;
+        }
+        respond(ex, 200, "application/json", json);
+    }
+
+    /** 拉一个 OAuth 授权地址（登录后），返回 [authorizeUrl, state] */
+    private String[] oauthUrl(String token) throws Exception {
+        MvcResult r = mvc.perform(post("/api/admin/blogger/oauth/url")
+                        .header("Authorization", "Bearer " + token)
+                        .header("X-Forwarded-Proto", "https")
+                        .header("X-Forwarded-Host", "xiezitai.cn"))
+                .andExpect(status().isOk()).andReturn();
+        String url = om.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8)).path("url").asText();
+        String state = java.net.URLDecoder.decode(url.replaceAll("(?s).*[?&]state=", ""), StandardCharsets.UTF_8);
+        return new String[]{url, state};
+    }
+
+    /** 关联一个 Google 账号（跑完整回调） */
+    private void associateGoogleAccount(String token) throws Exception {
+        ensureGoogleMock();
+        String[] u = oauthUrl(token);
+        MvcResult r = mvc.perform(get("/google/auth/redirect")
+                        .param("code", "mock-auth-code").param("state", u[1]))
+                .andExpect(status().isOk()).andReturn();
+        String html = r.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(html).as("回调页应当报告关联成功").contains("\"ok\":true");
+    }
+
+    @Test
+    @DisplayName("Blogger：OAuth 授权地址要登录后才能拿，redirect_uri 按请求域名推导，state 必须可校验")
+    void bloggerOAuthUrl() throws Exception {
+        ensureGoogleMock();
+        // 未登录拿不到授权地址（否则任何人都能把博客关联进本站）
+        mvc.perform(post("/api/admin/blogger/oauth/url")).andExpect(status().isUnauthorized());
+
+        String token = loginToken(ADMIN, ADMIN_PWD);
+        String[] u = oauthUrl(token);
+        assertThat(u[0]).as("授权地址指向 Google 同意页").startsWith(GOOGLE_MOCK + "/o/oauth2/v2/auth");
+        assertThat(u[0]).contains("client_id=test-client-id.apps.googleusercontent.com");
+        assertThat(u[0]).contains("access_type=offline");           // 要 refresh token
+        assertThat(java.net.URLDecoder.decode(u[0], StandardCharsets.UTF_8))
+                .as("回调地址按发起时的域名推导（反向代理的转发头优先）")
+                .contains("redirect_uri=https://xiezitai.cn/google/auth/redirect");
+        assertThat(u[1]).as("state 非空").isNotBlank();
+
+        // 伪造 / 篡改 state 一律拒绝，且不会写进任何关联
+        long before = bloggerRepo.count();
+        for (String bad : new String[]{"", "abc.def", u[1] + "x"}) {
+            MvcResult r = mvc.perform(get("/google/auth/redirect")
+                            .param("code", "mock-auth-code").param("state", bad))
+                    .andExpect(status().isOk()).andReturn();
+            assertThat(r.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .as("非法 state 不能报告成功").contains("\"ok\":false");
+        }
+        assertThat(bloggerRepo.count()).as("非法 state 不应产生任何关联").isEqualTo(before);
+    }
+
+    @Test
+    @DisplayName("Blogger：OAuth 回调落库关联，接口永不回显令牌，换令牌时带上同一个 redirect_uri")
+    void bloggerOAuthCallback() throws Exception {
+        String token = loginToken(ADMIN, ADMIN_PWD);
+        String[] u = oauthUrl(token);
+        MvcResult r = mvc.perform(get("/google/auth/redirect")
+                        .param("code", "mock-auth-code").param("state", u[1]))
+                .andExpect(status().isOk()).andReturn();
+        String html = r.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        try {
+            assertThat(html).as("回调页把结果回传给后台窗口").contains("blogger-oauth")
+                    .contains("\"ok\":true").contains(BLOGGER_EMAIL);
+            assertThat(lastTokenForm).as("换令牌要带上与发起时一致的 redirect_uri")
+                    .contains("redirect_uri=https%3A%2F%2Fxiezitai.cn%2Fgoogle%2Fauth%2Fredirect")
+                    .contains("grant_type=authorization_code");
+            // 一个账号下两个博客都被关联进来
+            assertThat(bloggerRepo.findByGoogleEmail(BLOGGER_EMAIL)).hasSize(2);
+            assertThat(bloggerRepo.findByBlogId(BLOG_ID_A)).isPresent();
+            assertThat(bloggerRepo.findByBlogId(BLOG_ID_B)).isPresent();
+
+            // 接口不能回显 refresh / access token（WRITE_ONLY）
+            String listJson = mvc.perform(get("/api/admin/blogger/sites")
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andReturn()
+                    .getResponse().getContentAsString(StandardCharsets.UTF_8);
+            assertThat(listJson).contains("\"hasAuth\":true").contains(BLOGGER_EMAIL);
+            assertThat(listJson).doesNotContain("mock-refresh-token").doesNotContain("mock-access-token");
+
+            MvcResult st = mvc.perform(get("/api/admin/blogger/status")
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andReturn();
+            assertThat(st.getResponse().getContentAsString(StandardCharsets.UTF_8)).contains("\"configured\":true");
+        } finally {
+            cleanBlogger();
+        }
+    }
+
+    @Test
+    @DisplayName("Blogger：单篇导入要把 Blogger 自家图落盘、外站图留外链，并把 HTML 还原成 Markdown")
+    void bloggerSingleImport() throws Exception {
+        String token = loginToken(ADMIN, ADMIN_PWD);
+        try {
+            associateGoogleAccount(token);
+            long siteId = bloggerRepo.findByBlogId(BLOG_ID_A).orElseThrow().getId();
+
+            MvcResult r = mvc.perform(post("/api/admin/blogger/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", POST_ID_1, "useSrcDate", true, "onConflict", "skip")))
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode data = om.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            assertThat(data.path("imported").asBoolean()).isTrue();
+            assertThat(data.path("slug").asText()).as("slug 取 Blogger 文章链接的末段").isEqualTo("blogger-e2e-post-01");
+            assertThat(data.path("tags").asText()).isEqualTo("E2ETag,Java");
+
+            cn.xiezitai.entity.Article a = articles.findBySlugIgnoreCase("blogger-e2e-post-01").orElseThrow();
+            String c = a.getContent();
+            assertThat(c).as("HTML 头标签还原成 Markdown 标题").contains("## 小标题");
+            assertThat(c).as("Blogger 自家的图落盘到本站媒体库").contains("![本站图](/media/");
+            assertThat(c).as("外站图保留外链").contains(EXT_IMG);
+            assertThat(c).as("站内非媒体链接不下载").contains("/2026/01/other-post.html");
+            assertThat(a.getSummary()).as("摘要取正文第一段").isEqualTo("开头一段正文。");
+            assertThat(a.getAuthor()).as("发布人用博客名，不暴露 Google 邮箱").isEqualTo("E2E Blogger 一号");
+            assertThat(a.getStatus()).isEqualTo("PUBLISHED");
+            assertThat(a.getPublishedAt().toLocalDate().toString()).as("沿用 Blogger 原发布时间").isEqualTo("2026-01-01");
+            assertThat(a.getCover()).as("封面自动取正文第一张图（且已是本站地址）").startsWith("/media/");
+
+            // 落盘的媒体文件确实存在（不是只写了个链接）
+            String stored = a.getCover().replace("/media/", "");
+            assertThat(fileRepo.findByStoredName(stored)).as("媒体文件已入库").isPresent();
+
+            // 再导一次：同样的 slug 会被判为「已存在」而跳过
+            MvcResult again = mvc.perform(post("/api/admin/blogger/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", POST_ID_1, "useSrcDate", true, "onConflict", "skip")))
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode againData = om.readTree(again.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            assertThat(againData.path("imported").asBoolean()).isFalse();
+            assertThat(againData.path("reason").asText()).isEqualTo("exists");
+
+            // 选「更新」则用 Blogger 版本覆盖，文章 id 不变
+            MvcResult upd = mvc.perform(post("/api/admin/blogger/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", POST_ID_1, "useSrcDate", true, "onConflict", "update")))
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode updData = om.readTree(upd.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            assertThat(updData.path("updated").asBoolean()).isTrue();
+            assertThat(updData.path("articleId").asLong()).isEqualTo(a.getId());
+        } finally {
+            cleanBlogger();
+        }
+    }
+
+    @Test
+    @DisplayName("Blogger：整站导入要能翻页跑完并给出进度（总数 / 已完成 / 成功 / 跳过 / 失败）")
+    void bloggerFullImport() throws Exception {
+        String token = loginToken(ADMIN, ADMIN_PWD);
+        try {
+            associateGoogleAccount(token);
+            long siteId = bloggerRepo.findByBlogId(BLOG_ID_A).orElseThrow().getId();
+
+            // 先单篇导入第 1 篇，整站导入时它会走「跳过」分支
+            mvc.perform(post("/api/admin/blogger/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", POST_ID_1, "onConflict", "skip")))
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk());
+
+            mvc.perform(post("/api/admin/blogger/sites/" + siteId + "/import-all")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("useSrcDate", true, "onConflict", "skip")))
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isAccepted());
+
+            // 同一博客再启一个任务 → 409
+            mvc.perform(post("/api/admin/blogger/sites/" + siteId + "/import-all")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("onConflict", "skip")))
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isConflict());
+
+            JsonNode p = null;
+            for (int i = 0; i < 60; i++) {
+                MvcResult r = mvc.perform(get("/api/admin/blogger/sites/" + siteId + "/progress")
+                                .header("Authorization", "Bearer " + token))
+                        .andExpect(status().isOk()).andReturn();
+                p = om.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8));
+                if (!"RUNNING".equals(p.path("phase").asText())) break;
+                Thread.sleep(120);
+            }
+            assertThat(p).isNotNull();
+            assertThat(p.path("phase").asText()).as("进度日志: " + p.path("messages")).isEqualTo("DONE");
+            assertThat(p.path("total").asLong()).as("总数来自博客信息接口（进度条的分母）").isEqualTo(3);
+            assertThat(p.path("done").asInt()).isEqualTo(3);
+            assertThat(p.path("imported").asInt()).as("第 2、3 篇要导进来").isEqualTo(2);
+            assertThat(p.path("skipped").asInt()).as("第 1 篇此前已导入，跳过").isEqualTo(1);
+            assertThat(p.path("failed").asInt()).isEqualTo(0);
+
+            // 三篇的 slug 分别来自：链接末段 / 标题转写 / 文章 id 兜底
+            assertThat(articles.findBySlugIgnoreCase("blogger-e2e-post-01")).isPresent();
+            assertThat(articles.findBySlugIgnoreCase("blogger-e2e-second-post")).as("通用末段 blog-post 要退回标题转写").isPresent();
+            assertThat(articles.findBySlugIgnoreCase("blogger-" + POST_ID_3)).as("纯中文标题要退回到 blogger-<postId>").isPresent();
+
+            // 没有文章的博客：整站导入跑完但不导入任何东西
+            long emptySite = bloggerRepo.findByBlogId(BLOG_ID_B).orElseThrow().getId();
+            mvc.perform(post("/api/admin/blogger/sites/" + emptySite + "/import-all")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("onConflict", "skip")))
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isAccepted());
+            JsonNode ep = null;
+            for (int i = 0; i < 60; i++) {
+                MvcResult r = mvc.perform(get("/api/admin/blogger/sites/" + emptySite + "/progress")
+                                .header("Authorization", "Bearer " + token)).andReturn();
+                ep = om.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8));
+                if (!"RUNNING".equals(ep.path("phase").asText())) break;
+                Thread.sleep(120);
+            }
+            assertThat(ep.path("phase").asText()).isEqualTo("DONE");
+            assertThat(ep.path("imported").asInt()).isEqualTo(0);
+        } finally {
+            cleanBlogger();
+        }
+    }
+
+    @Test
+    @DisplayName("Blogger：分发渠道（原文/转载、更新/新发、正文强制 HTML、徽标与解除关联清理）")
+    void bloggerDistribute() throws Exception {
+        String token = loginToken(ADMIN, ADMIN_PWD);
+        Long artId = null;
+        try {
+            associateGoogleAccount(token);
+            long siteId = bloggerRepo.findByBlogId(BLOG_ID_A).orElseThrow().getId();
+
+            MvcResult cr = mvc.perform(post("/api/admin/articles")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("title", "分发到 Blogger 的文章", "slug", "dist-blogger-e2e",
+                                    "content", "# 标题\n\n正文里有 ![图](/media/x.png)",
+                                    "tags", "E2E,博客", "status", "PUBLISHED")))
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andReturn();
+            artId = om.readTree(cr.getResponse().getContentAsString(StandardCharsets.UTF_8)).path("id").asLong();
+
+            // ① 目标清单里出现该博客（未分发过、可用）
+            MvcResult tr = mvc.perform(get("/api/admin/dist/targets?articleId=" + artId)
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode target = null;
+            for (JsonNode n : om.readTree(tr.getResponse().getContentAsString(StandardCharsets.UTF_8)).path("targets")) {
+                if ("blogger".equals(n.path("channel").asText()) && n.path("targetId").asLong() == siteId) target = n;
+            }
+            assertThat(target).as("目标清单里应出现 Blogger 渠道").isNotNull();
+            assertThat(target.path("ready").asBoolean()).isTrue();
+            assertThat(target.path("name").asText()).contains("E2E Blogger 一号");
+            assertThat(target.path("dist").isNull()).as("还没分发过").isTrue();
+
+            // ② 转载分发（用户选了 Markdown，Blogger 渠道要归一成 HTML 并给出提示）
+            bloggerWrites.clear();
+            JsonNode run1 = distRunChannel(token, artId, "repost", "markdown", "blogger", siteId, "create");
+            assertThat(run1.path("ok").asInt()).isEqualTo(1);
+            JsonNode r1 = run1.path("results").get(0);
+            assertThat(r1.path("ok").asBoolean()).as(String.valueOf(r1)).isTrue();
+            assertThat(String.join("；", toStringList(r1.path("warnings"))))
+                    .as("Blogger 不认 Markdown，要明确告诉用户格式被忽略").contains("Blogger");
+            assertThat(r1.path("remoteId").asText()).as("远端 id 用字符串形态，不丢精度").isEqualTo(NEW_POST_ID);
+
+            Map<String, Object> createCall = bloggerWrites.stream()
+                    .filter(c -> "create".equals(c.get("kind"))).findFirst().orElseThrow();
+            String sentBody = String.valueOf(createCall.get("body"));
+            assertThat(sentBody).as("正文渲染成 HTML 后发送").contains("<h1>").contains("<img");
+            assertThat(sentBody).as("转载分发要带原文链接").contains(siteRoot + "/dist-blogger-e2e");
+            assertThat(sentBody).as("标签同步过去").contains("E2E").contains("博客");
+
+            // ③ 再分发选「更新」→ 走 PATCH，远端 id 不变，正文不再带转载尾注
+            bloggerWrites.clear();
+            JsonNode run2 = distRunChannel(token, artId, "original", "html", "blogger", siteId, "update");
+            JsonNode r2 = run2.path("results").get(0);
+            assertThat(r2.path("ok").asBoolean()).as(String.valueOf(r2)).isTrue();
+            assertThat(r2.path("updated").asBoolean()).isTrue();
+            assertThat(r2.path("remoteId").asText()).isEqualTo(NEW_POST_ID);
+            Map<String, Object> updCall = bloggerWrites.stream()
+                    .filter(c -> "update".equals(c.get("kind"))).findFirst().orElseThrow();
+            assertThat(updCall.get("postId")).as("更新打在同一个远端文章上").isEqualTo(NEW_POST_ID);
+            assertThat(String.valueOf(updCall.get("body"))).as("原文分发不带转载尾注").doesNotContain("本文由");
+
+            // ④ 列表徽标 + 已分发状态
+            MvcResult mr = mvc.perform(get("/api/admin/dist/map?ids=" + artId)
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode badges = om.readTree(mr.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path(String.valueOf(artId));
+            assertThat(badges.isArray()).isTrue();
+            assertThat(badges.get(0).asText()).contains("E2E Blogger 一号");
+
+            MvcResult tr2 = mvc.perform(get("/api/admin/dist/targets?articleId=" + artId)
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode after = null;
+            for (JsonNode n : om.readTree(tr2.getResponse().getContentAsString(StandardCharsets.UTF_8)).path("targets")) {
+                if ("blogger".equals(n.path("channel").asText()) && n.path("targetId").asLong() == siteId) after = n;
+            }
+            assertThat(after).isNotNull();
+            assertThat(after.path("dist").path("distCount").asInt()).as("发过两次").isEqualTo(2);
+            assertThat(after.path("dist").path("remoteId").asText()).isEqualTo(NEW_POST_ID);
+            assertThat(after.path("dist").path("remoteUrl").asText()).contains("dist-e2e.html");
+
+            // ⑤ 解除关联 → 指向它的分发记录一并清掉（不留悬空徽标）
+            mvc.perform(delete("/api/admin/blogger/sites/" + siteId)
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk());
+            assertThat(distRecordRepo.findByArticleIdOrderByIdAsc(artId)).isEmpty();
+        } finally {
+            if (artId != null) {
+                mvc.perform(delete("/api/admin/articles/" + artId).header("Authorization", "Bearer " + token));
+            }
+            cleanBlogger();
+        }
+    }
+
+    /** 跑一次分发（可指定渠道），返回响应 JSON */
+    private JsonNode distRunChannel(String token, Long articleId, String mode, String format,
+                                    String channel, Long targetId, String action) throws Exception {
+        MvcResult r = mvc.perform(post("/api/admin/dist/run")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("articleId", articleId, "mode", mode, "format", format,
+                                "targets", java.util.List.of(Map.of("channel", channel,
+                                        "targetId", targetId, "action", action)))))
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk()).andReturn();
+        return om.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8));
+    }
+
+    private static java.util.List<String> toStringList(JsonNode arr) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (JsonNode n : arr) out.add(n.asText());
+        return out;
+    }
+
+    /** 清掉本用例造出来的关联与文章（Blogger 关联是应用级共享状态，必须收干净） */
+    private void cleanBlogger() {
+        for (String slug : new String[]{"blogger-e2e-post-01", "blogger-e2e-second-post", "blogger-" + POST_ID_3}) {
+            articles.findBySlugIgnoreCase(slug).ifPresent(a -> {
+                distRecordRepo.deleteByArticleId(a.getId());
+                articles.deleteById(a.getId());
+            });
+        }
+        for (cn.xiezitai.entity.BloggerSite s : bloggerRepo.findByGoogleEmail(BLOGGER_EMAIL)) {
+            distRecordRepo.deleteByChannelAndTargetId(cn.xiezitai.entity.DistRecord.CHANNEL_BLOGGER, s.getId());
+        }
+        bloggerRepo.deleteByGoogleEmail(BLOGGER_EMAIL);
+        articles.findBySlugIgnoreCase("dist-blogger-e2e").ifPresent(a -> {
+            distRecordRepo.deleteByArticleId(a.getId());
+            articles.deleteById(a.getId());
+        });
     }
 }

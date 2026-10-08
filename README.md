@@ -377,10 +377,11 @@ docker run -d --name xiezitai -p 8080:8080 \
 | 安全     | TOTP 两步验证（扫码/密钥绑定）；密码错误 3 次锁 5 分钟、5 次锁 10 分钟、10 次锁 1 小时；全量请求日志；文件魔数扫描 + 孤立文件检测；防篡改基线校验    |
 | 机器人    | 企业微信 webhook 通知（登录/文章/访问/注册/评论/上传），可逐项开关                                         |
 | AI     | OpenAI 兼容接口：润色纠错、摘要、封面图（公众号 900×383）、请求日志风险分析                                    |
-| 分发     | **把文章一键发到关联的写字台账号 / WordPress 站点 / 博客园账号**（可多选）：正文里的站内媒体自动补成绝对地址；可选**原文分发**或**转载分发**（文末附首发链接）；正文可按 Markdown 原文发或转成 HTML 发（发博客园时自动带 `[Markdown]` 分类、发写字台一律按 Markdown 原文，否则代码块/表格会被当 HTML 原样贴出）；**已分发过的目标会被记住**，下次可选「更新之前分发的文章」（写字台走对方 `PUT /api/v1/articles/{id}`）或「分发一个新文章」，文章列表行上用「已分发 · 目标名」徽标标出；发写字台时不指定 slug（同一台站上发第二篇也不会撞 slug） |
+| 分发     | **把文章一键发到关联的写字台账号 / WordPress 站点 / 博客园账号 / 谷歌 Blogger**（可多选）：正文里的站内媒体自动补成绝对地址；可选**原文分发**或**转载分发**（文末附首发链接）；正文可按 Markdown 原文发或转成 HTML 发（发博客园时自动带 `[Markdown]` 分类、发写字台一律按 Markdown 原文，否则代码块/表格会被当 HTML 原样贴出）；**已分发过的目标会被记住**，下次可选「更新之前分发的文章」（写字台走对方 `PUT /api/v1/articles/{id}`）或「分发一个新文章」，文章列表行上用「已分发 · 目标名」徽标标出；发写字台时不指定 slug（同一台站上发第二篇也不会撞 slug）；**发谷歌 Blogger 时正文一律按 HTML 发送**（Blogger 不认 Markdown，选「Markdown 原文」会被忽略并在结果里给出 ⚠ 提示），「更新」走 Blogger `PATCH`、「新文章」走 `POST`，远端文章 id 是 19 位长数字串，接口按**字符串**回传不丢精度 |
 | 开放 API | 对外接口（Header `X-API-Token`，后台「设置」页查看）：`POST /api/v1/publish` 发布、`PUT /api/v1/articles/{id}` 更新自己发的、`GET /api/v1/articles` 列表、`GET /api/v1/articles/{id}` 单篇 |
 | MCP    | `POST /api/v1/mcp`，JSON-RPC 2.0，工具：publish_article / list_articles / get_article |
 | 写字台互导 | **关联多个写字台账号**（填接口地址 + 账号 + 对接密钥）：同一个账号既是**导入源**，也是文章**分发目标**（见上表「分发」）；导入侧 —— 浏览对方站点文章 → **导入单篇** 或 **整站导入**（进度条 + 逐条日志）；正文本身就是 Markdown 原文，导入不需要任何格式转换；**属于对方站点的图片/附件下载落盘**到本站媒体库（含**视频/大附件**，单文件上限默认 64MB，可用 `XIEZITAI_XZ_MAX_MEDIA_BYTES` 调整；超过才降级为外链 + 警告），**第三方图床保持外链**；本地已存在可选「跳过」或用对方版本更新，发布时间可选沿用原时间或当前时间；密钥只落库、接口不回显、不入 git |
+| 谷歌 Blogger | **关联多个 Google 账号下的博客**（Google OAuth 2.0 授权码模式）：后台「Blogger」页点「关联 Google 账号」→ 弹窗走 Google 同意页 → 回调 `/google/auth/redirect` → 一个账号下的**所有博客一次性关联**（按 `blogId` 唯一，重复授权只刷新令牌）；导入侧 —— 浏览对方文章（`pageToken` 翻页）→ **导入单篇** 或 **整站导入**（进度条 + 逐条日志：总数取博客 `posts.totalItems`，实时显示已成功 / 跳过 / 失败）；Blogger 正文是 HTML，导入时用内置转换器**还原成 Markdown**（标题 / 列表 / 加粗 / 链接 / 图片 / 代码块）；**Blogger 自家主机的图片下载落盘**到本站媒体库，**第三方图床保持外链**（`href` 只在带媒体后缀时才下载）；`refresh_token` / `access_token` 只落库、接口一律不回显、不入 git |
 | 搜索     | **首页站内搜索**（`/?q=`）：标题 / 摘要 / 正文 / 标签四处 like 命中，**只搜已发布**（草稿不露头）；纯 GET 表单 + 服务端渲染，链接可分享、爬虫可抓；关键词一路带进翻页 / canonical / rel prev·next（点下一页不丢条件）；搜索结果页自动 `noindex`（这类低质重复页不收进索引） |
 | 后台操作  | 列表行内操作统一为图标按钮（分发 / 编辑 / 删除 / 评论通过·拒绝），带中文悬浮提示与 `aria-label` 无障碍名称                                 |
 | SEO    | 服务端渲染、robots.txt、sitemap.xml、OG 标签；文章与页面的 URL **直接挂根级**（`https://站点/why-self-host`、`https://站点/links`），历史地址 `/article/xxx`、`/page/xxx` 用 **301 永久搬走**（老链接与收录不断）；文章/页面页头输出 `canonical` + `og:url`；中文 slug 自动百分号编码，老数据里已是 `%xx` 形态的 slug 不会二次编码 |
@@ -414,6 +415,53 @@ docker run -d --name xiezitai -p 8080:8080 \
 
 说明：魔搭的文生图（Qwen-Image 系列）是**异步任务**协议（`POST /images/generations` 返回 `task_id`，再轮询 `GET /tasks/{id}`），
 本项目已自动适配，同时兼容 OpenAI 的同步 `data[0].url` 返回。
+
+## 谷歌 Blogger 接入（OAuth 2.0）
+
+后台「Blogger」页可以把文章分发到谷歌 Blogger，也能把 Blogger 的文章（单篇 / 整站）导进本站。
+它走的是 Google 官方 **OAuth 2.0 授权码模式**，需要你自备一个客户端凭据。
+
+**第 1 步 · 在 Google Cloud Console 准备**
+
+1. 建项目 → 启用 **Blogger API v3**
+2. 「OAuth 同意屏幕」填好应用名与支持邮箱；作用域只有三个（本站申请的就是这些）：
+   `openid`、`email`、`blogger`（`blogger` 才能读写你的博客）
+3. 「凭据 → 创建凭据 → OAuth 2.0 客户端 ID → Web 应用」，然后登记：
+   - **已获授权的 JavaScript 来源**：`https://你的域名`
+   - **已获授权的重定向 URI**：`https://你的域名/google/auth/redirect`
+   - 站点挂在多个域名（含 `www` 与裸域）或本机联调时，**每个都要单独登记一行**，否则授权时会报 `redirect_uri_mismatch`
+   - 仅测试用：把授权账号加到「测试用户」里，否则只有发布应用后大家才都能授权
+
+**第 2 步 · 把凭据交给应用（只走环境变量）**
+
+```ini
+# 仓库根的 .env（已被 .gitignore 忽略，不会进仓库）
+GOOGLE-XIEZITAI-CLIENTID=xxxxxxxxxxxx.apps.googleusercontent.com
+GOOGLE-XIEZITAI-CLIENT_SECRET=GOCSPX-xxxxxxxxxxxxxxxx
+```
+
+五份 `docker-compose.*.yml` 都已透传这两个变量。裸机 / JAR 直跑也可以用 `XIEZITAI_GOOGLE_CLIENT_ID`
+与 `XIEZITAI_GOOGLE_CLIENT_SECRET` 两个等价名字（应用按 `XIEZITAI_GOOGLE_CLIENT_ID` →
+`GOOGLE_XIEZITAI_CLIENTID` → `GOOGLE-XIEZITAI-CLIENTID` 的顺序取第一个有值的）。
+
+> **这两个值是敏感信息**：应用只从环境变量读，**不落库、后台接口不回显、也不写入仓库**。
+> 仓库里的 `.env.example` 只留空占位符；怀疑泄露时，去 Google Cloud Console 重置密钥再改 `.env` 重启即可。
+> `refresh_token` / `access_token` 授权后会存进数据库（下次免授权），但**任何接口都不会把它回传**。
+
+**可选微调**
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `XIEZITAI_GOOGLE_REDIRECT_URI` | 按发起授权的请求推导 | 固定回调地址（`X-Forwarded-Proto` / `X-Forwarded-Host` 优先，多域名各自对上自己登记的 URI） |
+| `XIEZITAI_BLOGGER_MEDIA_HOSTS` | `blogspot.com,googleusercontent.com,ggpht.com` | 哪些主机算「Blogger 自家」（这些域下的图/附件下载落盘），其余第三方图床保留外链 |
+| `XIEZITAI_BLOGGER_MAX_MEDIA_BYTES` | `67108864`（64MB） | 单个落盘文件上限，超出降级为外链 + 警告 |
+
+**授权后能做什么**
+
+- **导入**：选博客 → 浏览文章（翻页）→ 导入单篇，或点「整站导入」看进度条（总数 / 成功 / 跳过 / 失败 + 逐条日志）；
+  正文 HTML 会还原成 Markdown，Blogger 自家的图下载落盘，第三方图床保持外链，已导入过的可选「跳过」或更新
+- **分发**：文章列表点「分发」→ 勾「谷歌 Blogger」→ 选**原文分发**或**转载分发**（文末附首发链接）→
+  正文按 HTML 发送（Blogger 不认 Markdown）；分发过的博客会被记住，下次可选「更新之前分发的文章」或「分发一个新文章」
 
 ## 开放 API：发布与读取
 
@@ -494,6 +542,7 @@ mvn test
 文章发布与草稿隔离、登录用户评论待审与审核（禁止匿名）、页面上线、上传类型限制与魔数扫描、
 媒体访问留痕、开放 API 与 MCP（握手/工具列表/调用）、**首页站内搜索**（命中范围 / 草稿隔离 / 分页带 q / noindex / 空态）、
 **写字台跨站导入**（开放 API 导出 JSON 与媒体绝对化 / 账号关联脱敏 / 单篇导入媒体落盘与外链保留 / 整站导入进度）、
+**谷歌 Blogger 接入**（OAuth 授权地址与签名 state、公开回调换令牌并关联多个博客、单篇导入 HTML→Markdown 与媒体本地化、整站导入进度、分发到 Blogger 走 PATCH 更新 / POST 新建）、
 请求日志、管理端权限。
 
 - 测试类：`src/test/java/cn/xiezitai/XiezitaiApplicationTests.java`
@@ -502,8 +551,8 @@ mvn test
 ### 端到端验证（Playwright + 真实 Chrome）
 
 `e2e/` 下有 30 余个脚本（含纯截图工具），覆盖后台建文发布、评论两级与审核、首页分页、媒体上传、
-视频插入、改密、记住登录、TOTP 绑定、示例内容种子、**写字台跨站导入**、文章分发（→ 写字台 / WordPress / 博客园）
-等场景，跑完打印 `PASS/FAIL` 汇总。
+视频插入、改密、记住登录、TOTP 绑定、示例内容种子、**写字台跨站导入**、**谷歌 Blogger 关联 / 导入 / 分发**、
+文章分发（→ 写字台 / WordPress / 博客园 / Blogger）等场景，跑完打印 `PASS/FAIL` 汇总。
 **必须在项目根目录执行**（截图输出到 `e2e/out/`）：
 
 ```bash

@@ -46,6 +46,29 @@ xiezitai:
   # 超过此上限才降级为「保留外链 + 警告」。设 0 表示不限制（谨慎，防磁盘写满）。
   xz-import:
     max-media-bytes: ${XIEZITAI_XZ_MAX_MEDIA_BYTES:67108864}
+  # 谷歌 Blogger：OAuth 2.0 客户端凭据**只从环境变量读**（不落库、不入仓库、不进后台设置页）。
+  # 在 Google Cloud Console 建「OAuth 2.0 客户端 ID（Web 应用）」，并把每个常用域名的
+  # {scheme}://{host}/google/auth/redirect 登记到「已获授权的重定向 URI」里，例如
+  #   https://xiezitai.cn/google/auth/redirect
+  #   https://www.xiezitai.cn/google/auth/redirect
+  # 变量名兼容三种写法（谁先有值用谁）：XIEZITAI_GOOGLE_CLIENT_ID > GOOGLE_XIEZITAI_CLIENTID
+  # > GOOGLE-XIEZITAI-CLIENTID（最后一种就是常见 .env 里的连字符写法）。
+  google:
+    client-id: ${XIEZITAI_GOOGLE_CLIENT_ID:${GOOGLE_XIEZITAI_CLIENTID:${GOOGLE-XIEZITAI-CLIENTID:}}}
+    client-secret: ${XIEZITAI_GOOGLE_CLIENT_SECRET:${GOOGLE_XIEZITAI_CLIENT_SECRET:${GOOGLE-XIEZITAI-CLIENT_SECRET:}}}
+    # 端点默认就是 Google 官方地址；自测 / 私有化部署时可以指到本机 mock
+    auth-uri: ${XIEZITAI_GOOGLE_AUTH_URI:https://accounts.google.com/o/oauth2/v2/auth}
+    token-uri: ${XIEZITAI_GOOGLE_TOKEN_URI:https://oauth2.googleapis.com/token}
+    api-base: ${XIEZITAI_GOOGLE_API_BASE:https://www.googleapis.com/blogger/v3}
+    # 回调地址；留空则按「发起授权那一刻的请求」推导（X-Forwarded-Proto/Host 优先，
+    # 这样同一个站点挂在多个域名下时，各自都能对上自己登记的 redirect_uri）
+    redirect-uri: ${XIEZITAI_GOOGLE_REDIRECT_URI:}
+  # Blogger 导入：来源站点**自身文件**的单文件上限，默认 64MB
+  blogger-import:
+    max-media-bytes: ${XIEZITAI_BLOGGER_MAX_MEDIA_BYTES:67108864}
+  # 哪些域名算「Blogger 来源站点自身」——这些域名下的图/附件会被下载落盘到本站媒体库，
+  # 其余第三方图床一律保留外链（按主机后缀匹配，含子域）
+  blogger-media-hosts: ${XIEZITAI_BLOGGER_MEDIA_HOSTS:blogspot.com,googleusercontent.com,ggpht.com}
   # 首次启动时写入 sys_configs 的 AI 默认值（已存在则不改，后台可随时覆盖）
   # 申请大模型额度：https://www.modelscope.cn/register?inviteCode=freetoken2208&invitorName=AIDever
   ai:
