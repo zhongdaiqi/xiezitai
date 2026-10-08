@@ -71,9 +71,8 @@ public class BloggerController {
     public ResponseEntity<?> oauthUrl(HttpServletRequest request) {
         if (!auth.configured()) {
             return ResponseEntity.status(503).body(Map.of("error",
-                    "本站未配置 Google OAuth 客户端。需要在部署环境里提供 "
-                            + "GOOGLE-XIEZITAI-CLIENTID 与 GOOGLE-XIEZITAI-CLIENT_SECRET（或 "
-                            + "XIEZITAI_GOOGLE_CLIENT_ID / XIEZITAI_GOOGLE_CLIENT_SECRET）后重启。"));
+                    "本站未配置 Google OAuth 客户端。需要在部署环境（.env）里提供 "
+                            + "XIEZITAI_GOOGLE_CLIENT_ID 与 XIEZITAI_GOOGLE_CLIENT_SECRET 后重启。"));
         }
         String scheme = firstHeader(request, "X-Forwarded-Proto", request.getScheme());
         String host = firstHeader(request, "X-Forwarded-Host", request.getHeader("Host"));

@@ -243,8 +243,8 @@ public class GoogleAuthService {
 
     private JsonNode postForm(Map<String, String> form) throws IOException, InterruptedException {
         if (!configured()) {
-            throw new IOException("本站未配置 Google OAuth 客户端（需要环境变量 GOOGLE-XIEZITAI-CLIENTID / "
-                    + "GOOGLE-XIEZITAI-CLIENT_SECRET），无法完成授权");
+            throw new IOException("本站未配置 Google OAuth 客户端（需要环境变量 XIEZITAI_GOOGLE_CLIENT_ID / "
+                    + "XIEZITAI_GOOGLE_CLIENT_SECRET），无法完成授权");
         }
         StringBuilder sb = new StringBuilder();
         for (Map.Entry<String, String> e : form.entrySet()) {

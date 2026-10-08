@@ -51,11 +51,13 @@ xiezitai:
   # {scheme}://{host}/google/auth/redirect 登记到「已获授权的重定向 URI」里，例如
   #   https://xiezitai.cn/google/auth/redirect
   #   https://www.xiezitai.cn/google/auth/redirect
-  # 变量名兼容三种写法（谁先有值用谁）：XIEZITAI_GOOGLE_CLIENT_ID > GOOGLE_XIEZITAI_CLIENTID
-  # > GOOGLE-XIEZITAI-CLIENTID（最后一种就是常见 .env 里的连字符写法）。
+  # 变量名两种写法都认（谁先有值用谁）：XIEZITAI_GOOGLE_CLIENT_ID > GOOGLE_XIEZITAI_CLIENT_ID。
+  # 前者是 .env 里的正式名字（compose 也照这个名字透传进容器），后者是历史名，留着做兼容回退。
+  # ⚠️ 不要用连字符写法（GOOGLE-XIEZITAI-CLIENT_ID）——它既不是合法的环境变量名，compose 的
+  #    `${}` 插值还会把 `-` 当成分隔符截断，所以这里不做那种回退。
   google:
-    client-id: ${XIEZITAI_GOOGLE_CLIENT_ID:${GOOGLE_XIEZITAI_CLIENTID:${GOOGLE-XIEZITAI-CLIENTID:}}}
-    client-secret: ${XIEZITAI_GOOGLE_CLIENT_SECRET:${GOOGLE_XIEZITAI_CLIENT_SECRET:${GOOGLE-XIEZITAI-CLIENT_SECRET:}}}
+    client-id: ${XIEZITAI_GOOGLE_CLIENT_ID:${GOOGLE_XIEZITAI_CLIENT_ID:}}
+    client-secret: ${XIEZITAI_GOOGLE_CLIENT_SECRET:${GOOGLE_XIEZITAI_CLIENT_SECRET:}}
     # 端点默认就是 Google 官方地址；自测 / 私有化部署时可以指到本机 mock
     auth-uri: ${XIEZITAI_GOOGLE_AUTH_URI:https://accounts.google.com/o/oauth2/v2/auth}
     token-uri: ${XIEZITAI_GOOGLE_TOKEN_URI:https://oauth2.googleapis.com/token}

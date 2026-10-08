@@ -436,13 +436,21 @@ docker run -d --name xiezitai -p 8080:8080 \
 
 ```ini
 # 仓库根的 .env（已被 .gitignore 忽略，不会进仓库）
-GOOGLE-XIEZITAI-CLIENTID=xxxxxxxxxxxx.apps.googleusercontent.com
-GOOGLE-XIEZITAI-CLIENT_SECRET=GOCSPX-xxxxxxxxxxxxxxxx
+XIEZITAI_GOOGLE_CLIENT_ID=xxxxxxxxxxxx.apps.googleusercontent.com
+XIEZITAI_GOOGLE_CLIENT_SECRET=GOCSPX-xxxxxxxxxxxxxxxx
 ```
 
-五份 `docker-compose.*.yml` 都已透传这两个变量。裸机 / JAR 直跑也可以用 `XIEZITAI_GOOGLE_CLIENT_ID`
-与 `XIEZITAI_GOOGLE_CLIENT_SECRET` 两个等价名字（应用按 `XIEZITAI_GOOGLE_CLIENT_ID` →
-`GOOGLE_XIEZITAI_CLIENTID` → `GOOGLE-XIEZITAI-CLIENTID` 的顺序取第一个有值的）。
+五份 `docker-compose.*.yml` 都按这个名字透传进容器，应用自己也读这个名字。
+**历史名 `GOOGLE_XIEZITAI_CLIENT_ID` / `GOOGLE_XIEZITAI_CLIENT_SECRET` 仍兼容**——compose 里用了
+嵌套默认值 `${XIEZITAI_GOOGLE_CLIENT_ID:-${GOOGLE_XIEZITAI_CLIENT_ID:-}}`，旧名的值会兜给新名，
+所以老的 `.env` 不改名也照样能跑（裸机 / JAR 直跑同理，应用按 `XIEZITAI_GOOGLE_CLIENT_ID` →
+`GOOGLE_XIEZITAI_CLIENT_ID` 的顺序取第一个有值的）。
+
+> ⚠️ **别用连字符写法**（`GOOGLE-XIEZITAI-CLIENT_ID`）。它既不是合法的环境变量名，
+> compose 的 `${}` 插值还会把 `-` 当成 `${变量-default}` 的分隔符——`${GOOGLE-XIEZITAI-CLIENT_ID:-}`
+> 会被截断成 `${GOOGLE-default}`，透传进容器的是一段字面串（实测值就是 `XIEZITAI-CLIENT_ID:-`），
+> 症状是后台提示「未配置 Google OAuth 客户端」或授权时报 `invalid_client`。
+> 改完 `.env` 可用 `docker compose -f docker-compose.lite.yml config | grep GOOGLE` 直接看到透传结果。
 
 > **这两个值是敏感信息**：应用只从环境变量读，**不落库、后台接口不回显、也不写入仓库**。
 > 仓库里的 `.env.example` 只留空占位符；怀疑泄露时，去 Google Cloud Console 重置密钥再改 `.env` 重启即可。

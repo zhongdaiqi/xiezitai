@@ -2955,7 +2955,7 @@ async function loadBloggerSites() {
         const st = await jget('/api/admin/blogger/status');
         if (st && st.configured === false) {
             $('gb-status').textContent = '⚠️ 本站尚未配置 Google OAuth 客户端（部署环境需要 '
-                + 'GOOGLE-XIEZITAI-CLIENTID / GOOGLE-XIEZITAI-CLIENT_SECRET），暂时无法发起关联。';
+                + 'XIEZITAI_GOOGLE_CLIENT_ID / XIEZITAI_GOOGLE_CLIENT_SECRET），暂时无法发起关联。';
             $('gb-oauth').disabled = true;
         }
     } catch (e) { /* 状态接口拿不到不影响列表展示 */ }

@@ -175,12 +175,14 @@ services:
       # ---------- 站点 ----------
       XIEZITAI_JWT_SECRET: ${XIEZITAI_JWT_SECRET:?请设置至少 32 位随机字符串，例如 export XIEZITAI_JWT_SECRET=$(openssl rand -hex 32)}
       XIEZITAI_SITE_URL: ${XIEZITAI_SITE_URL:-http://localhost:8080}
-      # 谷歌 Blogger 集成（可选）：OAuth 2.0 客户端凭据。.env 里的键名是**连字符**写法：
-      #   GOOGLE-XIEZITAI-CLIENTID=xxxxxxxx.apps.googleusercontent.com
-      #   GOOGLE-XIEZITAI-CLIENT_SECRET=GOCSPX-xxxxxxxx
+      # 谷歌 Blogger 集成（可选）：OAuth 2.0 客户端凭据。.env 里的键名：
+      #   XIEZITAI_GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
+      #   XIEZITAI_GOOGLE_CLIENT_SECRET=GOCSPX-xxxxxxxx
+      # 旧名 GOOGLE_XIEZITAI_CLIENT_ID / _SECRET 仍兼容（靠下面的嵌套默认值兜底），
+      # 但不要用连字符写法，原因见 .env.example。
       # 仓库里没有也不会写真实的 id / secret；后台接口同样永不回显（只回「是否已配置」）。
-      GOOGLE_XIEZITAI_CLIENTID: ${GOOGLE-XIEZITAI-CLIENTID:-}
-      GOOGLE_XIEZITAI_CLIENT_SECRET: ${GOOGLE-XIEZITAI-CLIENT_SECRET:-}
+      XIEZITAI_GOOGLE_CLIENT_ID: ${XIEZITAI_GOOGLE_CLIENT_ID:-${GOOGLE_XIEZITAI_CLIENT_ID:-}}
+      XIEZITAI_GOOGLE_CLIENT_SECRET: ${XIEZITAI_GOOGLE_CLIENT_SECRET:-${GOOGLE_XIEZITAI_CLIENT_SECRET:-}}
       XIEZITAI_UPLOAD_DIR: /app/data/uploads
       # 首次启动且库为空时写入示例内容（4 篇文章 + 关于/友链页面 + 几条评论）；已有数据的库不受影响
       XIEZITAI_SEED_DEMO: ${XIEZITAI_SEED_DEMO:-true}
