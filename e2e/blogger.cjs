@@ -83,8 +83,7 @@ const briefOf = i => ({
 /** 假「Google OAuth + Blogger API」服务 */
 function startMockGoogle() {
   const calls = [];                 // 分发 / 导入落下的写请求，供断言
-  const server = http.createServer(async (req, res) => {
-    const path = req.url.split('?')[0];
+  const server = http.createServer(async (req, res) => {    const path = req.url.split('?')[0];
     const qs = new URLSearchParams(req.url.split('?')[1] || '');
     const json = (obj, code = 200) => {
       const buf = Buffer.from(JSON.stringify(obj), 'utf8');
@@ -164,6 +163,9 @@ function startMockGoogle() {
 
     json({ error: 'not found' }, 404);
   });
+  // ⚠️ 必须把请求记录挂到 server 上一起返回 —— 局部 `calls` 出了这个函数就取不到了，
+  // 断言里写 `mock.calls.find(...)` 会直接抛 "Cannot read properties of undefined"
+  server.calls = calls;
   return new Promise(resolve => server.listen(MOCK_PORT, '127.0.0.1', () => resolve(server)));
 }
 
@@ -295,12 +297,15 @@ function startMockGoogle() {
     const impJson = await (await impResp).json();
     check('④ 单篇导入成功且 slug 取链接末段',
       impJson.imported === true && impJson.slug === 'blogger-e2e-post-01', JSON.stringify(impJson).slice(0, 140));
-    const art = await page.evaluate(async () => {
+    // 注意：登录令牌可能落在 sessionStorage（未勾选「记住登录」），
+    // 页内 fetch 别只读 localStorage —— 会把 token 取成 null 变成 401，
+    // 响应体里没有 content，后面所有断言都会被误判成「功能坏了」。统一把 token 传进来。
+    const art = await page.evaluate(async tk => {
       const r = await fetch('/api/admin/articles?size=200', {
-        headers: { Authorization: 'Bearer ' + localStorage.getItem('xz_token') } });
+        headers: { Authorization: 'Bearer ' + tk } });
       const d = await r.json();
       return (d.content || []).find(a => a.slug === 'blogger-e2e-post-01') || null;
-    });
+    }, jwt);
     check('④ HTML 还原成 Markdown（标题变 ## 小标题）', !!art && art.content.includes('## 小标题'),
       art ? art.content.slice(0, 60) : '(not found)');
     check('④ Blogger 自家的图落盘成本站 /media/', !!art && art.content.includes('![本站图](/media/'), art ? art.content.slice(0, 200) : '');
@@ -327,11 +332,12 @@ function startMockGoogle() {
     check('⑤ 统计：总数 3 / 成功 2 / 跳过 1 / 失败 0',
       prog.total === 3 && prog.imported === 2 && prog.skipped === 1 && prog.failed === 0,
       'total=' + prog.total + ' imported=' + prog.imported + ' skipped=' + prog.skipped + ' failed=' + prog.failed);
-    const slugs = await page.evaluate(async () => {
+    const slugs = await page.evaluate(async tk => {
       const r = await fetch('/api/admin/articles?size=200', {
-        headers: { Authorization: 'Bearer ' + localStorage.getItem('xz_token') } });
-      return (await r.json()).content.map(a => a.slug);
-    });
+        headers: { Authorization: 'Bearer ' + tk } });
+      const d = await r.json();
+      return (d.content || []).map(a => a.slug);
+    }, jwt);
     check('⑤ 三篇 slug 分别来自：链接末段 / 标题转写 / 文章 id 兜底',
       slugs.includes('blogger-e2e-post-01') && slugs.includes('blogger-e2e-second-post')
       && slugs.includes('blogger-3333333333333333333'), slugs.filter(s => s.startsWith('blogger-')).join(' | '));
@@ -365,8 +371,13 @@ function startMockGoogle() {
     await page.screenshot({ path: OUT + '/74-blogger-dist-modal.png', fullPage: true });
 
     await page.selectOption('#dist-mode', 'repost');
-    await page.evaluate(() => document.querySelectorAll('#dist-targets .dist-row input[type=checkbox]')
-      .forEach(b => { if (!b.disabled) b.checked = true; }));
+    // 只勾「E2E Blogger 一号」这一个目标：mock 里挂了 2 个博客，
+    // 全勾上会变成 ok=2、列表行出现 2 个徽标，后面的断言就没法一一对应了
+    await page.evaluate(() => document.querySelectorAll('#dist-targets .dist-row')
+      .forEach(r => {
+        const c = r.querySelector('input[type=checkbox]');
+        if (c && !c.disabled) c.checked = r.textContent.includes('E2E Blogger 一号');
+      }));
     const runResp = page.waitForResponse(r => r.url().includes('/api/admin/dist/run'), { timeout: 60000 });
     await page.getByRole('button', { name: '开始分发', exact: true }).click();
     const runJson = await (await runResp).json();
@@ -377,8 +388,9 @@ function startMockGoogle() {
     check('⑥ 提示 Blogger 正文按 HTML 发送、忽略「Markdown 原文」',
       (r0.warnings || []).some(w => w.includes('Blogger')), JSON.stringify(r0.warnings));
     const createCall = mock.calls.find(c => c.kind === 'create');
+    // 正文首行是「## 小标题」→ 渲染成 <h2>（文章标题走 Blogger 的 title 字段，不重复进正文）
     check('⑥ Blogger 收到 HTML 正文 + 标签',
-      !!createCall && createCall.body.content.includes('<h1>') && createCall.body.content.includes('<img')
+      !!createCall && createCall.body.content.includes('<h2>') && createCall.body.content.includes('<img')
       && Array.isArray(createCall.body.labels) && createCall.body.labels.includes('E2ETag'),
       createCall ? createCall.body.content.slice(0, 120) : '(no create call)');
     check('⑥ 转载分发带原文链接', !!createCall && createCall.body.content.includes('本文由')
@@ -420,6 +432,9 @@ function startMockGoogle() {
         const s = document.querySelector('#dist-targets .dact select');
         return !!s && s.value === 'update';
       }));
+    // 切回「原文分发」：上一步选的是转载，模式在弹窗里会保留，不切回来的话
+    // 这次 PATCH 仍会带转载尾注，下面那条「不再带转载尾注」就成了假失败
+    await page.selectOption('#dist-mode', 'original');
     const updResp = page.waitForResponse(r => r.url().includes('/api/admin/dist/run'), { timeout: 60000 });
     await page.getByRole('button', { name: '开始分发', exact: true }).click();
     const updJson = await (await updResp).json();
@@ -449,6 +464,12 @@ function startMockGoogle() {
     const realBad = httpBad.filter(u => !/\/import|401/.test(u));
     check('⑧ 无 JS 错误', errors.length === 0, errors.slice(0, 2).join(' | '));
     check('⑧ 无意外 HTTP>=400', realBad.length === 0, realBad.slice(0, 3).join(' | '));
+  } catch (e) {
+    // 中途抛异常也要走完 finally 的清理，并把失败当成一条断言报出来 ——
+    // 否则脚本直接崩掉，后面的场景一条都跑不到，「红在哪一步」也看不出来。
+    check('脚本流程未中途抛异常', false, (e && e.message) || String(e));
+    if (errors.length) console.log('  已收集的 JS 错误：' + errors.slice(0, 3).join(' | '));
+    if (httpBad.length) console.log('  已收集的 HTTP>=400：' + httpBad.slice(0, 3).join(' | '));
   } finally {
     try { await cleanup(); } catch (e) { /* 忽略 */ }
     mock.close();
