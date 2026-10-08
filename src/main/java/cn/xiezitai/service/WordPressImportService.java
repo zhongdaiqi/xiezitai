@@ -49,6 +49,35 @@ public class WordPressImportService {
     /** 每个站点一份导入进度；键 = wpSite.id。整站导入同一站点同一时间只允许一个任务 */
     private final Map<Long, WpSyncProgress> progress = new ConcurrentHashMap<>();
 
+    /* ================= 正文格式策略 ================= */
+
+    /** 自动识别：优先用 WP 原文（raw），拿到 HTML 就转 Markdown（默认，推荐） */
+    public static final String MODE_AUTO = "auto";
+    /** 强制转换：忽略 raw，始终把渲染结果 content.rendered 转成 Markdown */
+    public static final String MODE_HTML2MD = "html2md";
+    /** 保持原文：原样使用 WP 的 content.raw（拿不到就退回 rendered），只改媒体链接，不做转换 */
+    public static final String MODE_RAW = "raw";
+
+    /** 归一化前端传进来的正文格式；无法识别一律按 auto */
+    public static String normalizeContentMode(Object mode) {
+        if (mode == null) return MODE_AUTO;
+        String m = String.valueOf(mode).trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (m) {
+            case "html2md", "markdown", "md", "convert" -> MODE_HTML2MD;
+            case "raw", "none", "off", "original" -> MODE_RAW;
+            default -> MODE_AUTO;
+        };
+    }
+
+    /** 给进度日志用的人类可读说明 */
+    private static String contentModeText(String mode) {
+        return switch (normalizeContentMode(mode)) {
+            case MODE_HTML2MD -> "始终把 WP 渲染结果转成 Markdown";
+            case MODE_RAW -> "原样保留 WP 正文原文";
+            default -> "自动识别（优先原文，HTML 自动转 Markdown）";
+        };
+    }
+
     public WordPressImportService(WordPressClient client, ArticleRepository articles,
                                   WpSiteRepository sites, MediaStoreService media,
                                   ArticleService articleService) {
@@ -67,6 +96,7 @@ public class WordPressImportService {
         public volatile int done, imported, updated, skipped, failed;
         public volatile boolean useWpDate = true;        // 发布时间策略：true=用 WP 原发布时间，false=用当前时间
         public volatile String onConflict = "skip";      // slug 冲突策略：skip=跳过，update=用 WP 版本覆盖
+        public volatile String contentMode = MODE_AUTO;  // 正文格式：auto / html2md / raw
         public volatile String current = "";             // 正在导入的标题
         public volatile String error;
         public final LocalDateTime startedAt = LocalDateTime.now();
@@ -90,11 +120,14 @@ public class WordPressImportService {
      *
      * @param useWpDate  true=发布时间用 WP 原发布时间；false=用当前时间
      * @param onConflict 本地已有同 slug 文章时：skip=跳过；update=用 WP 版本覆盖更新（保留文章 id）
+     * @param contentMode 正文格式：auto=自动识别（优先原文，HTML 自动转 Markdown）/ html2md / raw
      * @return result：{imported:true, articleId, slug, warnings:[...]} 或 {imported:false, reason:...}
      */
-    public Map<String, Object> importSingle(WpSite site, long wpPostId, boolean useWpDate, String onConflict) throws Exception {
+    public Map<String, Object> importSingle(WpSite site, long wpPostId, boolean useWpDate,
+                                            String onConflict, String contentMode) throws Exception {
         JsonNode post = client.fetchPost(site, wpPostId);
         List<String> warnings = new ArrayList<>();
+        String mode = normalizeContentMode(contentMode);
         String slug = normalizeWpSlug(post.path("slug").asText(""));
         String title = WordPressClient.unescapeEntities(post.path("title").path("rendered").asText(""));
         if (title.isBlank()) title = "(无标题)";
@@ -106,7 +139,7 @@ public class WordPressImportService {
                         "message", "本地已有同名 slug 的文章《" + existing.getTitle() + "》，已跳过（可在导入选项里改为「更新」覆盖）",
                         "articleId", existing.getId());
             }
-            updateArticleFields(site, existing, post, warnings, useWpDate);
+            updateArticleFields(site, existing, post, warnings, useWpDate, mode);
             Article saved = articles.save(existing);
             site.setLastSyncAt(LocalDateTime.now());
             sites.save(site);
@@ -121,7 +154,7 @@ public class WordPressImportService {
             return out;
         }
 
-        Article a = buildArticle(site, post, warnings, useWpDate);
+        Article a = buildArticle(site, post, warnings, useWpDate, mode);
         if (a.getSlug().isBlank()) a.setSlug(articleService.uniqueSlug(title));
         Article saved = articles.save(a);
         site.setLastSyncAt(LocalDateTime.now());
@@ -139,12 +172,13 @@ public class WordPressImportService {
     /* ================= 整站导入（后台线程 + 轮询进度） ================= */
 
     /** 启动整站导入；同一站点已有任务在跑时返回 null（controller 回 409） */
-    public WpSyncProgress startFullImport(WpSite site, boolean useWpDate, String onConflict) {
+    public WpSyncProgress startFullImport(WpSite site, boolean useWpDate, String onConflict, String contentMode) {
         WpSyncProgress old = progress.get(site.getId());
         if (old != null && "RUNNING".equals(old.phase)) return null;
         WpSyncProgress p = new WpSyncProgress();
         p.useWpDate = useWpDate;
         p.onConflict = "update".equals(onConflict) ? "update" : "skip";
+        p.contentMode = normalizeContentMode(contentMode);
         progress.put(site.getId(), p);
         Thread t = new Thread(() -> runFullImport(site, p), "wp-import-" + site.getId());
         t.setDaemon(true);
@@ -156,6 +190,7 @@ public class WordPressImportService {
         try {
             p.msg("发布时间策略：" + (p.useWpDate ? "沿用 WP 原发布时间" : "使用当前时间"));
             p.msg("同 slug 冲突策略：" + ("update".equals(p.onConflict) ? "用 WP 版本覆盖更新" : "跳过"));
+            p.msg("正文格式：" + contentModeText(p.contentMode));
             int page = 1;
             while (true) {
                 WordPressClient.PostsPage pp = client.listPosts(site, page, 100, null);
@@ -177,13 +212,13 @@ public class WordPressImportService {
                         }
                         List<String> warnings = new ArrayList<>();
                         if (existing != null) {
-                            updateArticleFields(site, existing, post, warnings, p.useWpDate);
+                            updateArticleFields(site, existing, post, warnings, p.useWpDate, p.contentMode);
                             articles.save(existing);
                             p.updated++;
                             p.done++;
                             p.msg("已更新《" + title + "》" + (warnings.isEmpty() ? "" : "（" + warnings.size() + " 条媒体警告）"));
                         } else {
-                            Article a = buildArticle(site, post, warnings, p.useWpDate);
+                            Article a = buildArticle(site, post, warnings, p.useWpDate, p.contentMode);
                             if (a.getSlug().isBlank()) a.setSlug(articleService.uniqueSlug(title));
                             articles.save(a);
                             p.imported++;
@@ -222,10 +257,12 @@ public class WordPressImportService {
      * WP post JSON → 本站 Article（不落库）。warnings 里收集「该落盘但没成功」的媒体警告。
      *
      * @param useWpDate true=发布时间沿用 WP 的 date；false=用当前时间
+     * @param contentMode 正文格式（auto / html2md / raw）
      */
-    Article buildArticle(WpSite site, JsonNode post, List<String> warnings, boolean useWpDate) throws Exception {
+    Article buildArticle(WpSite site, JsonNode post, List<String> warnings, boolean useWpDate,
+                         String contentMode) throws Exception {
         Article a = new Article();
-        applyPostBody(site, a, post, warnings, useWpDate);
+        applyPostBody(site, a, post, warnings, useWpDate, contentMode);
         a.setSlug(normalizeWpSlug(post.path("slug").asText("")));
         return a;
     }
@@ -252,22 +289,20 @@ public class WordPressImportService {
      * 更新已有文章：保留 id / slug / 浏览数 / 评论，正文相关字段与发布人以 WP 站点版本为准。
      */
     private void updateArticleFields(WpSite site, Article target, JsonNode post,
-                                     List<String> warnings, boolean useWpDate) throws Exception {
-        applyPostBody(site, target, post, warnings, useWpDate);
+                                     List<String> warnings, boolean useWpDate, String contentMode) throws Exception {
+        applyPostBody(site, target, post, warnings, useWpDate, contentMode);
     }
 
     /** 把 WP post 的内容字段落到文章实体（title/正文/摘要/封面/状态与发布时间/标签/发布人） */
     private void applyPostBody(WpSite site, Article a, JsonNode post,
-                               List<String> warnings, boolean useWpDate) throws Exception {
+                               List<String> warnings, boolean useWpDate, String contentMode) throws Exception {
         // 发布人 = 关联站点时填写的 WP 用户名（如 zhongdaiqi），而不是固定写死。
         // 放在 applyPostBody 里：新建导入与「更新」模式重导都会归一，旧文章（author=wordpress）可自愈
         a.setAuthor(site.getUsername() == null || site.getUsername().isBlank()
                 ? "wordpress" : site.getUsername().trim());
         a.setTitle(WordPressClient.unescapeEntities(post.path("title").path("rendered").asText("(无标题)")));
 
-        String html = post.path("content").path("rendered").asText("");
-        html = localizeMedia(site, html, warnings);
-        a.setContent(html);
+        a.setContent(resolveBody(site, post, contentMode, warnings));
 
         String excerpt = WordPressClient.stripTags(post.path("excerpt").path("rendered").asText(""));
         if (excerpt.length() > 1000) excerpt = excerpt.substring(0, 1000);
@@ -320,6 +355,53 @@ public class WordPressImportService {
             if (tags.size() > Article.MAX_TAGS) tags = tags.subList(0, Article.MAX_TAGS);
             a.setTags(String.join(",", tags));
         }
+    }
+
+    /**
+     * 解析出「Markdown 正文」。
+     *
+     * <p>装上 Markdown 类插件的 WP 站点，REST 的 {@code content.rendered} 是插件把 Markdown
+     * 渲染之后的 HTML；直接入库会让本站把 HTML 源码当 Markdown 文本展示，文章看起来是坏的。
+     * 这里按用户选择的策略取正文：
+     * <ul>
+     *   <li><b>auto</b>（默认）：优先用 {@code content.raw}（编辑器里真正的 Markdown 原文，
+     *       需要 context=edit 与编辑权限）；raw 不可用、或 raw 本身就是 HTML（老式 HTML 编辑器）时，
+     *       用 {@code content.rendered} 并自动转成 Markdown；</li>
+     *   <li><b>html2md</b>：忽略 raw，始终把渲染结果转成 Markdown；</li>
+     *   <li><b>raw</b>：原样使用 WP 原文（拿不到就退回渲染结果），只做媒体链接本地化，不转换。</li>
+     * </ul>
+     *
+     * <p>注意处理顺序：<b>先</b>做媒体本地化（HTML 属性替换），<b>再</b>转 Markdown ——
+     * 这样转换出来的图片链接直接就是本站 {@code /media/xxx}，不会漏改。
+     */
+    String resolveBody(WpSite site, JsonNode post, String contentMode, List<String> warnings) {
+        String raw = post.path("content").path("raw").asText("");
+        String rendered = post.path("content").path("rendered").asText("");
+        String mode = normalizeContentMode(contentMode);
+
+        String source;
+        boolean isHtml;
+        if (MODE_HTML2MD.equals(mode)) {
+            source = rendered;
+            isHtml = true;
+        } else if (MODE_RAW.equals(mode)) {
+            source = raw.isBlank() ? rendered : raw;
+            isHtml = false;
+        } else {                                          // auto
+            if (!raw.isBlank()) {
+                source = raw;
+                isHtml = HtmlToMarkdown.looksLikeHtml(raw);
+            } else {
+                source = rendered;
+                isHtml = true;
+            }
+        }
+
+        if (source.isBlank()) return "";
+        if (isHtml) {
+            return HtmlToMarkdown.convert(localizeMedia(site, source, warnings));
+        }
+        return localizeMediaMarkdown(site, source, warnings);
     }
 
     /**
@@ -406,16 +488,13 @@ public class WordPressImportService {
         while (m.find()) {
             String attr = m.group(1).toLowerCase();
             String raw = m.group(3) != null ? m.group(3) : m.group(4);
-            if (raw == null || raw.isBlank() || raw.startsWith("/") || raw.startsWith("#")
-                    || raw.startsWith("data:") || raw.startsWith("mailto:")) continue;
+            if (raw == null || raw.isBlank()) continue;
             // srcset 一个值里可能有多个「url 尺寸」，逐个看
             for (String part : raw.split(",")) {
                 String candidate = part.trim().split("\\s+")[0];
-                if (candidate.isEmpty()) continue;
-                if (rewrite.containsKey(candidate)) continue;
-                if (!sameHost(candidate, site.getUrl())) continue;      // 外站 → 沿用外链
-                // src/poster/srcset 都落盘；href 只认 /wp-content/uploads/ 下的附件（内链页面不下载）
-                if (attr.equals("href") && !candidate.contains("/wp-content/uploads/")) continue;
+                if (candidate.isEmpty() || rewrite.containsKey(candidate)) continue;
+                String kind = attr.equals("href") ? "href" : attr;
+                if (!shouldLocalize(site, candidate, kind)) continue;   // 外站/内链 → 沿用原样
                 String local = downloadToLocal(site, candidate, attr, warnings);
                 if (local != null) rewrite.put(candidate, local);
             }
@@ -424,6 +503,50 @@ public class WordPressImportService {
             html = html.replace(e.getKey(), e.getValue());
         }
         return html;
+    }
+
+    /** Markdown 正文里的链接/图片（{@code ![alt](url)}、{@code [text](url)}）以及混写的裸 HTML 标签 */
+    private static final Pattern MD_LINK = Pattern.compile(
+            "(!?)\\[([^\\]]*)\\]\\(\\s*<?([^)\\s>]+)>?\\s*(?:\"[^\"]*\"\\s*)?\\)");
+
+    /**
+     * 媒体本地化（Markdown 版）：正文本来就是 Markdown 时，把 WP 站点自身的图片下载落盘，
+     * 链接改写成 {@code /media/xxx}；外站资源保持原外链。
+     */
+    String localizeMediaMarkdown(WpSite site, String md, List<String> warnings) {
+        if (md == null || md.isBlank()) return md;
+        // 先过一遍 HTML 规则：Markdown 里常混着 <img src="...">、<a href="...">
+        String out = localizeMedia(site, md, warnings);
+        Map<String, String> rewrite = new LinkedHashMap<>();
+        Matcher m = MD_LINK.matcher(out);
+        while (m.find()) {
+            String bang = m.group(1);
+            String url = decodeHtmlInUrl(m.group(3));
+            if (url.isBlank() || rewrite.containsKey(url)) continue;
+            String kind = "!".equals(bang) ? "img" : "href";
+            if (!shouldLocalize(site, url, kind)) continue;
+            String local = downloadToLocal(site, url, kind, warnings);
+            if (local != null) rewrite.put(url, local);
+        }
+        for (Map.Entry<String, String> e : rewrite.entrySet()) {
+            out = out.replace(e.getKey(), e.getValue());
+        }
+        return out;
+    }
+
+    /**
+     * 这个 URL 该不该落盘：必须是 WP 站点自身的资源（同主机，忽略 www.）；
+     * 相对路径 / 锚点 / data: / mailto: 跳过；普通链接（href）只认 /wp-content/uploads/ 下的附件，
+     * 站内页面互链不下载。
+     */
+    private boolean shouldLocalize(WpSite site, String url, String kind) {
+        if (url == null) return false;
+        String u = decodeHtmlInUrl(url.trim());
+        if (u.isEmpty() || u.startsWith("/") || u.startsWith("#")
+                || u.startsWith("data:") || u.startsWith("mailto:")) return false;
+        if (!sameHost(u, site.getUrl())) return false;          // 外站 → 沿用外链
+        if ("href".equals(kind) && !u.contains("/wp-content/uploads/")) return false;
+        return true;
     }
 
     /**

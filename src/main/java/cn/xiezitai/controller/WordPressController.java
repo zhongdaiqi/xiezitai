@@ -135,7 +135,8 @@ public class WordPressController {
 
     /**
      * 导入单篇（同步执行，媒体较多时可能耗时几十秒）。
-     * useWpDate=false 时发布时间用当前时间；onConflict=update 时同 slug 已存在则用 WP 版本覆盖更新。
+     * useWpDate=false 时发布时间用当前时间；onConflict=update 时同 slug 已存在则用 WP 版本覆盖更新；
+     * contentMode 控制正文格式：auto（默认，优先原文、HTML 自动转 Markdown）/ html2md / raw。
      */
     @PostMapping("/sites/{id}/import")
     public ResponseEntity<?> importOne(@PathVariable Long id, @RequestBody Map<String, Object> body) {
@@ -147,8 +148,9 @@ public class WordPressController {
         }
         boolean useWpDate = !Boolean.FALSE.equals(body.get("useWpDate"));
         String onConflict = "update".equals(body.get("onConflict")) ? "update" : "skip";
+        String contentMode = WordPressImportService.normalizeContentMode(body.get("contentMode"));
         try {
-            return ResponseEntity.ok(imports.importSingle(s, n.longValue(), useWpDate, onConflict));
+            return ResponseEntity.ok(imports.importSingle(s, n.longValue(), useWpDate, onConflict, contentMode));
         } catch (Exception e) {
             log.warn("WP 单篇导入失败 site={} post={}: {}", id, pid, e.getMessage());
             return ResponseEntity.status(502).body(Map.of("error", "导入失败：" + e.getMessage()));
@@ -166,7 +168,8 @@ public class WordPressController {
         if (s == null) return ResponseEntity.notFound().build();
         boolean useWpDate = body == null || !Boolean.FALSE.equals(body.get("useWpDate"));
         String onConflict = body != null && "update".equals(body.get("onConflict")) ? "update" : "skip";
-        WordPressImportService.WpSyncProgress p = imports.startFullImport(s, useWpDate, onConflict);
+        String contentMode = WordPressImportService.normalizeContentMode(body == null ? null : body.get("contentMode"));
+        WordPressImportService.WpSyncProgress p = imports.startFullImport(s, useWpDate, onConflict, contentMode);
         if (p == null) {
             return ResponseEntity.status(409).body(Map.of("error", "该站点已有整站导入任务在运行，请等它结束"));
         }
@@ -188,6 +191,7 @@ public class WordPressController {
         out.put("failed", p.failed);
         out.put("useWpDate", p.useWpDate);
         out.put("onConflict", p.onConflict);
+        out.put("contentMode", p.contentMode);
         out.put("current", p.current);
         out.put("error", p.error);
         out.put("messages", List.copyOf(p.messages));

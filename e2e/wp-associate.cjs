@@ -3,7 +3,8 @@
  * 方案：脚本内起一个本地 mock WP REST 站点（127.0.0.1 随机端口）：
  *   - /wp-json/ 根（连通性探测）
  *   - /wp-json/wp/v2/posts 列表（12 篇，分页）
- *   - /wp-json/wp/v2/posts/{id} 单篇（正文含站点自身图片 + 外站图片）
+ *   - /wp-json/wp/v2/posts/{id} 单篇（content.raw = Markdown 原文，content.rendered = 渲染后的 HTML，
+ *     两者各带 RAW-MD / RENDERED-HTML 标记 —— 模拟装了 Markdown 插件的站点）
  *   - /wp-content/uploads/e2e.png 站点自身图片（会被落盘换 /media/）
  *   外站图片用 http://cdn.external-wp-e2e.test/（不可达也无妨 —— 规则是外站保留外链，不下载）。
  *
@@ -11,7 +12,8 @@
  *   ① 「WordPress」tab 存在，进面板站点列表为空态
  *   ② 关联站点（只填网址、匿名）→ 表格出现该站点；接口返回/列表永不含 token 明文（本例无 token）
  *   ③ 浏览文章 → mock 站点 12 篇渲染，分页「共 12 篇」
- *   ④ 单篇导入 → toast 导入成功；正文图片被本地化为 /media/、外站图保留外链、无 wp-content 残留
+ *   ④ 单篇导入 → toast 导入成功；正文取 content.raw（Markdown 原文，不是渲染后的 HTML）；
+ *      正文图片被本地化为 /media/、外站图保留外链、无 wp-content 残留
  *   ⑤ 重复导入 → 提示跳过（不建重复文章）
  *   ⑥ 整站导入 → 进度区出现并最终显示「整站导入完成：成功 X 跳过 Y」
  *   ⑦ 全程 0 JS 错误、0 意外 HTTP>=400
@@ -65,13 +67,21 @@ function startMockWp() {
     const m = /^\/wp-json\/wp\/v2\/posts\/(\d+)$/.exec(u.pathname);
     if (m) {
       const id = parseInt(m[1], 10);
+      const port = server.address().port;
+      // 模拟装了 Markdown 插件的站点：content.raw 是编辑器里的 Markdown 原文，
+      // content.rendered 是插件渲染后的 HTML。两段内容各带一个独有标记，便于断言导入取了哪一份。
+      const raw = '正文 ' + id + ' RAW-MD\n\n'
+        + '![图](http://127.0.0.1:' + port + '/wp-content/uploads/e2e.png)\n\n'
+        + '![](http://cdn.external-wp-e2e.test/x.png)\n';
+      const rendered = '<p>正文 ' + id + ' RENDERED-HTML</p>'
+        + '<h2>小标题</h2>'
+        + '<p><img src="http://127.0.0.1:' + port + '/wp-content/uploads/e2e.png"/></p>'
+        + '<p><img src="http://cdn.external-wp-e2e.test/x.png"/></p>';
       return json({
         id, title: { rendered: 'E2E WP Post ' + String(id).padStart(2, '0') },
         slug: id === TOTAL_POSTS ? 'e2e-wp-' + encodeURIComponent('文章十二') : 'e2e-wp-' + id,
         status: 'publish', date_gmt: '2026-01-01T08:00:00',
-        content: { rendered: '<p>正文 ' + id + '</p>'
-          + '<p><img src="' + 'http://127.0.0.1:' + server.address().port + '/wp-content/uploads/e2e.png"/></p>'
-          + '<p><img src="http://cdn.external-wp-e2e.test/x.png"/></p>' },
+        content: { raw, rendered },
         excerpt: { rendered: '<p>摘要 ' + id + '</p>' },
         _embedded: { 'wp:term': [ [], [{ name: 'E2ETag', taxonomy: 'post_tag' }] ] }
       });
@@ -150,6 +160,10 @@ function startMockWp() {
       const s = document.getElementById('wp-conflict');
       return !!s && s.value === 'skip' && s.options.length === 2;
     }));
+    check('③ 正文格式选择器存在且默认「自动识别」', await page.evaluate(() => {
+      const s = document.getElementById('wp-content-mode');
+      return !!s && s.value === 'auto' && s.options.length === 3;
+    }));
     await page.screenshot({ path: OUT + '/40-wp-browse.png', fullPage: true });
 
     // ---------- ④ 单篇导入 ----------
@@ -160,6 +174,9 @@ function startMockWp() {
     const importData = await importResp.json();
     check('④ 导入请求体默认带 useWpDate=true',
       importResp.request().postDataJSON() && importResp.request().postDataJSON().useWpDate === true,
+      importResp.request().postData());
+    check('④ 导入请求体默认带 contentMode=auto',
+      importResp.request().postDataJSON() && importResp.request().postDataJSON().contentMode === 'auto',
       importResp.request().postData());
     check('④ 单篇导入接口 imported=true', importData.imported === true, JSON.stringify(importData).slice(0, 120));
     if (importData.articleId) importedIds.push(importData.articleId);
@@ -177,6 +194,11 @@ function startMockWp() {
     check('④ 正文无 wp-content 残留', !art.content.includes('wp-content'));
     check('④ 外站图片保留外链', art.content.includes('http://cdn.external-wp-e2e.test/x.png'));
     check('④ 标签来自 WP 分类/标签', (art.tags || '').includes('E2ETag'), art.tags);
+    // Markdown 插件场景：auto 模式应取 content.raw（Markdown 原文），而不是渲染后的 HTML
+    check('④ 正文取 WP 原文（Markdown），不是渲染后的 HTML',
+      art.content.includes('RAW-MD') && !art.content.includes('RENDERED-HTML')
+      && !art.content.includes('<p>') && art.content.includes('![图](/media/'),
+      art.content.slice(0, 120));
 
     // ---------- ④b 发布时间选「当前时间」导入第二篇 ----------
     await page.selectOption('#wp-date-mode', 'now');
@@ -196,6 +218,24 @@ function startMockWp() {
       (artNow.publishedAt || '').startsWith(today) && !artNow.publishedAt.startsWith('2026-01-01'),
       artNow.publishedAt);
     await page.selectOption('#wp-date-mode', 'wp');   // 还原默认，避免影响后续整站导入
+
+    // ---------- ④c 正文格式选「强制转 Markdown」：忽略原文、改用渲染结果，HTML 应被还原成 Markdown ----------
+    await page.selectOption('#wp-content-mode', 'html2md');
+    const impConvPromise = page.waitForResponse(
+      r => r.url().includes('/import') && r.request().method() === 'POST', { timeout: 60000 });
+    await page.locator('#wpposts tbody tr').nth(2).getByRole('button', { name: '导入', exact: true }).click();
+    const impConv = await (await impConvPromise).json();
+    check('④c 强制转 Markdown 导入成功', impConv.imported === true, JSON.stringify(impConv).slice(0, 120));
+    if (impConv.articleId) importedIds.push(impConv.articleId);
+    const artConv = await page.evaluate(async id => {
+      const r = await fetch('/api/admin/articles/' + id, { headers: { Authorization: 'Bearer ' + token } });
+      return await r.json();
+    }, impConv.articleId);
+    check('④c 用渲染结果并还原成 Markdown（标题/图片/无 HTML 残留）',
+      artConv.content.includes('RENDERED-HTML') && artConv.content.includes('## 小标题')
+      && artConv.content.includes('![](') && !artConv.content.includes('<p>') && !artConv.content.includes('<h2>'),
+      artConv.content.slice(0, 160));
+    await page.selectOption('#wp-content-mode', 'auto');   // 还原默认，避免影响后续整站导入
 
     // ---------- ⑤ 重复导入 → 跳过 ----------
     const againPromise = page.waitForResponse(
@@ -225,8 +265,8 @@ function startMockWp() {
     const logText = await page.textContent('#wp-progress-log');
     check('⑥ 进度日志出现「整站导入完成」', logText.includes('整站导入完成'), logText.split('\n').pop());
     const doneLine = logText.split('\n').find(l => l.includes('整站导入完成')) || '';
-    // 12 篇里 2 篇已导入（跳过 2），其余 10 篇成功
-    check('⑥ 成功 10 篇、跳过 2 篇', /成功 10，更新 0，跳过 2/.test(doneLine), doneLine);
+    // 12 篇里 3 篇已导入（④ / ④b / ④c，跳过 3），其余 9 篇成功
+    check('⑥ 成功 9 篇、跳过 3 篇', /成功 9，更新 0，跳过 3/.test(doneLine), doneLine);
     await page.screenshot({ path: OUT + '/41-wp-progress-done.png', fullPage: true });
 
     // 清点导入的文章数（slug 前缀 e2e-wp-）

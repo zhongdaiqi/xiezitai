@@ -482,8 +482,17 @@
                         <option value="update">用 WP 版本更新</option>
                     </select>
                 </label>
+                <label class="muted" style="font-size:13px; white-space:nowrap; display:inline-flex; align-items:center; gap:6px;">正文格式
+                    <select id="wp-content-mode" style="padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--card, #fff);">
+                        <option value="auto" selected>自动识别并转 Markdown</option>
+                        <option value="html2md">强制转 Markdown</option>
+                        <option value="raw">保持 WP 原文</option>
+                    </select>
+                </label>
                 <button class="ghost" onclick="wpTestSite()">测试连接</button>
             </div>
+            <p class="muted" style="margin:0 0 10px;">站点若装了 Markdown 类插件，接口返回的渲染结果是 HTML，
+                「自动识别」会优先读取编辑器里的 Markdown 原文，拿不到原文时把 HTML 还原成 Markdown，避免文章显示错乱。</p>
             <div class="table-wrap">
                 <table id="wpposts"><thead><tr><th>标题</th><th>发布日期</th><th>WP 状态</th><th>操作</th></tr></thead><tbody></tbody></table>
             </div>
@@ -1940,11 +1949,12 @@ function onWpSearchInput(immediate) {
 /* ---------- 单篇导入 ---------- */
 function wpUseWpDate() { return $('wp-date-mode').value !== 'now'; }
 function wpOnConflict() { return $('wp-conflict').value === 'update' ? 'update' : 'skip'; }
+function wpContentMode() { return $('wp-content-mode').value || 'auto'; }
 
 async function wpImportOne(postId) {
     toast('正在导入，媒体较多时可能需要几十秒…');
     const res = await api('/api/admin/wp/sites/' + wpSiteId + '/import', {
-        method: 'POST', body: JSON.stringify({ postId, useWpDate: wpUseWpDate(), onConflict: wpOnConflict() })
+        method: 'POST', body: JSON.stringify({ postId, useWpDate: wpUseWpDate(), onConflict: wpOnConflict(), contentMode: wpContentMode() })
     });
     const data = await res.json();
     if (!res.ok) { toast(data.error || '导入失败'); return; }
@@ -1966,9 +1976,10 @@ async function wpImportAll() {
     const conflictNote = wpOnConflict() === 'update'
         ? '本地已存在的同 slug 文章会被 WP 版本覆盖更新'
         : '本地已存在同 slug 的文章会自动跳过';
-    if (!confirm('开始整站导入？将把该站点全部文章导入本站，' + dateNote + '；' + conflictNote + '。')) return;
+    const modeNote = { auto: '正文自动识别并转成 Markdown', html2md: '正文强制转成 Markdown', raw: '正文保持 WP 原文' }[wpContentMode()];
+    if (!confirm('开始整站导入？将把该站点全部文章导入本站，' + dateNote + '；' + conflictNote + '；' + modeNote + '。')) return;
     const res = await api('/api/admin/wp/sites/' + wpSiteId + '/import-all', {
-        method: 'POST', body: JSON.stringify({ useWpDate: wpUseWpDate(), onConflict: wpOnConflict() })
+        method: 'POST', body: JSON.stringify({ useWpDate: wpUseWpDate(), onConflict: wpOnConflict(), contentMode: wpContentMode() })
     });
     const data = await res.json();
     if (!res.ok) { toast(data.error || '启动失败'); return; }

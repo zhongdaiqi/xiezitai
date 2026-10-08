@@ -136,8 +136,22 @@ public class WordPressClient {
         return new PostsPage(posts, total, totalPages);
     }
 
-    /** 取单篇文章（含正文与 _embed：特色图、分类/标签） */
+    /**
+     * 取单篇文章（含正文与 _embed：特色图、分类/标签）。
+     *
+     * <p>配了用户名 + Application Password 时优先用 {@code context=edit} 请求 —— 这样返回体里
+     * 会多出 {@code content.raw}，也就是<b>编辑器里存的正文原文</b>。装了 Markdown 类插件的
+     * 站点，{@code content.rendered} 是插件渲染后的 HTML，而 raw 才是 Markdown 原文，
+     * 导入时需要它（详见 {@link HtmlToMarkdown}）。没凭据或权限不足时自动降级为公开字段。
+     */
     public JsonNode fetchPost(WpSite site, long postId) throws IOException, InterruptedException {
+        if (authHeader(site) != null) {
+            try {
+                return getJson(site, "/wp-json/wp/v2/posts/" + postId + "?context=edit&_embed=1");
+            } catch (IOException e) {
+                log.info("WP context=edit 取正文原文失败，降级为公开渲染结果（post={}）：{}", postId, e.getMessage());
+            }
+        }
         return getJson(site, "/wp-json/wp/v2/posts/" + postId + "?_embed=1");
     }
 

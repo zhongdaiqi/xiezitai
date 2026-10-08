@@ -1404,17 +1404,30 @@ class XiezitaiApplicationTests {
                 + "srcset=\"" + base + "/wp-content/uploads/2026/01/pic.png 300w\"/></figure>"
                 + "<p><img src=\"http://cdn.external.com/ext.png\"/></p>"
                 + "<p><a href=\"" + base + "/wp-content/uploads/2026/01/doc.pdf\">doc</a></p>";
+        // 装了 Markdown 插件的站点：content.rendered 是插件渲染后的 HTML，content.raw 才是编辑器里的
+        // Markdown 原文。导入必须优先用 raw（否则 HTML 被当 Markdown 入库，文章显示错乱）。
+        String raw101 = "intro\n\n"
+                + "![pic](" + base + "/wp-content/uploads/2026/01/pic.png)\n\n"
+                + "![](http://cdn.external.com/ext.png)\n\n"
+                + "[doc](" + base + "/wp-content/uploads/2026/01/doc.pdf)\n";
         String post101 = "{\"id\":101,\"title\":{\"rendered\":\"Hello &#8217; World\"},\"slug\":\"wp-hello-101\","
                 + "\"status\":\"publish\",\"date_gmt\":\"2026-01-02T10:00:00\","
-                + "\"content\":{\"rendered\":\"" + content101.replace("\"", "\\\"") + "\"},"
+                + "\"content\":{\"raw\":\"" + raw101.replace("\n", "\\n").replace("\"", "\\\"")
+                + "\",\"rendered\":\"" + content101.replace("\"", "\\\"") + "\"},"
                 + "\"excerpt\":{\"rendered\":\"<p>Excerpt &amp; text</p>\"},"
                 + "\"_embedded\":{\"wp:featuredmedia\":[{\"source_url\":\"" + base + "/wp-content/uploads/2026/01/cover.png\"}],"
                 + "\"wp:term\":[[{\"name\":\"News\",\"taxonomy\":\"category\"}],[{\"name\":\"Java\",\"taxonomy\":\"post_tag\"}]]}}";
         server.createContext("/wp-json/wp/v2/posts/101", ex ->
                 respond(ex, 200, "application/json", post101.getBytes(StandardCharsets.UTF_8)));
+        // 102：没有 raw（老式 HTML 编辑器）且正文就是 HTML → auto 模式应自动还原成 Markdown
+        String html102 = "<h2>二级标题</h2>"
+                + "<p>带 <strong>加粗</strong> 与 <em>斜体</em>，还有 <code>inline()</code>。</p>"
+                + "<ul><li>甲</li><li>乙</li></ul>"
+                + "<pre class=\"language-java\"><code>System.out.println(1);</code></pre>"
+                + "<blockquote><p>引用一句</p></blockquote>";
         String post102 = "{\"id\":102,\"title\":{\"rendered\":\"Second Post\"},\"slug\":\"wp-second-102\","
                 + "\"status\":\"draft\",\"date_gmt\":\"2026-01-03T11:00:00\","
-                + "\"content\":{\"rendered\":\"<p>body two</p>\"},\"excerpt\":{\"rendered\":\"\"}}";
+                + "\"content\":{\"rendered\":\"" + html102.replace("\"", "\\\"") + "\"},\"excerpt\":{\"rendered\":\"\"}}";
         server.createContext("/wp-json/wp/v2/posts/102", ex ->
                 respond(ex, 200, "application/json", post102.getBytes(StandardCharsets.UTF_8)));
         // 103：不带 _embedded —— 标签/分类走 id 兜底接口（/tags、/categories）；发布时间可选当前时间
@@ -1503,8 +1516,14 @@ class XiezitaiApplicationTests {
             assertThat(content).as("正文: " + content).contains("/media/");
             assertThat(content).as("WP 自身图片 URL 不应残留在正文: " + content).doesNotContain("wp-content");
             assertThat(content).as("外站图片应保留外链: " + content).contains("http://cdn.external.com/ext.png");
-            // srcset 里的同站 URL 也应一并本地化（srcset 保留，但 URL 换成 /media/）
-            assertThat(content).as("srcset 应本地化: " + content).containsPattern("srcset=\"/media/[0-9a-f]{16}\\.png 300w\"");
+            // 装了 Markdown 插件的站点：优先用 content.raw（Markdown 原文），而不是渲染后的 HTML
+            assertThat(content).as("应优先采用 content.raw 的 Markdown 原文: " + content)
+                    .contains("![pic](/media/").doesNotContain("<figure>").doesNotContain("<p>intro</p>");
+            // Markdown 版媒体本地化：raw 里的图片与附件链接都要改写成 /media/
+            assertThat(content).as("Markdown 图片应本地化: " + content)
+                    .containsPattern("!\\[pic\\]\\(/media/[0-9a-f]{16}\\.png\\)");
+            assertThat(content).as("Markdown 附件链接应本地化: " + content)
+                    .containsPattern("\\[doc\\]\\(/media/[0-9a-f]{16}\\.pdf\\)");
             assertThat(art.path("cover").asText()).startsWith("/media/");
             // 落盘文件按内容去重：正文图与封面是同一份字节 → 共用 1 个文件 + pdf 附件 = 2 个
             Matcher fm = Pattern.compile("/media/([0-9a-f]{16}\\.[a-z]+)").matcher(content + art.path("cover").asText());
@@ -1543,6 +1562,15 @@ class XiezitaiApplicationTests {
             Long secondId = articles.findBySlug("wp-second-102").orElseThrow().getId();
             madeArticles.add(secondId);
             assertThat(articles.findBySlug("wp-second-102").orElseThrow().getStatus()).isEqualTo("DRAFT");
+            // 没有 raw 且正文是 HTML（老式编辑器 / 插件渲染结果）→ auto 模式自动还原成 Markdown
+            String md102 = articles.findBySlug("wp-second-102").orElseThrow().getContent();
+            assertThat(md102).as("HTML 应还原成 Markdown: " + md102)
+                    .contains("## 二级标题")
+                    .contains("**加粗**").contains("*斜体*").contains("`inline()`")
+                    .contains("- 甲").contains("- 乙")
+                    .contains("```java").contains("System.out.println(1);")
+                    .contains("> 引用一句")
+                    .doesNotContain("<h2>").doesNotContain("<ul>").doesNotContain("<blockquote>");
 
             // ⑥ 单篇导入（useWpDate=false + 无 _embedded 的文章）：
             //    发布时间用当前时间而非 WP 的 2025-06-01；标签按 id 走 /categories、/tags 兜底接口换名称
@@ -1608,6 +1636,72 @@ class XiezitaiApplicationTests {
                         .andExpect(status().isOk());
             }
         }
+    }
+
+    /* ==================== HTML → Markdown 还原（Markdown 插件场景） ==================== */
+
+    @Test
+    @DisplayName("HTML→Markdown：插件渲染出的 HTML 能还原成 Markdown 文本")
+    void htmlToMarkdownRestoresRenderedHtml() {
+        // 判定：有块级标签才算 HTML 正文；纯 Markdown（哪怕混着裸 img/a）不算
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.looksLikeHtml("<p>hi</p>")).isTrue();
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.looksLikeHtml("## 标题\n\n![](http://a/b.png)")).isFalse();
+
+        // 标题 / 段落 / 行内样式 / 行内代码（代码里的实体要还原，且不被再次转义）
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convert(
+                "<h1>大标题</h1><p>带 <strong>粗</strong>、<em>斜</em>、<del>删</del> 与 <code>a&lt;b</code> 的段落</p>"))
+                .isEqualTo("# 大标题\n\n带 **粗**、*斜*、~~删~~ 与 `a<b` 的段落");
+
+        // 列表（含嵌套）与有序列表
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convert(
+                "<ul><li>甲</li><li>乙<ul><li>乙一</li></ul></li></ul>"))
+                .isEqualTo("- 甲\n- 乙\n  - 乙一");
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convert("<ol><li>第一</li><li>第二</li></ol>"))
+                .isEqualTo("1. 第一\n2. 第二");
+
+        // 引用
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convert("<blockquote><p>引用一句</p></blockquote>"))
+                .isEqualTo("> 引用一句");
+
+        // 代码块（带语言）——缩进与特殊字符必须原样保留
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convert(
+                "<pre class=\"language-java\"><code>if (a &lt; b) {\n  go();\n}</code></pre>"))
+                .isEqualTo("```java\nif (a < b) {\n  go();\n}\n```");
+
+        // 链接 / 图片 / 懒加载图片（data-src 优先）
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convert(
+                "<p><a href=\"https://a.com/x\">站点</a> <img src=\"https://a.com/i.png\" alt=\"图\"/></p>"))
+                .isEqualTo("[站点](https://a.com/x) ![图](https://a.com/i.png)");
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convert(
+                "<p><img src=\"data:image/gif;base64,xx\" data-src=\"https://a.com/lazy.png\" alt=\"懒\"/></p>"))
+                .isEqualTo("![懒](https://a.com/lazy.png)");
+
+        // 表格 → GFM
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convert(
+                "<table><thead><tr><th>名</th><th>值</th></tr></thead>"
+                        + "<tbody><tr><td>a</td><td>1</td></tr></tbody></table>"))
+                .isEqualTo("| 名 | 值 |\n| --- | --- |\n| a | 1 |");
+
+        // Gutenberg 块注释 + figure 图片说明
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convert(
+                "<!-- wp:paragraph --><p>正文</p><!-- /wp:paragraph -->"))
+                .isEqualTo("正文");
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convert(
+                "<figure><img src=\"https://a.com/p.png\" alt=\"x\"/><figcaption>说明文字</figcaption></figure>"))
+                .isEqualTo("![x](https://a.com/p.png)\n\n*说明文字*");
+
+        // 正文里的 Markdown 元字符要转义，避免还原后被当成语法
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convert("<p>2*3 与 [方括号]</p>"))
+                .isEqualTo("2\\*3 与 \\[方括号\\]");
+
+        // 富媒体原样保留（Markdown 允许内联 HTML）
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convert(
+                "<p>视频</p><iframe src=\"https://v.qq.com/x\" allowfullscreen></iframe>"))
+                .contains("<iframe src=\"https://v.qq.com/x\"");
+
+        // 空输入不炸
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convert(null)).isEmpty();
+        assertThat(cn.xiezitai.service.HtmlToMarkdown.convert("   ")).isEmpty();
     }
 
     /* ==================== 博客园关联与导入（MetaWeblog） ==================== */
