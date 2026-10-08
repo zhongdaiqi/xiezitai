@@ -2491,4 +2491,262 @@ class XiezitaiApplicationTests {
             }
         }
     }
+
+    /* ==================== 写字台账号关联与导入 ==================== */
+
+    @Test
+    @DisplayName("写字台：接口地址推导 API 根与站点根")
+    void xzApiRootDerivation() {
+        assertThat(cn.xiezitai.service.XiezitaiClient.apiRoot("https://a.cn/api/v1/publish")).isEqualTo("https://a.cn/api/v1");
+        assertThat(cn.xiezitai.service.XiezitaiClient.apiRoot("https://a.cn/api/v1/mcp")).isEqualTo("https://a.cn/api/v1");
+        assertThat(cn.xiezitai.service.XiezitaiClient.apiRoot("https://a.cn/api/v1")).isEqualTo("https://a.cn/api/v1");
+        assertThat(cn.xiezitai.service.XiezitaiClient.apiRoot("https://a.cn/api/v1/")).isEqualTo("https://a.cn/api/v1");
+        assertThat(cn.xiezitai.service.XiezitaiClient.apiRoot("https://a.cn")).isEqualTo("https://a.cn/api/v1");
+        assertThat(cn.xiezitai.service.XiezitaiClient.origin("http://127.0.0.1:8099/api/v1/publish")).isEqualTo("http://127.0.0.1:8099");
+        assertThat(cn.xiezitai.service.XiezitaiClient.origin("https://a.cn")).isEqualTo("https://a.cn");
+        // 同主机判定复用 WP 渠道的通用工具（忽略 www.）
+        assertThat(cn.xiezitai.service.WordPressImportService
+                .sameHost("http://127.0.0.1:8099/media/a.png", "http://127.0.0.1:8099/api/v1/publish")).isTrue();
+        assertThat(cn.xiezitai.service.WordPressImportService
+                .sameHost("https://other.cn/media/a.png", "http://127.0.0.1:8099/api/v1/publish")).isFalse();
+    }
+
+    @Test
+    @DisplayName("写字台开放 API：列表/详情 JSON，站内媒体绝对化，草稿不外泄")
+    void xzOpenApiReadEndpoints() throws Exception {
+        String adminToken = loginToken(ADMIN, ADMIN_PWD);
+        String apiTok = apiToken(adminToken);
+        String sfx = String.valueOf(System.nanoTime());
+
+        cn.xiezitai.entity.Article pub = new cn.xiezitai.entity.Article();
+        pub.setTitle("写字台导出测试 " + sfx);
+        pub.setSlug("xz-export-" + sfx);
+        pub.setContent("正文开头\n\n![站内图](/media/pic-export.png)\n\n![外站图](https://cdn.external.com/ext.png)\n");
+        pub.setCover("/media/cover-export.png");
+        pub.setSummary("导出摘要");
+        pub.setTags("Java,导出");
+        pub.setStatus("PUBLISHED");
+        pub.setPublishedAt(java.time.LocalDateTime.now());
+        pub = articles.save(pub);
+
+        cn.xiezitai.entity.Article draft = new cn.xiezitai.entity.Article();
+        draft.setTitle("写字台导出草稿 " + sfx);
+        draft.setSlug("xz-export-draft-" + sfx);
+        draft.setContent("草稿正文不该被导出");
+        draft.setStatus("DRAFT");
+        draft = articles.save(draft);
+
+        try {
+            // ① 无 Token → 401
+            mvc.perform(get("/api/v1/articles")).andExpect(status().isUnauthorized());
+
+            // ② 列表：含已发布、不含草稿，封面绝对化
+            MvcResult r = mvc.perform(get("/api/v1/articles?size=100").header("X-API-Token", apiTok))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode root = om.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            assertThat(root.path("user").asText()).isEqualTo(ADMIN);
+            assertThat(root.path("site").asText()).isEqualTo(siteRoot);
+            JsonNode mine = null;
+            for (JsonNode n : root.path("items")) {
+                assertThat(n.path("id").asLong()).isNotEqualTo(draft.getId());
+                if (n.path("id").asLong() == pub.getId()) mine = n;
+            }
+            assertThat(mine).isNotNull();
+            assertThat(mine.path("title").asText()).isEqualTo("写字台导出测试 " + sfx);
+            assertThat(mine.path("cover").asText()).isEqualTo(siteRoot + "/media/cover-export.png");
+            assertThat(mine.path("tags").asText()).isEqualTo("Java,导出");
+            assertThat(mine.path("url").asText()).isEqualTo("/article/xz-export-" + sfx);
+
+            // ③ 关键词过滤：只命中这一篇
+            MvcResult s = mvc.perform(get("/api/v1/articles")
+                            .param("q", "写字台导出测试 " + sfx)
+                            .header("X-API-Token", apiTok))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode sr = om.readTree(s.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            assertThat(sr.path("total").asLong()).isEqualTo(1);
+            assertThat(sr.path("items").get(0).path("id").asLong()).isEqualTo(pub.getId());
+
+            // ④ 详情：正文 Markdown 原样 + 站内媒体绝对化，外链不动
+            MvcResult d = mvc.perform(get("/api/v1/articles/" + pub.getId()).header("X-API-Token", apiTok))
+                    .andExpect(status().isOk()).andReturn();
+            JsonNode detail = om.readTree(d.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            String content = detail.path("content").asText();
+            assertThat(content).contains(siteRoot + "/media/pic-export.png");
+            assertThat(content).contains("https://cdn.external.com/ext.png");
+            assertThat(content).doesNotContain("](/media/");
+            assertThat(detail.path("status").asText()).isEqualTo("PUBLISHED");
+            assertThat(detail.path("cover").asText()).isEqualTo(siteRoot + "/media/cover-export.png");
+
+            // ⑤ 不存在的 id → 404
+            mvc.perform(get("/api/v1/articles/99999999").header("X-API-Token", apiTok))
+                    .andExpect(status().isNotFound());
+        } finally {
+            articles.deleteById(pub.getId());
+            articles.deleteById(draft.getId());
+        }
+    }
+
+    @Test
+    @DisplayName("写字台：关联/密钥脱敏/单篇导入媒体落盘/重复跳过/整站导入进度")
+    void xzAssociateImportAndMediaLocalize() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        int port = server.getAddress().getPort();
+        String base = "http://127.0.0.1:" + port;          // 模拟「对方写字台」的站点根
+        String apiUrl = base + "/api/v1/publish";          // 用户填的是发布接口地址
+        final String xzToken = "xz-token-0123456789abcdef";
+        final String sfx = String.valueOf(port);
+
+        String listJson = "{\"site\":\"" + base + "\",\"user\":\"xiezitai\",\"page\":1,\"size\":100,"
+                + "\"total\":2,\"totalPages\":1,\"items\":["
+                + "{\"id\":201,\"slug\":\"xz-hello-" + sfx + "\",\"title\":\"Hello XZ\",\"summary\":\"对方摘要\","
+                + "\"tags\":\"Java,AI\",\"cover\":\"" + base + "/media/cover.png\","
+                + "\"publishedAt\":\"2026-03-01T09:00:00\",\"url\":\"/article/xz-hello-" + sfx + "\"},"
+                + "{\"id\":202,\"slug\":\"xz-second-" + sfx + "\",\"title\":\"Second XZ\",\"summary\":\"\","
+                + "\"tags\":\"\",\"cover\":null,\"publishedAt\":\"2026-03-02T09:00:00\","
+                + "\"url\":\"/article/xz-second-" + sfx + "\"}]}";
+
+        // 对方导出的正文里：本站媒体（同主机）→ 应落盘；第三方图床 → 应保留外链
+        String md201 = "开头一段\n\n"
+                + "![本站图](" + base + "/media/pic.png)\n\n"
+                + "![外站图](https://cdn.external.com/ext.png)\n\n"
+                + "[附件](" + base + "/media/doc.pdf)\n\n"
+                + "<img src=\"" + base + "/media/pic.png\"/>\n";
+        String detail201 = "{\"id\":201,\"slug\":\"xz-hello-" + sfx + "\",\"title\":\"Hello XZ\","
+                + "\"summary\":\"对方摘要\",\"tags\":\"Java,AI\",\"status\":\"PUBLISHED\","
+                + "\"cover\":\"" + base + "/media/cover.png\",\"publishedAt\":\"2026-03-01T09:00:00\","
+                + "\"author\":\"xiezitai\",\"url\":\"/article/xz-hello-" + sfx + "\","
+                + "\"content\":\"" + md201.replace("\n", "\\n").replace("\"", "\\\"") + "\"}";
+        String detail202 = "{\"id\":202,\"slug\":\"xz-second-" + sfx + "\",\"title\":\"Second XZ\","
+                + "\"summary\":\"\",\"tags\":\"\",\"status\":\"DRAFT\",\"cover\":\"\","
+                + "\"publishedAt\":\"2026-03-02T09:00:00\",\"author\":\"xiezitai\","
+                + "\"url\":\"/article/xz-second-" + sfx + "\",\"content\":\"草稿正文\"}";
+
+        server.createContext("/api/v1/articles", ex -> {
+            if (!xzToken.equals(ex.getRequestHeaders().getFirst("X-API-Token"))) {
+                respond(ex, 401, "application/json", "{\"error\":\"无效的 API Token\"}".getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            String path = ex.getRequestURI().getPath();
+            String body = path.endsWith("/201") ? detail201 : (path.endsWith("/202") ? detail202 : listJson);
+            respond(ex, 200, "application/json", body.getBytes(StandardCharsets.UTF_8));
+        });
+        server.createContext("/media/pic.png", ex -> respond(ex, 200, "image/png", PNG_1X1));
+        server.createContext("/media/cover.png", ex -> respond(ex, 200, "image/png", PNG_1X1));
+        server.createContext("/media/doc.pdf", ex ->
+                respond(ex, 200, "application/pdf", "fake-pdf".getBytes(StandardCharsets.UTF_8)));
+        server.start();
+
+        String adminToken = loginToken(ADMIN, ADMIN_PWD);
+        Long siteId = null;
+        try {
+            // ① 关联：200 + hasToken=true + 响应体绝不带出明文密钥 + 校验通过（无 warning）
+            MvcResult r = mvc.perform(post("/api/admin/xz/sites")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("url", apiUrl, "username", "xiezitai", "token", xzToken)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn();
+            String created = r.getResponse().getContentAsString(StandardCharsets.UTF_8);
+            assertThat(created).doesNotContain(xzToken);
+            JsonNode cj = om.readTree(created);
+            siteId = cj.path("site").path("id").asLong();
+            assertThat(cj.path("site").path("hasToken").asBoolean()).isTrue();
+            assertThat(cj.path("site").path("apiUrl").asText()).isEqualTo(apiUrl);
+            assertThat(cj.has("warning")).isFalse();
+
+            // 同站点同账号重复关联 → 409
+            mvc.perform(post("/api/admin/xz/sites")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("url", apiUrl, "username", "xiezitai", "token", xzToken)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isConflict());
+
+            // 缺账号 → 400
+            mvc.perform(post("/api/admin/xz/sites")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("url", apiUrl, "username", " ")))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isBadRequest());
+
+            // ② 测试连接：账号与密钥校验通过
+            mvc.perform(post("/api/admin/xz/sites/" + siteId + "/test")
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.account").value("xiezitai"));
+
+            // ③ 浏览对方文章（代理远端，link 补成绝对地址）
+            mvc.perform(get("/api/admin/xz/sites/" + siteId + "/posts?page=1&per_page=10")
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.total").value(2))
+                    .andExpect(jsonPath("$.posts[0].link").value(base + "/article/xz-hello-" + sfx));
+
+            // ④ 单篇导入：正文 Markdown 原样、本站媒体落盘、外链保留
+            MvcResult ir = mvc.perform(post("/api/admin/xz/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", 201)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn();
+            assertThat(om.readTree(ir.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path("imported").asBoolean()).isTrue();
+
+            cn.xiezitai.entity.Article got = articles.findBySlug("xz-hello-" + sfx).orElseThrow();
+            assertThat(got.getTitle()).isEqualTo("Hello XZ");
+            assertThat(got.getStatus()).isEqualTo("PUBLISHED");
+            assertThat(got.getTags()).isEqualTo("Java,AI");
+            assertThat(got.getAuthor()).isEqualTo("xiezitai");
+            assertThat(got.getSummary()).isEqualTo("对方摘要");
+            assertThat(got.getPublishedAt()).isNotNull();
+            assertThat(got.getContent()).contains("开头一段");
+            assertThat(got.getContent()).contains("cdn.external.com/ext.png");   // 外链保留
+            assertThat(got.getContent()).doesNotContain("127.0.0.1");            // 本站媒体已落盘改写
+            assertThat(got.getContent()).contains("/media/");
+            assertThat(got.getCover()).startsWith("/media/");                    // 封面也落盘
+            assertThat(fileRepo.findAll().stream()
+                    .anyMatch(f -> ("/media/" + f.getStoredName()).equals(got.getCover()))).isTrue();
+
+            // ⑤ 同一篇再导一次 → 跳过
+            MvcResult ir2 = mvc.perform(post("/api/admin/xz/sites/" + siteId + "/import")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(Map.of("postId", 201)))
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isOk()).andReturn();
+            assertThat(om.readTree(ir2.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                    .path("imported").asBoolean()).isFalse();
+
+            // ⑥ 整站导入：202 + 轮询到 DONE（201 跳过、202 新导入）
+            mvc.perform(post("/api/admin/xz/sites/" + siteId + "/import-all")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{}")
+                            .header("Authorization", "Bearer " + adminToken))
+                    .andExpect(status().isAccepted());
+
+            JsonNode prog = null;
+            for (int i = 0; i < 120; i++) {
+                MvcResult pr = mvc.perform(get("/api/admin/xz/sites/" + siteId + "/progress")
+                                .header("Authorization", "Bearer " + adminToken))
+                        .andExpect(status().isOk()).andReturn();
+                prog = om.readTree(pr.getResponse().getContentAsString(StandardCharsets.UTF_8));
+                if (!"RUNNING".equals(prog.path("phase").asText())) break;
+                Thread.sleep(100);
+            }
+            assertThat(prog).isNotNull();
+            assertThat(prog.path("phase").asText()).isEqualTo("DONE");
+            assertThat(prog.path("total").asLong()).isEqualTo(2);
+            assertThat(prog.path("skipped").asInt()).isGreaterThanOrEqualTo(1);
+            assertThat(prog.path("imported").asInt()).isGreaterThanOrEqualTo(1);
+
+            // 草稿在对方是草稿，导入后仍是草稿
+            assertThat(articles.findBySlug("xz-second-" + sfx).orElseThrow().getStatus()).isEqualTo("DRAFT");
+        } finally {
+            server.stop(0);
+            if (siteId != null) {
+                mvc.perform(delete("/api/admin/xz/sites/" + siteId)
+                                .header("Authorization", "Bearer " + adminToken))
+                        .andExpect(status().isOk());
+            }
+            for (String slug : new String[]{"xz-hello-" + sfx, "xz-second-" + sfx}) {
+                articles.findBySlug(slug).ifPresent(a -> articles.deleteById(a.getId()));
+            }
+        }
+    }
 }

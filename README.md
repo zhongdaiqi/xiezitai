@@ -378,8 +378,9 @@ docker run -d --name xiezitai -p 8080:8080 \
 | 机器人    | 企业微信 webhook 通知（登录/文章/访问/注册/评论/上传），可逐项开关                                         |
 | AI     | OpenAI 兼容接口：润色纠错、摘要、封面图（公众号 900×383）、请求日志风险分析                                    |
 | 分发     | **把文章一键发到关联的 WordPress 站点 / 博客园账号**（可多选）：正文里的站内媒体自动补成绝对地址；可选**原文分发**或**转载分发**（文末附首发链接）；正文可按 Markdown 原文发或转成 HTML 发（发博客园时自动带 `[Markdown]` 分类，否则代码块/表格会被当 HTML 原样贴出）；**已分发过的目标会被记住**，下次可选「更新之前分发的文章」或「分发一个新文章」，文章列表行上用「已分发 · 站点名」徽标标出 |
-| 开放 API | `POST /api/v1/publish`，Header `X-API-Token`（后台「设置」页查看）                           |
+| 开放 API | 对外接口（Header `X-API-Token`，后台「设置」页查看）：`POST /api/v1/publish` 发布、`GET /api/v1/articles` 列表、`GET /api/v1/articles/{id}` 单篇 |
 | MCP    | `POST /api/v1/mcp`，JSON-RPC 2.0，工具：publish_article / list_articles / get_article |
+| 写字台互导 | **关联多个写字台账号**（填接口地址 + 账号 + 对接密钥）：浏览对方站点文章 → **导入单篇** 或 **整站导入**（进度条 + 逐条日志）；正文本身就是 Markdown 原文，导入不需要任何格式转换；**属于对方站点的图片/附件下载落盘**到本站媒体库，**第三方图床保持外链**；本地已存在可选「跳过」或用对方版本更新，发布时间可选沿用原时间或当前时间；密钥只落库、接口不回显、不入 git |
 | 搜索     | **首页站内搜索**（`/?q=`）：标题 / 摘要 / 正文 / 标签四处 like 命中，**只搜已发布**（草稿不露头）；纯 GET 表单 + 服务端渲染，链接可分享、爬虫可抓；关键词一路带进翻页 / canonical / rel prev·next（点下一页不丢条件）；搜索结果页自动 `noindex`（这类低质重复页不收进索引） |
 | 后台操作  | 列表行内操作统一为图标按钮（分发 / 编辑 / 删除 / 评论通过·拒绝），带中文悬浮提示与 `aria-label` 无障碍名称                                 |
 | SEO    | 服务端渲染、robots.txt、sitemap.xml、OG 标签                                               |
@@ -413,6 +414,24 @@ docker run -d --name xiezitai -p 8080:8080 \
 
 说明：魔搭的文生图（Qwen-Image 系列）是**异步任务**协议（`POST /images/generations` 返回 `task_id`，再轮询 `GET /tasks/{id}`），
 本项目已自动适配，同时兼容 OpenAI 的同步 `data[0].url` 返回。
+
+## 开放 API：发布与读取
+
+| 接口 | 说明 |
+| --- | --- |
+| `POST /api/v1/publish` | 发布文章：`title` / `content` 必填，可选 `slug` / `summary` / `cover` / `keywords` |
+| `GET /api/v1/articles?page=1&size=20&q=` | 文章列表（JSON，仅已发布；`q` 在标题 / 摘要 / 正文 / 标签里匹配） |
+| `GET /api/v1/articles/{id}` | 单篇文章详情（正文为 Markdown 原文） |
+| `POST /api/v1/mcp` | MCP 服务（JSON-RPC 2.0） |
+
+均以 `X-API-Token` 头鉴权（Token 等同账号，别贴到公开的地方）：
+
+```bash
+curl -s 'https://xiezitai.cn/api/v1/articles?page=1&size=5' -H 'X-API-Token: <你的 Token>'
+```
+
+> **导出时正文与封面里的站内资源会补成绝对地址**（`/media/x.png` → `https://站点/media/x.png`）——
+> 对端（例如另一台写字台做「跨站导入」）据此判断哪些是本站自身文件、需要下载落盘，哪些是第三方外链应当原样保留。
 
 ## MCP 接入示例
 
@@ -473,6 +492,7 @@ mvn test
 集成测试覆盖：SEO 页面、登录与失败锁定（3/5/10 次）、TOTP 两步验证、
 文章发布与草稿隔离、登录用户评论待审与审核（禁止匿名）、页面上线、上传类型限制与魔数扫描、
 媒体访问留痕、开放 API 与 MCP（握手/工具列表/调用）、**首页站内搜索**（命中范围 / 草稿隔离 / 分页带 q / noindex / 空态）、
+**写字台跨站导入**（开放 API 导出 JSON 与媒体绝对化 / 账号关联脱敏 / 单篇导入媒体落盘与外链保留 / 整站导入进度）、
 请求日志、管理端权限。
 
 - 测试类：`src/test/java/cn/xiezitai/XiezitaiApplicationTests.java`
@@ -480,8 +500,8 @@ mvn test
 
 ### 端到端验证（Playwright + 真实 Chrome）
 
-`e2e/` 下有 14 个脚本，覆盖后台建文发布、评论两级与审核、首页分页、媒体上传、
-视频插入、改密、记住登录、TOTP 绑定、示例内容种子等场景，跑完打印 `PASS/FAIL` 汇总。
+`e2e/` 下有 30 余个脚本（含纯截图工具），覆盖后台建文发布、评论两级与审核、首页分页、媒体上传、
+视频插入、改密、记住登录、TOTP 绑定、示例内容种子、**写字台跨站导入**、文章分发等场景，跑完打印 `PASS/FAIL` 汇总。
 **必须在项目根目录执行**（截图输出到 `e2e/out/`）：
 
 ```bash

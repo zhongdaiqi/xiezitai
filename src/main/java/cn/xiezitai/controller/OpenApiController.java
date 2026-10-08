@@ -5,21 +5,27 @@ import cn.xiezitai.entity.User;
 import cn.xiezitai.repository.ArticleRepository;
 import cn.xiezitai.repository.UserRepository;
 import cn.xiezitai.service.ArticleService;
+import cn.xiezitai.service.DistributeService;
 import cn.xiezitai.service.MarkdownService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
  * 开放服务：
  *  1) /api/v1/publish     —— 外部系统凭 X-API-Token 发布博客
- *  2) /api/v1/mcp         —— MCP 服务（JSON-RPC 2.0，Streamable HTTP），供 AI 客户端集成
+ *  2) /api/v1/articles    —— 外部系统 / 另一台写字台凭 X-API-Token 读取文章（JSON）
+ *  3) /api/v1/mcp         —— MCP 服务（JSON-RPC 2.0，Streamable HTTP），供 AI 客户端集成
  * 工具：publish_article / list_articles / get_article
  */
 @RestController
@@ -31,6 +37,10 @@ public class OpenApiController {
     private final ArticleService articleService;
     private final MarkdownService markdown;
     private final ObjectMapper mapper = new ObjectMapper();
+
+    /** 站点根地址：导出正文 / 封面时把站内 /media/xxx 补成绝对地址用 */
+    @Value("${xiezitai.site-url:https://xiezitai.cn}")
+    private String siteUrl;
 
     public OpenApiController(UserRepository users, ArticleRepository articles,
                              ArticleService articleService, MarkdownService markdown) {
@@ -67,6 +77,89 @@ public class OpenApiController {
         articleService.publishNotify(saved, user.getUsername());
         return ResponseEntity.ok(Map.of("id", saved.getId(), "slug", saved.getSlug(),
                 "url", "/article/" + saved.getSlug()));
+    }
+
+    /* ---------- 1.5 外部读取（供其它写字台 / 外部系统同步文章） ---------- */
+
+    /**
+     * 文章列表（JSON）。默认只含**已发布**文章，支持分页与关键词（标题/摘要/正文/标签）。
+     *
+     * <p>导出时会把正文与封面里的站内资源 {@code /media/xxx} 补成绝对地址 ——
+     * 对端据此才能判断「这是源站自身的文件，该下载落盘」还是「第三方图床，沿用外链」。
+     */
+    @GetMapping("/articles")
+    public ResponseEntity<?> listArticles(
+            @RequestHeader(value = "X-API-Token", required = false) String token,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String q) {
+        User user = authByToken(token);
+        if (user == null) return ResponseEntity.status(401).body(Map.of("error", "无效的 API Token"));
+        int p = Math.max(page, 1);
+        int s = Math.min(Math.max(size, 1), 100);
+        Page<Article> result = (q == null || q.isBlank())
+                ? articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(p - 1, s))
+                : articles.searchPublished(q.trim(), PageRequest.of(p - 1, s));
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (Article a : result.getContent()) items.add(briefOf(a));
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("site", siteUrl());
+        out.put("user", user.getUsername());
+        out.put("page", p);
+        out.put("size", s);
+        out.put("total", result.getTotalElements());
+        out.put("totalPages", Math.max(result.getTotalPages(), 1));
+        out.put("items", items);
+        return ResponseEntity.ok(out);
+    }
+
+    /** 单篇文章（JSON）：正文是 Markdown 原文，里面的媒体链接已绝对化 */
+    @GetMapping("/articles/{id}")
+    public ResponseEntity<?> getArticle(
+            @RequestHeader(value = "X-API-Token", required = false) String token,
+            @PathVariable long id) {
+        User user = authByToken(token);
+        if (user == null) return ResponseEntity.status(401).body(Map.of("error", "无效的 API Token"));
+        Article a = articles.findById(id).orElse(null);
+        if (a == null) return ResponseEntity.status(404).body(Map.of("error", "文章不存在"));
+        Map<String, Object> out = briefOf(a);
+        out.put("content", absolutize(a.getContent()));
+        out.put("author", a.getAuthor());
+        out.put("status", a.getStatus());
+        return ResponseEntity.ok(out);
+    }
+
+    /** 列表项 / 详情共用的字段 */
+    private Map<String, Object> briefOf(Article a) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", a.getId());
+        m.put("slug", a.getSlug());
+        m.put("title", a.getTitle());
+        m.put("summary", a.getSummary());
+        m.put("tags", a.getTags());
+        m.put("cover", coverUrl(a.getCover()));
+        m.put("publishedAt", a.getPublishedAt() == null ? null : a.getPublishedAt().toString());
+        m.put("url", "/article/" + a.getSlug());
+        return m;
+    }
+
+    /** 站点根（去尾斜杠） */
+    private String siteUrl() {
+        String u = siteUrl == null ? "" : siteUrl.trim();
+        while (u.endsWith("/")) u = u.substring(0, u.length() - 1);
+        return u;
+    }
+
+    /** 正文：把里面 {@code ](/media/} / {@code src="/media/} 这类站内资源补成绝对地址 */
+    private String absolutize(String text) {
+        return DistributeService.absolutizeMedia(text, siteUrl());
+    }
+
+    /** 封面是**裸 URL**（不是 Markdown），单独处理一遍相对路径 */
+    private String coverUrl(String cover) {
+        if (cover == null || cover.isBlank()) return cover;
+        String u = cover.trim();
+        return u.startsWith("/") ? siteUrl() + u : u;
     }
 
     /* ---------- 2. MCP 服务（Streamable HTTP / JSON-RPC 2.0） ---------- */

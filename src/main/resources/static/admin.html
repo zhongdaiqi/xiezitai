@@ -284,6 +284,7 @@
             <button class="tab" data-p="files" onclick="switchTab(this)">文件</button>
             <button class="tab" data-p="wp" onclick="switchTab(this)">WordPress</button>
             <button class="tab" data-p="cnblog" onclick="switchTab(this)">博客园</button>
+            <button class="tab" data-p="xz" onclick="switchTab(this)">写字台</button>
             <button class="tab" data-p="comments" onclick="switchTab(this)">评论</button>
             <button class="tab" data-p="users" onclick="switchTab(this)">用户</button>
             <button class="tab" data-p="security" onclick="switchTab(this)">安全</button>
@@ -616,6 +617,69 @@
                     <span class="muted" id="cn-progress-text"></span>
                 </div>
                 <pre id="cn-progress-log" style="background:var(--bg); padding:10px; border-radius:8px; font-size:12px; max-height:220px; overflow:auto; white-space:pre-wrap; margin-top:8px;"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- 写字台关联：多账号管理（接口地址 + 写字台账号 + 对接密钥）→ 浏览对方站点文章 →
+         单篇导入 / 整站导入（进度轮询）。密钥属敏感信息：只写库、接口不回显（后端 WRITE_ONLY）。 -->
+    <div class="panel" id="p-xz">
+        <div class="card">
+            <div class="list-head">
+                <h3>写字台账号 <span class="count" id="xzlist-count"></span></h3>
+            </div>
+            <div class="row">
+                <input type="text" id="xz-url" placeholder="接口地址，如 https://xiezitai.cn/api/v1/publish" style="flex:2; min-width:280px;">
+                <input type="text" id="xz-user" placeholder="写字台账号" style="flex:1; min-width:120px;" autocomplete="off">
+                <input type="password" id="xz-token" placeholder="对接密钥（X-API-Token）" style="flex:2; min-width:200px;" autocomplete="new-password">
+                <button class="primary" id="xz-add" onclick="addXzSite()">关联账号</button>
+            </div>
+            <p class="muted">对接密钥只保存在本站数据库，接口永不回传明文，也不会写入任何代码仓库；
+                在对方站点后台「设置 → 开放 API / MCP」里可以查看自己的 Token。同一站点可关联多个账号。</p>
+            <div class="table-wrap">
+                <table id="xzlist"><thead><tr><th>站点</th><th>账号</th><th>密钥</th><th>上次同步</th><th>操作</th></tr></thead><tbody></tbody></table>
+            </div>
+        </div>
+
+        <div class="card" id="xz-browse-card" style="display:none;">
+            <div class="list-head">
+                <h3 id="xz-browse-title">文章列表</h3>
+                <button class="primary" id="xz-import-all" onclick="xzImportAll()">整站导入</button>
+            </div>
+            <div class="alist-filter">
+                <input type="text" id="xz-search" placeholder="搜索对方站点文章标题…" autocomplete="off"
+                       oninput="onXzSearchInput()"
+                       onkeydown="if(event.key==='Enter'){event.preventDefault();onXzSearchInput(true);}">
+                <label class="muted" style="font-size:13px; white-space:nowrap; display:inline-flex; align-items:center; gap:6px;">发布时间
+                    <select id="xz-date-mode" style="padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--card, #fff);">
+                        <option value="src" selected>用对方原发布时间</option>
+                        <option value="now">用当前时间</option>
+                    </select>
+                </label>
+                <label class="muted" style="font-size:13px; white-space:nowrap; display:inline-flex; align-items:center; gap:6px;">已存在时
+                    <select id="xz-conflict" style="padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--card, #fff);">
+                        <option value="skip" selected>跳过</option>
+                        <option value="update">用对方版本更新</option>
+                    </select>
+                </label>
+                <button class="ghost" onclick="xzTestSite()">测试连接</button>
+            </div>
+            <p class="muted" style="margin:0 0 10px;">对方正文本来就是 Markdown 原文，导入后不需要再做格式转换；
+                正文里属于对方站点的图片与附件会下载落盘到本站媒体库，第三方图床的外链保持原样。</p>
+            <div class="table-wrap">
+                <table id="xzposts"><thead><tr><th>标题</th><th>发布日期</th><th>标签</th><th>操作</th></tr></thead><tbody></tbody></table>
+            </div>
+            <div class="pager" id="xzposts-pager"></div>
+
+            <!-- 整站导入进度：轮询 /api/admin/xz/sites/{id}/progress（RUNNING 期间 1.2s 一次） -->
+            <div id="xz-progress" style="display:none; margin-top:14px;">
+                <div class="row" style="align-items:center;">
+                    <div style="flex:1; height:10px; background:var(--bg); border:1px solid var(--line); border-radius:6px; overflow:hidden;">
+                        <div id="xz-progress-bar" style="height:100%; width:0%; background:#2563eb; transition:width .4s;"></div>
+                    </div>
+                    <span class="muted" id="xz-progress-text"></span>
+                </div>
+                <pre id="xz-progress-log" style="background:var(--bg); padding:10px; border-radius:8px; font-size:12px; max-height:220px; overflow:auto; white-space:pre-wrap; margin-top:8px;"></pre>
             </div>
         </div>
     </div>
@@ -2567,6 +2631,239 @@ function maybeLoadCn() {
     if (token) loadCnSites().catch(() => {});
 }
 
+/* ==================== 写字台账号关联与导入 ====================
+   多账号管理（接口地址 + 写字台账号 + 对接密钥）→ 浏览对方站点文章 →
+   单篇导入（同步）/ 整站导入（后台线程 + 1.2s 轮询进度条）。
+   密钥只在「关联账号」时提交一次，后端不回显 —— 列表里只显示「已配置」。 */
+let xzSites = [];
+let xzSiteId = null;          // 当前浏览/导入的账号
+let xzPostsPage = 0, xzPostsPages = 1, xzPostsTotal = 0;
+const XZ_POSTS_SIZE = 10;
+let xzSearchTimer = null, xzSearchKw = '';
+let xzPollTimer = null;       // 整站导入进度轮询
+
+async function loadXzSites() {
+    xzSites = await jget('/api/admin/xz/sites');
+    const tb = document.querySelector('#xzlist tbody');
+    $('xzlist-count').textContent = xzSites.length ? '（' + xzSites.length + '）' : '';
+    if (!xzSites.length) {
+        tb.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:center; padding:18px 0;">还没有关联写字台账号，填好上方接口地址、账号与密钥点「关联账号」</td></tr>';
+        return;
+    }
+    tb.innerHTML = xzSites.map(s => `<tr>
+        <td>${escapeHtml(String(s.name || s.apiUrl))}<div class="muted" style="font-size:12px;">${escapeHtml(String(s.apiUrl))}</div></td>
+        <td>${escapeHtml(String(s.username || '—'))}</td>
+        <td>${s.hasToken ? '<span class="mini-tag">已配置</span>' : '<span class="muted">未配置</span>'}</td>
+        <td class="muted">${s.lastSyncAt ? escapeHtml(String(s.lastSyncAt).replace('T', ' ').slice(0, 16)) : '—'}</td>
+        <td>${actCell(
+            '<button class="ghost" onclick="browseXzSite(' + s.id + ')">浏览文章</button>'
+            + '<button class="ghost" onclick="xzTestSite(' + s.id + ')">测试连接</button>'
+            + iconBtn('del', '删除', 'delXzSite(' + s.id + ')', true))}</td>
+    </tr>`).join('');
+}
+
+async function addXzSite() {
+    const url = $('xz-url').value.trim();
+    if (!url) { toast('请填写接口地址'); return; }
+    const username = $('xz-user').value.trim();
+    if (!username) { toast('请填写写字台账号'); return; }
+    const btn = $('xz-add');
+    btn.disabled = true;
+    try {
+        const res = await api('/api/admin/xz/sites', {
+            method: 'POST',
+            body: JSON.stringify({ url, username, token: $('xz-token').value.trim() })
+        });
+        const data = await res.json();
+        if (!res.ok) { toast(data.error || '关联失败'); return; }
+        $('xz-url').value = ''; $('xz-user').value = ''; $('xz-token').value = '';
+        toast('关联成功：' + (data.site.name || data.site.apiUrl));
+        if (data.warning) toast(data.warning);
+        await loadXzSites();
+    } catch (e) {
+        toast('关联失败：' + e.message);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+/** 删除关联写字台账号。名字按 id 从缓存取，不从内联属性里传（见 delWpSite 的说明）。 */
+async function delXzSite(id, name) {
+    const site = (xzSites || []).find(s => s.id === id);
+    const label = name || (site ? (site.name || site.apiUrl) : ('#' + id));
+    if (!confirm('确定删除关联账号「' + label + '」？已导入的文章不受影响。')) return;
+    const res = await api('/api/admin/xz/sites/' + id, { method: 'DELETE' });
+    if (res.ok) {
+        if (xzSiteId === id) closeXzBrowse();
+        toast('已删除关联');
+        loadXzSites();
+    } else toast('删除失败');
+}
+
+async function xzTestSite(id) {
+    const sid = id || xzSiteId;
+    if (!sid) return;
+    toast('正在测试连接…');
+    const res = await api('/api/admin/xz/sites/' + sid + '/test', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+        toast('连接正常：账号 ' + (data.account || '') + (data.apiRoot ? ' · ' + data.apiRoot : ''));
+    } else {
+        toast(data.error || '连接失败');
+    }
+}
+
+/* ---------- 浏览某个账号的文章 ---------- */
+function browseXzSite(id) {
+    xzSiteId = id;
+    const s = xzSites.find(x => x.id === id) || {};
+    $('xz-browse-title').textContent = '文章列表 · ' + (s.name || s.apiUrl || '');
+    $('xz-browse-card').style.display = '';
+    xzSearchKw = '';
+    $('xz-search').value = '';
+    loadXzPosts(0);
+    checkXzProgress();          // 若该账号此前有任务在跑，恢复进度条
+}
+
+function closeXzBrowse() {
+    xzSiteId = null;
+    $('xz-browse-card').style.display = 'none';
+    stopXzPoll();
+}
+
+async function loadXzPosts(page) {
+    if (!xzSiteId) return;
+    const res = await api('/api/admin/xz/sites/' + xzSiteId + '/posts?page=' + (page + 1)
+        + '&per_page=' + XZ_POSTS_SIZE + (xzSearchKw ? '&search=' + encodeURIComponent(xzSearchKw) : ''));
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || '拉取文章列表失败'); return; }
+    xzPostsPage = page;
+    xzPostsTotal = data.total || 0;
+    xzPostsPages = Math.max(data.totalPages || 1, 1);
+    const tb = document.querySelector('#xzposts tbody');
+    if (!data.posts.length) {
+        tb.innerHTML = '<tr><td colspan="4" class="muted" style="text-align:center; padding:18px 0;">没有匹配的文章</td></tr>';
+    } else {
+        tb.innerHTML = data.posts.map(p => `<tr>
+            <td><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">${escapeHtml(p.title)}</a></td>
+            <td>${escapeHtml(String(p.date || '').replace('T', ' ').slice(0, 16))}</td>
+            <td class="muted">${escapeHtml(String(p.tags || ''))}</td>
+            <td><button class="ghost" onclick="xzImportOne(${p.id})">导入</button></td>
+        </tr>`).join('');
+    }
+    // 分页（与文章列表同款式）
+    const box = $('xzposts-pager');
+    const from = xzPostsTotal ? page * XZ_POSTS_SIZE + 1 : 0;
+    const to = Math.min((page + 1) * XZ_POSTS_SIZE, xzPostsTotal);
+    const first = page <= 0, last = page >= xzPostsPages - 1;
+    box.innerHTML = `<span class="pinfo">共 ${xzPostsTotal} 篇 · 第 ${from}-${to} 条 · ${page + 1}/${xzPostsPages} 页</span>
+        <span class="pbtns">
+            <button class="ghost" onclick="loadXzPosts(0)" ${first ? 'disabled' : ''}>首页</button>
+            <button class="ghost" onclick="loadXzPosts(${page - 1})" ${first ? 'disabled' : ''}>上一页</button>
+            <button class="ghost" onclick="loadXzPosts(${page + 1})" ${last ? 'disabled' : ''}>下一页</button>
+            <button class="ghost" onclick="loadXzPosts(${xzPostsPages - 1})" ${last ? 'disabled' : ''}>末页</button>
+        </span>`;
+}
+
+function onXzSearchInput(immediate) {
+    clearTimeout(xzSearchTimer);
+    const run = () => { xzSearchKw = $('xz-search').value.trim(); loadXzPosts(0); };
+    if (immediate) run();
+    else xzSearchTimer = setTimeout(run, 420);
+}
+
+/* ---------- 单篇导入 ---------- */
+function xzUseSrcDate() { return $('xz-date-mode').value !== 'now'; }
+function xzOnConflict() { return $('xz-conflict').value === 'update' ? 'update' : 'skip'; }
+
+async function xzImportOne(postId) {
+    toast('正在导入，媒体较多时可能需要几十秒…');
+    const res = await api('/api/admin/xz/sites/' + xzSiteId + '/import', {
+        method: 'POST', body: JSON.stringify({ postId, useSrcDate: xzUseSrcDate(), onConflict: xzOnConflict() })
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || '导入失败'); return; }
+    if (data.imported) {
+        const tagNote = data.tags ? ' · 标签：' + data.tags : '';
+        const verb = data.updated ? '已更新' : '导入成功';
+        toast(verb + '：《' + (data.title || '') + '》' + tagNote
+            + (data.warnings && data.warnings.length ? '（' + data.warnings.length + ' 条媒体警告，详见控制台）' : ''));
+        if (data.warnings && data.warnings.length) console.warn('写字台导入媒体警告：', data.warnings);
+    } else {
+        toast(data.message || '该文章已存在，已跳过');
+    }
+}
+
+/* ---------- 整站导入 + 进度轮询 ---------- */
+async function xzImportAll() {
+    if (!xzSiteId) return;
+    const dateNote = xzUseSrcDate() ? '发布时间沿用对方原发布时间' : '发布时间统一改为当前时间';
+    const conflictNote = xzOnConflict() === 'update'
+        ? '本地已存在的同 slug 文章会被对方版本覆盖更新'
+        : '本地已存在同 slug 的文章会自动跳过';
+    if (!confirm('开始整站导入？将把该账号全部文章导入本站，' + dateNote + '；' + conflictNote + '。')) return;
+    const res = await api('/api/admin/xz/sites/' + xzSiteId + '/import-all', {
+        method: 'POST', body: JSON.stringify({ useSrcDate: xzUseSrcDate(), onConflict: xzOnConflict() })
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || '启动失败'); return; }
+    toast('整站导入已启动');
+    $('xz-progress').style.display = '';
+    renderXzProgress({ phase: 'RUNNING', messages: ['任务已启动，正在拉取文章列表…'] });
+    startXzPoll();
+}
+
+function startXzPoll() {
+    stopXzPoll();
+    xzPollTimer = setInterval(checkXzProgress, 1200);
+    checkXzProgress();
+}
+
+function stopXzPoll() {
+    if (xzPollTimer) { clearInterval(xzPollTimer); xzPollTimer = null; }
+}
+
+async function checkXzProgress() {
+    if (!xzSiteId) return;
+    let data;
+    try {
+        const res = await api('/api/admin/xz/sites/' + xzSiteId + '/progress');
+        data = await res.json();
+    } catch (e) { return; }
+    if (!data || data.phase === 'IDLE') return;      // 没有任务：不动进度区
+    $('xz-progress').style.display = '';
+    renderXzProgress(data);
+    if (data.phase === 'RUNNING') {
+        if (!xzPollTimer) startXzPoll();
+    } else {
+        stopXzPoll();
+        if (data.phase === 'DONE') {
+            toast('整站导入完成：成功 ' + data.imported + '，更新 ' + (data.updated || 0)
+                + '，跳过 ' + data.skipped + '，失败 ' + data.failed);
+            loadXzSites();                            // 刷新「上次同步」
+        } else if (data.phase === 'FAILED') {
+            toast('整站导入中断：' + (data.error || '未知错误'));
+        }
+    }
+}
+
+function renderXzProgress(p) {
+    const total = p.total >= 0 ? p.total : null;
+    const pct = total ? Math.min(100, Math.round(p.done / total * 100)) : (p.phase === 'DONE' ? 100 : 0);
+    $('xz-progress-bar').style.width = pct + '%';
+    const statusLabel = { RUNNING: '导入中', DONE: '已完成', FAILED: '已中断' }[p.phase] || p.phase;
+    $('xz-progress-text').textContent = statusLabel
+        + (total ? ' ' + p.done + '/' + total + '（' + pct + '%）' : ' ' + p.done + ' 篇')
+        + (p.current ? ' · ' + p.current : '');
+    const lines = (p.messages || []).slice(-12);
+    $('xz-progress-log').textContent = lines.join('\n') + (lines.length ? '\n' : '');
+}
+
+/* 进编辑面板时若已登录就顺带刷一次账号列表（switchTab 里调用） */
+function maybeLoadXz() {
+    if (token) loadXzSites().catch(() => {});
+}
+
 /* ==================== 文章分发（→ WordPress 站点 / 博客园账号） ====================
    从文章列表行点「分发」打开弹窗：
      ① 勾选目标 —— WP 站点与博客园账号在同一张清单里，可多选；
@@ -2702,6 +2999,7 @@ function switchTab(btn) {
     // WordPress 面板：每次进来刷新站点列表（Token 配置、上次同步都可能被别处改过）
     if (btn.dataset.p === 'wp') maybeLoadWp();
     if (btn.dataset.p === 'cnblog') maybeLoadCn();
+    if (btn.dataset.p === 'xz') maybeLoadXz();
     // hash 记录当前面板：刷新/分享链接都能落回原处（replaceState 不产生历史记录）
     history.replaceState(null, '', '#' + btn.dataset.p);
 }
