@@ -27,4 +27,7 @@ public interface CommentRepository extends JpaRepository<Comment, Long> {
 
     /** 级联删除子回复 */
     List<Comment> findByParentId(Long parentId);
+
+    /** 注销账号：按作者名找该用户的全部评论（评论实体只存名字快照，不关联 User） */
+    List<Comment> findByAuthorName(String authorName);
 }

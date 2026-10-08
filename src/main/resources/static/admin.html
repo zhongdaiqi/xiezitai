@@ -1992,7 +1992,7 @@ async function loadComments() {
         // 层级可视化：回复缩进并标注「回复 @某人」，便于管理员判断上下文
         tr.innerHTML = `<td>${isReply ? '<span class="muted">↳ </span>' : ''}${escapeHtml(c.authorName)}</td>
             <td${isReply ? ' style="padding-left:26px;border-left:2px solid #e5e7eb;"' : ''}>${isReply && c.replyToName ? '<span class="muted">回复 @' + escapeHtml(c.replyToName) + '：</span>' : ''}${escapeHtml(c.content)}</td>
-            <td>${c.article ? escapeHtml(c.article.title) : ''}</td><td>${c.status}</td>
+            <td>${c.article ? escapeHtml(c.article.title) : ''}</td><td>${c.status}${c.reported ? ' <span style="color:#dc2626;font-weight:600;">⚑ 已举报</span>' : ''}</td>
             <td>${actCell(
                 iconBtn('check', '通过', `setComment(${c.id}, 'APPROVED')`)
                 + iconBtn('close', '拒绝', `setComment(${c.id}, 'REJECTED')`)

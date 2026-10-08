@@ -116,6 +116,55 @@ public class CommentController {
         return ResponseEntity.ok(Map.of("message", "已删除，同时移除 " + children.size() + " 条回复"));
     }
 
+    /**
+     * 举报评论（App Store 1.2 UGC 要求具备举报机制）。
+     * 仅登录用户可举报；同一评论重复举报幂等（置位 + 通知管理员）。
+     */
+    @PostMapping("/api/comments/{id}/report")
+    public ResponseEntity<?> report(@PathVariable Long id, Authentication auth) {
+        if (auth == null || auth.getName() == null) {
+            return ResponseEntity.status(401).body(Map.of("error", "请先登录后再举报"));
+        }
+        User user = users.findByUsername(auth.getName()).orElse(null);
+        if (user == null || !user.isEnabled()) {
+            return ResponseEntity.status(401).body(Map.of("error", "账号不可用，请重新登录"));
+        }
+        Comment c = comments.findByIdWithArticle(id).orElse(null);
+        if (c == null) return ResponseEntity.notFound().build();
+        if (!c.isReported()) {
+            c.setReported(true);
+            comments.save(c);
+            notify.notifyEvent("comment", "**写字台评论被举报**\n> 评论人: " + c.getAuthorName()
+                    + "\n> 文章: " + (c.getArticle() != null ? c.getArticle().getTitle() : "?")
+                    + "\n> 举报人: " + user.getUsername()
+                    + "\n> 请到后台「评论」处理（拒绝或删除）");
+        }
+        return ResponseEntity.ok(Map.of("message", "举报已提交，管理员会尽快处理"));
+    }
+
+    /**
+     * 用户删除评论：作者本人或管理员可删；连同其下的回复一起删掉，避免孤儿回复。
+     * 评论实体只存 authorName 快照，用名字比对判断归属。
+     */
+    @DeleteMapping("/api/comments/{id}")
+    public ResponseEntity<?> deleteAsUser(@PathVariable Long id, Authentication auth) {
+        if (auth == null || auth.getName() == null) {
+            return ResponseEntity.status(401).body(Map.of("error", "请先登录"));
+        }
+        User user = users.findByUsername(auth.getName()).orElse(null);
+        if (user == null) return ResponseEntity.status(401).build();
+        Comment c = comments.findById(id).orElse(null);
+        if (c == null) return ResponseEntity.notFound().build();
+        boolean owner = user.getUsername().equals(c.getAuthorName());
+        if (!owner && !"ADMIN".equals(user.getRole())) {
+            return ResponseEntity.status(403).body(Map.of("error", "只能删除自己的评论"));
+        }
+        List<Comment> children = comments.findByParentId(id);
+        if (!children.isEmpty()) comments.deleteAll(children);
+        comments.deleteById(id);
+        return ResponseEntity.ok(Map.of("message", "已删除，同时移除 " + children.size() + " 条回复"));
+    }
+
     private Long parseId(String s) {
         if (s == null || s.isBlank()) return null;
         try {

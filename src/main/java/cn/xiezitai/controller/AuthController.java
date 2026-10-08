@@ -1,6 +1,10 @@
 package cn.xiezitai.controller;
 
+import cn.xiezitai.entity.Article;
+import cn.xiezitai.entity.Comment;
 import cn.xiezitai.entity.User;
+import cn.xiezitai.repository.ArticleRepository;
+import cn.xiezitai.repository.CommentRepository;
 import cn.xiezitai.repository.UserRepository;
 import cn.xiezitai.security.JwtUtil;
 import cn.xiezitai.security.LoginAttemptService;
@@ -9,6 +13,7 @@ import cn.xiezitai.service.NotifyService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.security.SecureRandom;
@@ -16,6 +21,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -27,15 +33,20 @@ public class AuthController {
             java.util.regex.Pattern.compile("^[A-Za-z0-9_.-]{3,20}$");
 
     private final UserRepository users;
+    private final ArticleRepository articles;
+    private final CommentRepository comments;
     private final PasswordEncoder encoder;
     private final JwtUtil jwt;
     private final LoginAttemptService attempts;
     private final TotpService totp;
     private final NotifyService notify;
 
-    public AuthController(UserRepository users, PasswordEncoder encoder, JwtUtil jwt,
+    public AuthController(UserRepository users, ArticleRepository articles, CommentRepository comments,
+                          PasswordEncoder encoder, JwtUtil jwt,
                           LoginAttemptService attempts, TotpService totp, NotifyService notify) {
         this.users = users;
+        this.articles = articles;
+        this.comments = comments;
         this.encoder = encoder;
         this.jwt = jwt;
         this.attempts = attempts;
@@ -188,6 +199,47 @@ public class AuthController {
         user.setPassword(encoder.encode(np));
         users.save(user);
         return ResponseEntity.ok(Map.of("message", "密码已修改"));
+    }
+
+    /**
+     * 注销账号（App Store 5.1.1(v)：提供应用内账号删除能力）。
+     *
+     * <p>流程：密码二次确认 → 删除本人评论（其下别人的回复一并清掉，防孤儿）→
+     * 删除本人文章（author 是字符串快照，按用户名匹配）→ 删除账号本体。
+     * 整个方法在一个事务里，任何一步失败整体回滚。
+     * 管理员账号不允许自助注销（站点会失去管理入口），需另建管理员后再处理。
+     */
+    @Transactional
+    @DeleteMapping("/me")
+    public ResponseEntity<?> deleteMe(@RequestBody(required = false) Map<String, String> body,
+                                      Authentication auth) {
+        if (auth == null || auth.getName() == null) {
+            return ResponseEntity.status(401).body(Map.of("error", "请先登录"));
+        }
+        User user = users.findByUsername(auth.getName()).orElse(null);
+        if (user == null) return ResponseEntity.status(401).build();
+        if ("ADMIN".equals(user.getRole())) {
+            return ResponseEntity.badRequest().body(Map.of("error", "管理员账号不支持自助注销"));
+        }
+        String pwd = body == null ? "" : body.getOrDefault("password", "");
+        if (!encoder.matches(pwd, user.getPassword())) {
+            return ResponseEntity.badRequest().body(Map.of("error", "密码校验失败，账号未注销"));
+        }
+        List<Comment> myComments = comments.findByAuthorName(user.getUsername());
+        int orphanReplies = 0;
+        for (Comment c : myComments) {
+            List<Comment> children = comments.findByParentId(c.getId());
+            comments.deleteAll(children);
+            orphanReplies += children.size();
+        }
+        comments.deleteAll(myComments);
+        List<Article> myArticles = articles.findByAuthor(user.getUsername());
+        articles.deleteAll(myArticles);
+        users.delete(user);
+        notify.notifyEvent("register", "**写字台账号注销**\n> 用户: " + user.getUsername()
+                + "\n> 已删除文章 " + myArticles.size() + " 篇、评论 "
+                + (myComments.size() + orphanReplies) + " 条");
+        return ResponseEntity.ok(Map.of("message", "账号已注销"));
     }
 
     private String randomToken() {

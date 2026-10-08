@@ -19,6 +19,10 @@ public interface ArticleRepository extends JpaRepository<Article, Long> {
     /** 「我的文章」（App 内作者看自己的全部状态：待审/驳回/已发布） */
     Page<Article> findByAuthorOrderByUpdatedAtDesc(String author, Pageable pageable);
 
+    /** 注销账号：作者名即 username（author 是字符串快照，不关联 User） */
+    long countByAuthor(String author);
+    java.util.List<Article> findByAuthor(String author);
+
     /**
      * 后台文章列表：关键词（标题 / 摘要 / 正文 / 标签）+ 状态双条件过滤。
      *

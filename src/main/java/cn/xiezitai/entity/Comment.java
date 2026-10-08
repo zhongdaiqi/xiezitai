@@ -37,6 +37,13 @@ public class Comment {
     @Column(length = 50)
     private String replyToName;
 
+    /**
+     * 是否被用户举报过（App 内长按评论举报）。
+     * columnDefinition 带 default：ddl-auto=update 给历史行补 false，避免 null。
+     */
+    @Column(columnDefinition = "boolean default false")
+    private boolean reported = false;
+
     private LocalDateTime createdAt = LocalDateTime.now();
 
     public Long getId() { return id; }
@@ -55,6 +62,8 @@ public class Comment {
     public void setParentId(Long parentId) { this.parentId = parentId; }
     public String getReplyToName() { return replyToName; }
     public void setReplyToName(String replyToName) { this.replyToName = replyToName; }
+    public boolean isReported() { return reported; }
+    public void setReported(boolean reported) { this.reported = reported; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 }
