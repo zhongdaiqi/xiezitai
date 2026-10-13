@@ -21,6 +21,10 @@ public class PageEntity {
     @Column(columnDefinition = "LONGTEXT")
     private String content;
 
+    /** 排序权重：越小越靠前，默认 0，管理员可在后台用 ↑↓ 调整 */
+    @Column(nullable = false, columnDefinition = "INT DEFAULT 0")
+    private int sortOrder = 0;
+
     private boolean published = true;
     private LocalDateTime createdAt = LocalDateTime.now();
     private LocalDateTime updatedAt = LocalDateTime.now();
@@ -42,4 +46,6 @@ public class PageEntity {
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+    public int getSortOrder() { return sortOrder; }
+    public void setSortOrder(int sortOrder) { this.sortOrder = sortOrder; }
 }

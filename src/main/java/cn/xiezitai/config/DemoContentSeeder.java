@@ -130,16 +130,17 @@ public class DemoContentSeeder {
     // ------------------------------------------------------------------ 页面
 
     private void seedPages() {
-        page("关于", "about", ABOUT_MD, 5);
-        page("友链", "links", LINKS_MD, 5);
+        page("关于", "about", ABOUT_MD, 5, 10);
+        page("友链", "links", LINKS_MD, 5, 20);
     }
 
-    private void page(String title, String slug, String content, int daysAgo) {
+    private void page(String title, String slug, String content, int daysAgo, int sortOrder) {
         PageEntity p = new PageEntity();
         p.setTitle(title);
         p.setSlug(slug);
         p.setContent(content);
         p.setPublished(true);
+        p.setSortOrder(sortOrder);
         LocalDateTime t = LocalDateTime.now().minusDays(daysAgo);
         p.setCreatedAt(t);
         p.setUpdatedAt(t);

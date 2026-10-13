@@ -30,7 +30,35 @@ public class PageController {
     /* 管理 */
     @GetMapping("/api/admin/pages")
     public List<PageEntity> list() {
-        return pages.findAll();
+        return pages.findAllByOrderBySortOrderAscIdAsc();
+    }
+
+    /** 调整页面排序：把 id 为 {@code id} 的页面上移/下移一位，然后全局重编号 */
+    @PutMapping("/api/admin/pages/{id}/reorder")
+    public ResponseEntity<?> reorder(@PathVariable Long id, @RequestParam String direction) {
+        List<PageEntity> all = pages.findAllByOrderBySortOrderAscIdAsc();
+        int idx = -1;
+        for (int i = 0; i < all.size(); i++) {
+            if (all.get(i).getId().equals(id)) { idx = i; break; }
+        }
+        if (idx < 0) return ResponseEntity.notFound().build();
+
+        int peer = "up".equals(direction) ? idx - 1 : ("down".equals(direction) ? idx + 1 : -1);
+        if (peer < 0 || peer >= all.size()) {
+            return ResponseEntity.ok(Map.of("message", "已在边界"));
+        }
+
+        // 在列表中交换两个元素的位置
+        PageEntity tmp = all.get(idx);
+        all.set(idx, all.get(peer));
+        all.set(peer, tmp);
+
+        // 按列表新顺序重新编号 sortOrder（留 10 的间隙，方便以后在中间插入页面）
+        for (int i = 0; i < all.size(); i++) {
+            all.get(i).setSortOrder(i * 10);
+        }
+        pages.saveAll(all);
+        return ResponseEntity.ok(Map.of("message", "已调整顺序"));
     }
 
     @PostMapping("/api/admin/pages")

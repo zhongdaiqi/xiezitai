@@ -81,6 +81,14 @@
            现在拆成两个视图，进编辑视图才挂编辑器（ByteMD 有开销，不必常驻）。 */
         .t-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
+        /* ---------- 排序按钮 ---------- */
+        .sort-btns { display: inline-flex; gap: 2px; }
+        .sort-btn { background: #fff; border: 1px solid var(--line); border-radius: 4px;
+                    padding: 2px 6px; cursor: pointer; font: 11px monospace; line-height: 1;
+                    color: var(--muted); transition: border-color .15s, color .15s; }
+        .sort-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+        .sort-btn:disabled { opacity: .3; cursor: default; }
+
         /* ---------- 文章列表工具栏：标题计数 + 新建 / 搜索 + 状态筛选 ---------- */
         .list-head { display: flex; align-items: center; justify-content: space-between;
                      gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
@@ -442,7 +450,7 @@
                     </select>
                 </div>
                 <div class="table-wrap">
-                    <table id="pglist"><thead><tr><th>标题</th><th>slug</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody></tbody></table>
+                    <table id="pglist"><thead><tr><th>排序</th><th>标题</th><th>slug</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody></tbody></table>
                 </div>
                 <div class="pager" id="pglist-pager"></div>
             </div>
@@ -1863,13 +1871,20 @@ function renderPageRows(list) {
     tb.innerHTML = '';
     if (!list.length) {
         const tip = (pgListKw || pgListStatus) ? '没有匹配的页面' : '还没有页面，点上方「+ 新建页面」开始写';
-        tb.innerHTML = '<tr><td colspan="5" id="pglist-empty">' + tip + '</td></tr>';
+        tb.innerHTML = '<tr><td colspan="6" id="pglist-empty">' + tip + '</td></tr>';
         return;
     }
-    list.forEach(p => {
+    list.forEach((p, i) => {
         pagesCache[p.id] = p;   // 正文含引号时不能再塞进 onclick 属性（会逃逸 → 存储型 XSS）
+        const globalIdx = pgListPage * PG_SIZE + i;
+        const isFirst = globalIdx === 0, isLast = globalIdx >= pgListTotal - 1;
+        const sortCell = '<span class="sort-btns">'
+            + `<button class="sort-btn" onclick="movePage(${p.id},'up')" ${isFirst ? 'disabled' : ''} title="上移">↑</button>`
+            + `<button class="sort-btn" onclick="movePage(${p.id},'down')" ${isLast ? 'disabled' : ''} title="下移">↓</button>`
+            + '</span>';
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td><a href="/${slugHref(p.slug)}" target="_blank">${escapeHtml(p.title)}</a></td>
+        tr.innerHTML = `<td>${sortCell}</td>
+            <td><a href="/${slugHref(p.slug)}" target="_blank">${escapeHtml(p.title)}</a></td>
             <td>${escapeHtml(p.slug || '')}</td>
             <td>${p.published ? '<span class="badge b-pub">已发布</span>' : '<span class="badge b-draft">未发布</span>'}</td>
             <td class="t-time">${fmtTime(p.updatedAt)}</td>
@@ -1952,6 +1967,13 @@ async function delPage(id) {
     delete pagesCache[id];
     // 删完当前页可能空了 → 退一页再渲染
     if (pgListPage > 0 && (pgListTotal - 1) <= pgListPage * PG_SIZE) pgListPage -= 1;
+    loadPages();
+}
+
+/** 页面排序：↑ 上移 / ↓ 下移，调后端接口交换 sortOrder 后刷新列表 */
+async function movePage(id, dir) {
+    const res = await jpost('/api/admin/pages/' + id + '/reorder?direction=' + dir, null, 'PUT');
+    if (res && res.error) { toast('排序失败：' + res.error); return; }
     loadPages();
 }
 

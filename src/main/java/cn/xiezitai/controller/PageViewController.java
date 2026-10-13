@@ -302,13 +302,11 @@ public class PageViewController {
     }
 
     /**
-     * 顶部导航里的自定义页面：只列已发布、按创建顺序。
+     * 顶部导航里的自定义页面：只列已发布、按 sortOrder 升序（排序相同则按 id 升序）。
      * 不加上这个的话，初始化生成的「关于 / 友链」页面在站内没有任何入口。
      */
     private List<PageEntity> navPages() {
-        return pages.findAll(Sort.by(Sort.Direction.ASC, "id")).stream()
-                .filter(PageEntity::isPublished)
-                .toList();
+        return pages.findByPublishedTrueOrderBySortOrderAscIdAsc();
     }
 
     @GetMapping(value = "/robots.txt", produces = "text/plain")
