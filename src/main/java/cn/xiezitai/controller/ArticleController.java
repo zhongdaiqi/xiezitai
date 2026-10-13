@@ -88,21 +88,33 @@ public class ArticleController {
     /**
      * 后台文章列表：分页 + 关键词搜索 + 状态筛选。
      *
-     * <p>不传 {@code q} / {@code status} 时等价于「全部文章按更新时间倒序」，与旧行为一致
-     * —— e2e 与外部脚本仍在用 {@code ?size=100} 这种裸调用。
+     * <p>支持 {@code sort}（{@code publishedAt} 默认 / {@code updatedAt} / {@code createdAt}）
+     * 与 {@code order}（{@code desc} 默认 / {@code asc}）两个排序参数，供后台列表切换排序用。
+     * <b>注意默认口径已从「更新时间倒序」改为「发布时间倒序」</b>；
+     * e2e 与外部脚本若用 {@code ?size=100} 这种裸调用，拿到的顺序会随之变化。
      */
     @GetMapping("/admin/articles")
     public Page<Article> listAdmin(@RequestParam(defaultValue = "0") int page,
                                    @RequestParam(defaultValue = "10") int size,
                                    @RequestParam(required = false) String q,
-                                   @RequestParam(required = false) String status) {
+                                   @RequestParam(required = false) String status,
+                                   @RequestParam(defaultValue = "publishedAt") String sort,
+                                   @RequestParam(defaultValue = "desc") String order) {
         String kw = q == null ? "" : q.trim();
         String st = status == null ? "" : status.trim();
         if ("ALL".equalsIgnoreCase(st)) st = "";
         int p = Math.max(page, 0);
-        int s = Math.min(Math.max(size, 1), 200);   // 兜住 size=100000 那种一把捞库的调用
+        int s = Math.min(Math.max(size, 1), 200);
+        String col = isAllowedSort(sort) ? sort : "publishedAt";
+        Sort.Direction dir = "asc".equalsIgnoreCase(order) ? Sort.Direction.ASC : Sort.Direction.DESC;
+        // 次排序 id 跟随主排序方向：同一时间戳内「顺序」时小 id 在前、「倒序」时大 id 在前，
+        // 既保证翻页稳定（总有序），也符合用户点「顺序/倒序」的直觉
         return articles.searchAdmin(kw, st,
-                PageRequest.of(p, s, Sort.by(Sort.Order.desc("updatedAt"), Sort.Order.desc("id"))));
+                PageRequest.of(p, s, Sort.by(Sort.Order.by(col).with(dir), new Sort.Order(dir, "id"))));
+    }
+
+    private static boolean isAllowedSort(String s) {
+        return "publishedAt".equals(s) || "updatedAt".equals(s) || "createdAt".equals(s);
     }
 
     /**
