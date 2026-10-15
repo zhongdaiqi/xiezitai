@@ -69,6 +69,16 @@ public class AuthController {
             attempts.onFailure(username);
             return ResponseEntity.status(401).body(Map.of("error", "用户名或密码错误"));
         }
+        // 因违规被封禁（准则 1.2 的 ejecting）。同样放在密码校验之后：
+        // 封禁状态属于账号隐私，不该让任何人靠「登录返回什么错」就能探测。
+        if (user.isBanned()) {
+            attempts.onSuccess(username);
+            return ResponseEntity.status(403).body(Map.of(
+                    "error", "BANNED",
+                    "message", "账号因发布违规内容已被封禁"
+                            + (user.getBannedReason() == null || user.getBannedReason().isBlank()
+                               ? "，如有异议请联系 zhongdaiqi@qq.com" : "：" + user.getBannedReason())));
+        }
         // 审核状态放在密码校验**之后**判断：否则不知道密码的人也能靠状态码探出
         // 「这个用户名存不存在 / 有没有在等审核」。密码对了就不算爆破，顺手清掉失败计数。
         if (!user.isApproved()) {

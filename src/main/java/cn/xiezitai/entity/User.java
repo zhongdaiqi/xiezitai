@@ -39,6 +39,22 @@ public class User {
     @Column(length = 200)
     private String reviewNote;
 
+    /**
+     * 因发布违规内容被管理员封禁（App Store 准则 1.2：ejecting the user who provided the offending content）。
+     *
+     * <p>与 {@code enabled} 的区别：{@code enabled=false} 是管理员手动停用（可随时恢复），
+     * {@code banned=true} 是**因违规被踢出**，带理由与时间，会同步把账号踢下线（见 JwtAuthFilter）。
+     * 两者任一为真即无法登录，恢复时都要清掉。
+     */
+    @Column(columnDefinition = "boolean default false")
+    private boolean banned = false;
+
+    /** 封禁理由（内部留痕，不直接展示给被封禁者） */
+    @Column(length = 200)
+    private String bannedReason;
+
+    private LocalDateTime bannedAt;
+
     /** TOTP 两步验证 */
     private boolean totpEnabled = false;
     private String totpSecret;
@@ -76,6 +92,13 @@ public class User {
     public boolean isApproved() { return status == null || "APPROVED".equals(status); }
     public boolean isPending() { return "PENDING".equals(status); }
     public boolean isRejected() { return "REJECTED".equals(status); }
+
+    public boolean isBanned() { return banned; }
+    public void setBanned(boolean banned) { this.banned = banned; }
+    public String getBannedReason() { return bannedReason; }
+    public void setBannedReason(String bannedReason) { this.bannedReason = bannedReason; }
+    public LocalDateTime getBannedAt() { return bannedAt; }
+    public void setBannedAt(LocalDateTime bannedAt) { this.bannedAt = bannedAt; }
 
     public boolean isTotpEnabled() { return totpEnabled; }
     public void setTotpEnabled(boolean totpEnabled) { this.totpEnabled = totpEnabled; }

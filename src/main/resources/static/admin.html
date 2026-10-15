@@ -38,6 +38,11 @@
         .bar button.tab:hover { border-color: var(--accent); color: var(--accent); }
         .bar button.tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
         .bar .who { color: var(--muted); font-size: 13px; white-space: nowrap; }
+        /* 待处理举报数徽标：有未处置工单时红点提醒，避免管理员忘记 24h SLA */
+        .badge-dot { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 5px;
+                     background: #dc2626; color: #fff; border-radius: 9px; font-size: 11px; line-height: 18px;
+                     text-align: center; vertical-align: 1px; }
+        .bar button.tab.active .badge-dot { background: #fff; color: var(--accent); }
 
         #app { display: none; max-width: 1280px; margin: 0 auto; padding: 16px; }
         .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
@@ -297,8 +302,9 @@
             <button class="tab" data-p="cnblog" onclick="switchTab(this)">博客园</button>
             <button class="tab" data-p="xz" onclick="switchTab(this)">写字台</button>
             <button class="tab" data-p="blogger" onclick="switchTab(this)">Blogger</button>
-            <button class="tab" data-p="comments" onclick="switchTab(this)">评论</button>
-            <button class="tab" data-p="users" onclick="switchTab(this)">用户</button>
+    <button class="tab" data-p="comments" onclick="switchTab(this)">评论</button>
+    <button class="tab" data-p="reports" onclick="switchTab(this)">举报处理<span id="reportBadge" class="badge-dot" hidden></span></button>
+    <button class="tab" data-p="users" onclick="switchTab(this)">用户</button>
             <button class="tab" data-p="security" onclick="switchTab(this)">安全</button>
             <button class="tab" data-p="settings" onclick="switchTab(this)">设置</button>
         </div>
@@ -775,6 +781,23 @@
         <div class="card">
             <div class="table-wrap">
                 <table id="clist"><thead><tr><th>评论人</th><th>评论</th><th>文章</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table>
+            </div>
+        </div>
+    </div>
+
+    <!-- 举报处理（App Store 准则 1.2：UGC 举报必须在 24 小时内处置） -->
+    <div class="panel" id="p-reports">
+        <div class="card">
+            <div class="row" style="justify-content:space-between; align-items:center;">
+                <p class="muted" id="reportTip">举报工单：确认违规后请在 <b>24 小时</b>内处置 —— 移除内容并封禁发布者。逾期会违反 App Store 准则 1.2。</p>
+                <div class="row">
+                    <button class="ghost" onclick="scanOverdueReports()">扫描逾期</button>
+                    <button class="ghost" onclick="loadReports('OPEN')">仅看待处理</button>
+                    <button class="ghost" onclick="loadReports('')">全部</button>
+                </div>
+            </div>
+            <div class="table-wrap">
+                <table id="rlist"><thead><tr><th>工单</th><th>类型</th><th>理由</th><th>被举报内容</th><th>作者</th><th>举报人</th><th>提交时间</th><th>状态</th><th>处置</th></tr></thead><tbody></tbody></table>
             </div>
         </div>
     </div>
@@ -1528,6 +1551,8 @@ async function boot() {
     // 注意：这里不再预挂文章编辑器 —— 文章面板默认是「列表」视图，
     // 编辑器等点「新建/编辑」时再挂（隐藏状态下挂载量不到尺寸，也有开销）。
     loadArticles(); loadPages(); loadFiles(); loadComments(); loadUsers(); loadLogs(); loadSettings();
+    // 举报徽标：登录后立刻刷一次，管理员不点进面板也能看见有多少单欠着
+    updateReportBadge();
 }
 
 /* ---------- 文章列表：搜索 + 分页 ---------- */
@@ -2058,6 +2083,101 @@ async function delComment(id) { await api('/api/admin/comments/' + id, { method:
 
 /* ---------- 用户 ---------- */
 const USER_STATUS_TEXT = { PENDING: '待审核', APPROVED: '已通过', REJECTED: '已驳回' };
+/* ==================== 举报工单处理（App Store 准则 1.2） ==================== */
+/* 审查员要求：开发者必须在 24 小时内处置举报 —— 删内容 + 踢人。
+   这个面板就是日常处置入口：工单列表 → 选动作 → 一键完成，全程留痕。 */
+
+const REPORT_TYPE_LABEL = { ARTICLE: '文章', COMMENT: '评论', USER: '用户' };
+
+/** status 传 'OPEN' 只看待处理，传 '' 看全部 */
+async function loadReports(status) {
+    if (status === undefined) status = document.getElementById('rlist').dataset.status || 'OPEN';
+    document.getElementById('rlist').dataset.status = status;
+    const list = await jget(status ? `/api/admin/reports?status=${status}` : '/api/admin/reports');
+    // 待处理排前面，逾期（超 24h）再顶一层 —— 逾期的才是真正有合规风险的那批
+    const sorted = [...list].sort((a, b) => {
+        const ao = a.status === 'OPEN' ? (a.overdue ? 0 : 1) : 2;
+        const bo = b.status === 'OPEN' ? (b.overdue ? 0 : 1) : 2;
+        return ao - bo;
+    });
+    const tb = document.querySelector('#rlist tbody');
+    tb.innerHTML = '';
+    const open = sorted.filter(r => r.status === 'OPEN').length;
+    const overdue = sorted.filter(r => r.overdue).length;
+    document.getElementById('reportTip').textContent = overdue
+        ? `⚠ 有 ${overdue} 单已超过 24 小时未处置，请立即处理 —— 逾期违反 App Store 准则 1.2。`
+        : (open ? `当前 ${open} 单待处理，请在 24 小时内处置（移除内容并封禁发布者）。`
+                : '暂无待处理工单。确认违规后请处置：移除内容并封禁发布者。');
+    sorted.forEach(r => {
+        const tr = document.createElement('tr');
+        if (r.overdue) tr.style.background = '#fef2f2';
+        else if (r.status === 'OPEN') tr.style.background = '#fffbeb';
+        const left = r.hoursLeft == null ? '' : (r.hoursLeft > 0
+            ? `<br><span class="muted" style="font-size:11px;">剩 ${r.hoursLeft.toFixed(1)} 小时</span>`
+            : `<br><span style="color:#dc2626;font-size:11px;font-weight:600;">已逾期 ${Math.abs(r.hoursLeft).toFixed(1)} 小时</span>`);
+        const statusCell = r.status === 'OPEN'
+            ? `<span style="color:#d97706;font-weight:600;">待处理</span>${left}`
+            : (r.status === 'RESOLVED'
+                ? `<span style="color:#059669;">已处置</span><br><span class="muted" style="font-size:11px;">${escapeHtml(r.actionTaken || '')} · ${escapeHtml(r.handledBy || '')}</span>`
+                : `<span class="muted">已驳回</span><br><span class="muted" style="font-size:11px;">${escapeHtml(r.handledBy || '')}</span>`);
+        const actions = r.status === 'OPEN' ? `
+            <button class="ghost" onclick="resolveReport(${r.id}, 'remove_content')">删内容</button>
+            <button class="ghost" onclick="resolveReport(${r.id}, 'ban_user')">封禁作者</button>
+            <button class="ghost" style="color:#dc2626;border-color:#fecaca;" onclick="resolveReport(${r.id}, 'remove_and_ban')">删内容并封禁</button>
+            <button class="ghost" onclick="resolveReport(${r.id}, 'dismiss')">举报不成立</button>`
+            : '<span class="muted">—</span>';
+        tr.innerHTML = `<td>#${r.id}</td>
+            <td>${REPORT_TYPE_LABEL[r.type] || r.type}</td>
+            <td>${escapeHtml(r.reasonLabel || '')}</td>
+            <td title="${escapeHtml(r.detail || '')}">${escapeHtml(r.targetSummary || '')}${r.detail ? ' <span class="muted">（有补充说明）</span>' : ''}</td>
+            <td>${escapeHtml(r.targetAuthor || '')}</td>
+            <td>${escapeHtml(r.reporterUsername || '')}</td>
+            <td class="muted">${escapeHtml((r.createdAt || '').replace('T', ' ').slice(0, 16))}</td>
+            <td>${statusCell}</td>
+            <td style="white-space:nowrap;">${actions}</td>`;
+        tb.appendChild(tr);
+    });
+    updateReportBadge();
+}
+
+/** 处置工单。remove_and_ban 是审查员要求的标准动作（删内容 + 踢人） */
+async function resolveReport(id, action) {
+    const labels = {
+        remove_content: '删除该内容（评论会连带删除其下回复）',
+        ban_user: '封禁内容作者（立即踢下线，无法再登录）',
+        remove_and_ban: '删除内容并封禁作者 —— 违规内容的标准处置',
+        dismiss: '判定举报不成立，仅结单不处置',
+    };
+    const note = action === 'dismiss' ? '' : prompt(`确认处置：${labels[action]}\n\n备注（可选，内部留痕）：`);
+    if (note === null) return;   // 点了取消
+    if (!confirm(`确认执行「${labels[action]}」？该操作不可撤销。`)) return;
+    const r = await jpost(`/api/admin/reports/${id}/resolve`, { action, note });
+    if (r.ok === false) { alert('处置失败：' + (r.message || '未知错误')); return; }
+    alert(r.message || '已处置');
+    loadReports();
+}
+
+/** 逾期扫描：把超过 24 小时未处理的工单重新推送给管理员 */
+async function scanOverdueReports() {
+    const r = await jpost('/api/admin/reports/scan-overdue', {});
+    alert(r.overdue > 0 ? `有 ${r.overdue} 单已逾期，告警已推送。` : '没有逾期工单。');
+    loadReports('OPEN');
+}
+
+/** tab 上的待处理数量徽标：登录后就刷新，管理员不点进去也能看见欠账 */
+async function updateReportBadge() {
+    try {
+        const s = await jget('/api/admin/reports/stats');
+        const badge = document.getElementById('reportBadge');
+        if (badge) {
+            badge.hidden = !s.open;
+            badge.textContent = s.open || '';
+            badge.title = `${s.open} 单待处理${s.overdue ? `，其中 ${s.overdue} 单已逾期` : ''}`;
+            badge.style.background = s.overdue ? '#dc2626' : '#f59e0b';
+        }
+    } catch (e) { /* 统计失败不阻塞主流程 */ }
+}
+
 async function loadUsers() {
     const list = await jget('/api/admin/users');
     const tb = document.querySelector('#ulist tbody');
@@ -3427,6 +3547,8 @@ function switchTab(btn) {
     // 页面面板与文章面板一样默认落在「列表」视图，编辑器等点「新建 / 编辑」时再挂
     // （ByteMD 有开销，隐藏态挂载还量不到尺寸 → 现在不在这里预挂）。
     // WordPress 面板：每次进来刷新站点列表（Token 配置、上次同步都可能被别处改过）
+    // 举报处理面板：每次进来都刷新（工单随时可能新增，且逾期状态随时间变化）
+    if (btn.dataset.p === 'reports') loadReports();
     if (btn.dataset.p === 'wp') maybeLoadWp();
     if (btn.dataset.p === 'cnblog') maybeLoadCn();
     if (btn.dataset.p === 'xz') maybeLoadXz();

@@ -43,7 +43,7 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 // 公开：站点页面与公开读接口
                 .requestMatchers("/", "/article/**", "/page/**", "/media/**", "/admin.html", "/index.html",
-                        "/privacy.html",
+                        "/privacy.html", "/terms.html",
                         "/css/**", "/js/**", "/vendor/**", "/favicon.ico", "/robots.txt", "/sitemap.xml").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/articles/**", "/api/pages/**").permitAll()
                 .requestMatchers("/api/auth/login", "/api/auth/register").permitAll()
@@ -52,6 +52,9 @@ public class SecurityConfig {
                 // 评论举报 / 用户删自己的评论：同样必须登录
                 .requestMatchers(HttpMethod.POST, "/api/comments/*/report").authenticated()
                 .requestMatchers(HttpMethod.DELETE, "/api/comments/*").authenticated()
+                // 内容安全（准则 1.2）：屏蔽与举报都必须登录，避免匿名刷举报
+                // —— 注意末尾是 anyRequest().permitAll()，这里不显式声明就全放开了
+                .requestMatchers("/api/blocks", "/api/blocks/**", "/api/reports").authenticated()
                 // 作者中心（App 投稿 / 我的文章）：必须登录
                 .requestMatchers("/api/my/**").authenticated()
                 .requestMatchers("/api/v1/**").permitAll()   // 开放 API / MCP：内部用 token 鉴权

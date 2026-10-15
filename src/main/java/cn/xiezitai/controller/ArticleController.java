@@ -10,6 +10,7 @@ import cn.xiezitai.service.AiService;
 import cn.xiezitai.service.AiTextCleaner;
 import cn.xiezitai.service.ArticleService;
 import cn.xiezitai.service.MediaStoreService;
+import cn.xiezitai.service.SafetyService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -36,23 +37,39 @@ public class ArticleController {
     private final MediaStoreService media;
     private final DistRecordRepository distRecords;
     private final UserRepository users;
+    private final SafetyService safety;
 
     public ArticleController(ArticleRepository articles, ArticleService articleService, AiService ai,
-                             MediaStoreService media, DistRecordRepository distRecords, UserRepository users) {
+                             MediaStoreService media, DistRecordRepository distRecords, UserRepository users,
+                             SafetyService safety) {
         this.articles = articles;
         this.articleService = articleService;
         this.ai = ai;
         this.media = media;
         this.distRecords = distRecords;
         this.users = users;
+        this.safety = safety;
     }
 
     /* ================= 公开接口 ================= */
 
+    /**
+     * 首页文章流：已发布文章，并排除当前用户屏蔽的作者。
+     *
+     * <p>屏蔽是在**查询层**过滤而非删数据 —— 被屏蔽者的文章对其他人仍可见，
+     * 只对屏蔽者不可见。屏蔽关系变更后下一次拉取即生效，这就是审查员要求的
+     * "remove it from the user's feed instantly"（即时，而不是等缓存过期）。
+     */
     @GetMapping("/articles")
     public Page<Article> listPublic(@RequestParam(defaultValue = "0") int page,
-                                    @RequestParam(defaultValue = "10") int size) {
-        return articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(page, size));
+                                    @RequestParam(defaultValue = "10") int size,
+                                    Authentication auth) {
+        java.util.Set<String> blocked = safety.blockedUsernamesFor(auth);
+        PageRequest pr = PageRequest.of(page, size);
+        if (blocked.isEmpty()) {
+            return articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", pr);
+        }
+        return articles.findPublishedExcludingAuthors("PUBLISHED", blocked, pr);
     }
 
     /**

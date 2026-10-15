@@ -37,7 +37,10 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 // 注册被驳回、被管理员停用、账号已删除，都要立刻失效 ——
                 // 否则驳回/停用前签发的令牌还能一路用到过期（默认 72 小时，记住登录 30 天）。
                 User user = users.findByUsername(claims.getSubject()).orElse(null);
-                if (user != null && user.isEnabled() && user.isApproved()) {
+                // isBanned()：因违规被封禁的账号（App Store 1.2 的 ejecting the user）。
+                // 加在这里而不是只拦登录，是为了让**已签发的令牌立刻失效** ——
+                // 否则被封的人手里那张 72 小时有效期的令牌还能继续发帖到自然过期。
+                if (user != null && user.isEnabled() && user.isApproved() && !user.isBanned()) {
                     String role = user.getRole() != null ? user.getRole() : claims.get("role", String.class);
                     UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken(
                             user.getUsername(), null,

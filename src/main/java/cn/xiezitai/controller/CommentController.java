@@ -1,6 +1,7 @@
 package cn.xiezitai.controller;
 
 import cn.xiezitai.dto.CommentNode;
+import cn.xiezitai.entity.AbuseReport;
 import cn.xiezitai.entity.Article;
 import cn.xiezitai.entity.Comment;
 import cn.xiezitai.entity.User;
@@ -8,6 +9,7 @@ import cn.xiezitai.repository.ArticleRepository;
 import cn.xiezitai.repository.CommentRepository;
 import cn.xiezitai.repository.UserRepository;
 import cn.xiezitai.service.NotifyService;
+import cn.xiezitai.service.SafetyService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -22,13 +24,15 @@ public class CommentController {
     private final ArticleRepository articles;
     private final UserRepository users;
     private final NotifyService notify;
+    private final SafetyService safety;
 
     public CommentController(CommentRepository comments, ArticleRepository articles,
-                             UserRepository users, NotifyService notify) {
+                             UserRepository users, NotifyService notify, SafetyService safety) {
         this.comments = comments;
         this.articles = articles;
         this.users = users;
         this.notify = notify;
+        this.safety = safety;
     }
 
     /**
@@ -83,13 +87,23 @@ public class CommentController {
         return ResponseEntity.ok(Map.of("message", parentId == null ? "评论已提交，待审核后展示" : "回复已提交，待审核后展示"));
     }
 
-    /** 公开：已通过审核的评论（两级树形，父评论未过审时其回复自然不展示） */
+    /**
+     * 公开：已通过审核的评论（两级树形，父评论未过审时其回复自然不展示）。
+     *
+     * <p>叠加屏蔽过滤：被当前用户屏蔽的人发的评论直接不返回。
+     * 父评论被过滤时，它下面的回复也一起消失（回复挂在根评论 id 下，
+     * 树形组装只认存活的根，所以自然级联，不需要额外处理）。
+     */
     @GetMapping("/api/articles/{slug}/comments")
-    public List<CommentNode> listPublic(@PathVariable String slug) {
+    public List<CommentNode> listPublic(@PathVariable String slug, Authentication auth) {
         Article a = articles.findBySlug(slug).orElse(null);
         if (a == null) return List.of();
-        return CommentNode.tree(
-                comments.findByArticleIdAndStatusOrderByCreatedAtAsc(a.getId(), "APPROVED"));
+        List<Comment> list = comments.findByArticleIdAndStatusOrderByCreatedAtAsc(a.getId(), "APPROVED");
+        java.util.Set<String> blocked = safety.blockedUsernamesFor(auth);
+        if (!blocked.isEmpty()) {
+            list = list.stream().filter(c -> !blocked.contains(c.getAuthorName())).toList();
+        }
+        return CommentNode.tree(list);
     }
 
     /** 管理：全部评论 */
@@ -118,28 +132,31 @@ public class CommentController {
 
     /**
      * 举报评论（App Store 1.2 UGC 要求具备举报机制）。
-     * 仅登录用户可举报；同一评论重复举报幂等（置位 + 通知管理员）。
+     *
+     * <p><b>兼容入口</b>：仅登录用户可举报；实际逻辑已统一委派到
+     * {@link SafetyService#report} 落成举报工单（带理由分类、状态、SLA 与处置留痕），
+     * 老版本 App 不升级也能继续用。新接口请用 {@code POST /api/reports}，支持理由分类
+     * 与文章 / 用户举报，本接口固定按「其他」理由归类。
      */
     @PostMapping("/api/comments/{id}/report")
-    public ResponseEntity<?> report(@PathVariable Long id, Authentication auth) {
-        if (auth == null || auth.getName() == null) {
-            return ResponseEntity.status(401).body(Map.of("error", "请先登录后再举报"));
-        }
-        User user = users.findByUsername(auth.getName()).orElse(null);
+    public ResponseEntity<?> report(@PathVariable Long id, @RequestBody(required = false) Map<String, String> body,
+                                    Authentication auth) {
+        User user = safety.currentUser(auth);
         if (user == null || !user.isEnabled()) {
-            return ResponseEntity.status(401).body(Map.of("error", "账号不可用，请重新登录"));
+            return ResponseEntity.status(401).body(Map.of("error", "请先登录后再举报"));
         }
         Comment c = comments.findByIdWithArticle(id).orElse(null);
         if (c == null) return ResponseEntity.notFound().build();
+        // 保留旧行为：给评论打标记，后台「评论」列表里也能一眼看到被举报过
         if (!c.isReported()) {
             c.setReported(true);
             comments.save(c);
-            notify.notifyEvent("comment", "**写字台评论被举报**\n> 评论人: " + c.getAuthorName()
-                    + "\n> 文章: " + (c.getArticle() != null ? c.getArticle().getTitle() : "?")
-                    + "\n> 举报人: " + user.getUsername()
-                    + "\n> 请到后台「评论」处理（拒绝或删除）");
         }
-        return ResponseEntity.ok(Map.of("message", "举报已提交，管理员会尽快处理"));
+        String reason = body == null ? null : body.get("reason");
+        Map<String, Object> r = safety.report(user, AbuseReport.TYPE_COMMENT, id, reason,
+                body == null ? null : body.get("detail"));
+        if (Boolean.FALSE.equals(r.get("ok"))) return ResponseEntity.badRequest().body(r);
+        return ResponseEntity.ok(r);
     }
 
     /**

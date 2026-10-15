@@ -44,6 +44,26 @@ public interface ArticleRepository extends JpaRepository<Article, Long> {
     Page<Article> searchAdmin(@Param("kw") String kw, @Param("st") String st, Pageable pageable);
 
     /**
+     * 首页文章流（排除被当前用户屏蔽的作者）—— App Store 准则 1.2 的
+     * "remove it from the user's feed instantly" 落点。
+     *
+     * <p>{@code blocked} 必须是**非空**集合：JPQL 的 {@code not in (:blocked)} 在集合为空时
+     * 会被某些数据库（MySQL 5.7 / MariaDB）编译成恒假条件，把整个列表查空。
+     * 调用方（ArticleController）已保证空集时走不带过滤的原生方法。
+     *
+     * <p>{@code author is null} 也要放行：导入的文章（WordPress/博客园）可能没有作者快照，
+     * 不能因为屏蔽了某人就把无主文章一起过滤掉。
+     */
+    @Query("""
+            select a from Article a
+            where a.status = :st
+              and (a.author is null or a.author not in :blocked)
+            """)
+    Page<Article> findPublishedExcludingAuthors(@Param("st") String st,
+                                                @Param("blocked") java.util.Set<String> blocked,
+                                                Pageable pageable);
+
+    /**
      * 前台首页搜索：只在**已发布**文章里按关键词（标题 / 摘要 / 正文 / 标签）过滤。
      *
      * <p>与 {@link #searchAdmin} 同一个「空串 = 不过滤」口径；状态是硬编码的
@@ -63,4 +83,19 @@ public interface ArticleRepository extends JpaRepository<Article, Long> {
                    or lower(coalesce(a.tags, '')) like lower(concat('%', :kw, '%')))
             """)
     Page<Article> searchPublished(@Param("kw") String kw, Pageable pageable);
+
+    /** 搜索结果同样排除被屏蔽作者（blocked 必须非空，理由见 findPublishedExcludingAuthors） */
+    @Query("""
+            select a from Article a
+            where a.status = 'PUBLISHED'
+              and (a.author is null or a.author not in :blocked)
+              and (:kw = ''
+                   or lower(a.title) like lower(concat('%', :kw, '%'))
+                   or lower(coalesce(a.summary, '')) like lower(concat('%', :kw, '%'))
+                   or lower(coalesce(a.content, '')) like lower(concat('%', :kw, '%'))
+                   or lower(coalesce(a.tags, '')) like lower(concat('%', :kw, '%')))
+            """)
+    Page<Article> searchPublishedExcluding(@Param("kw") String kw,
+                                           @Param("blocked") java.util.Set<String> blocked,
+                                           Pageable pageable);
 }

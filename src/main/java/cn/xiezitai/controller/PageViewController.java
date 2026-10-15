@@ -8,6 +8,7 @@ import cn.xiezitai.repository.PageRepository;
 import cn.xiezitai.service.ArticleService;
 import cn.xiezitai.service.MarkdownService;
 import cn.xiezitai.service.NotifyService;
+import cn.xiezitai.service.SafetyService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -30,16 +31,19 @@ public class PageViewController {
     private final MarkdownService md;
     private final ArticleService articleService;
     private final NotifyService notify;
+    private final SafetyService safety;
 
     public PageViewController(ArticleRepository articles, PageRepository pages,
                               CommentRepository comments, MarkdownService md,
-                              ArticleService articleService, NotifyService notify) {
+                              ArticleService articleService, NotifyService notify,
+                              SafetyService safety) {
         this.articles = articles;
         this.pages = pages;
         this.comments = comments;
         this.md = md;
         this.articleService = articleService;
         this.notify = notify;
+        this.safety = safety;
     }
 
     /** 首页每页文章数（SEO：翻页用真实链接 + rel prev/next，不用 JS 拼） */
@@ -64,20 +68,31 @@ public class PageViewController {
      */
     @GetMapping("/")
     public String home(@RequestParam(name = "page", defaultValue = "1") int page,
-                       @RequestParam(name = "q", required = false) String q, Model model) {
+                       @RequestParam(name = "q", required = false) String q, Model model,
+                       org.springframework.security.core.Authentication auth) {
         String kw = normalizeKeyword(q);
         boolean searching = !kw.isEmpty();
+        // 登录用户（网页端登录后）同样按屏蔽名单过滤 —— 与 App 端同一口径
+        java.util.Set<String> blocked = safety.blockedUsernamesFor(auth);
 
         org.springframework.data.domain.Page<Article> result = searching
-                ? articles.searchPublished(kw, PageRequest.of(0, PAGE_SIZE, LIST_SORT))
-                : articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(0, PAGE_SIZE));
+                ? (blocked.isEmpty()
+                    ? articles.searchPublished(kw, PageRequest.of(0, PAGE_SIZE, LIST_SORT))
+                    : articles.searchPublishedExcluding(kw, blocked, PageRequest.of(0, PAGE_SIZE, LIST_SORT)))
+                : (blocked.isEmpty()
+                    ? articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(0, PAGE_SIZE))
+                    : articles.findPublishedExcludingAuthors("PUBLISHED", blocked, PageRequest.of(0, PAGE_SIZE)));
         int totalPages = Math.max(1, result.getTotalPages());
         int pageNo = Math.min(Math.max(page, 1), totalPages);
         // 页码越界（含 ?page=999）时按钳制后的页码重新取一页，而不是给空列表
         if (pageNo - 1 != 0) {
             result = searching
-                    ? articles.searchPublished(kw, PageRequest.of(pageNo - 1, PAGE_SIZE, LIST_SORT))
-                    : articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(pageNo - 1, PAGE_SIZE));
+                    ? (blocked.isEmpty()
+                        ? articles.searchPublished(kw, PageRequest.of(pageNo - 1, PAGE_SIZE, LIST_SORT))
+                        : articles.searchPublishedExcluding(kw, blocked, PageRequest.of(pageNo - 1, PAGE_SIZE, LIST_SORT)))
+                    : (blocked.isEmpty()
+                        ? articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(pageNo - 1, PAGE_SIZE))
+                        : articles.findPublishedExcludingAuthors("PUBLISHED", blocked, PageRequest.of(pageNo - 1, PAGE_SIZE)));
         }
         List<Article> list = result.getContent();
         model.addAttribute("articles", list);
