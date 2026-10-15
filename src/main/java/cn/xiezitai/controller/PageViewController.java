@@ -52,8 +52,9 @@ public class PageViewController {
     /** 搜索关键词上限：超长关键词直接截断，别把一整段话喂进 like */
     private static final int MAX_KEYWORD = 60;
 
-    /** 搜索结果的排序：发布时间倒序，同刻按 id 倒序 —— 与首页默认列表同口径，翻页才稳定 */
-    private static final Sort LIST_SORT = Sort.by(Sort.Order.desc("publishedAt"), Sort.Order.desc("id"));
+    /** 排序口径直接复用仓储常量：屏蔽前后走的是两条查询，排序必须完全一致，
+     *  否则用户屏蔽某人后首页顺序会整体漂一次（详见 ArticleRepository.FEED_SORT 的说明） */
+    private static final Sort LIST_SORT = ArticleRepository.FEED_SORT;
 
     /** 站点根地址：把 /media/xxx 这类相对封面拼成绝对 URL（OG 标签按规范要求绝对地址） */
     @Value("${xiezitai.site-url:https://xiezitai.cn}")
@@ -80,8 +81,8 @@ public class PageViewController {
                     ? articles.searchPublished(kw, PageRequest.of(0, PAGE_SIZE, LIST_SORT))
                     : articles.searchPublishedExcluding(kw, blocked, PageRequest.of(0, PAGE_SIZE, LIST_SORT)))
                 : (blocked.isEmpty()
-                    ? articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(0, PAGE_SIZE))
-                    : articles.findPublishedExcludingAuthors("PUBLISHED", blocked, PageRequest.of(0, PAGE_SIZE)));
+                    ? articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(0, PAGE_SIZE, LIST_SORT))
+                    : articles.findPublishedExcludingAuthors("PUBLISHED", blocked, PageRequest.of(0, PAGE_SIZE, LIST_SORT)));
         int totalPages = Math.max(1, result.getTotalPages());
         int pageNo = Math.min(Math.max(page, 1), totalPages);
         // 页码越界（含 ?page=999）时按钳制后的页码重新取一页，而不是给空列表
@@ -91,8 +92,8 @@ public class PageViewController {
                         ? articles.searchPublished(kw, PageRequest.of(pageNo - 1, PAGE_SIZE, LIST_SORT))
                         : articles.searchPublishedExcluding(kw, blocked, PageRequest.of(pageNo - 1, PAGE_SIZE, LIST_SORT)))
                     : (blocked.isEmpty()
-                        ? articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(pageNo - 1, PAGE_SIZE))
-                        : articles.findPublishedExcludingAuthors("PUBLISHED", blocked, PageRequest.of(pageNo - 1, PAGE_SIZE)));
+                        ? articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", PageRequest.of(pageNo - 1, PAGE_SIZE, LIST_SORT))
+                        : articles.findPublishedExcludingAuthors("PUBLISHED", blocked, PageRequest.of(pageNo - 1, PAGE_SIZE, LIST_SORT)));
         }
         List<Article> list = result.getContent();
         model.addAttribute("articles", list);

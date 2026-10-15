@@ -66,7 +66,9 @@ public class ArticleController {
                                     @RequestParam(defaultValue = "10") int size,
                                     Authentication auth) {
         java.util.Set<String> blocked = safety.blockedUsernamesFor(auth);
-        PageRequest pr = PageRequest.of(page, size);
+        // 排序必须跟着 Pageable 一起传：findPublishedExcludingAuthors 的 JPQL 里没有 order by，
+        // 漏传就会退化成数据库的物理顺序（实测屏蔽后首页变成按 id 升序 = 最老的文章排最前）。
+        PageRequest pr = PageRequest.of(page, size, ArticleRepository.FEED_SORT);
         if (blocked.isEmpty()) {
             return articles.findByStatusOrderByPublishedAtDesc("PUBLISHED", pr);
         }

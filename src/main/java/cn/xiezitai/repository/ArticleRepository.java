@@ -3,12 +3,28 @@ package cn.xiezitai.repository;
 import cn.xiezitai.entity.Article;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import java.util.Optional;
 
 public interface ArticleRepository extends JpaRepository<Article, Long> {
+
+    /**
+     * 前台文章流的统一排序口径：发布时间倒序，同刻按 id 倒序。
+     *
+     * <p>{@code id} 这个次排序键不是装饰：同一秒发布（或 WordPress / 博客园批量导入）的
+     * 文章 publishedAt 完全相同，单键排序在 MySQL 下顺序不保证稳定。
+     *
+     * <p>更要命的是**屏蔽前后走的是两条不同的查询**（有屏蔽名单时用
+     * {@link #findPublishedExcludingAuthors}，它的排序完全由 {@link Pageable} 决定）：
+     * 只要有一侧漏传排序，用户屏蔽某人后首页顺序就会整体漂一次，
+     * 表现为「屏蔽后首页排序变了」。所以排序常量必须放在这里让所有调用方共用，
+     * 不能各写各的。
+     */
+    Sort FEED_SORT = Sort.by(Sort.Order.desc("publishedAt"), Sort.Order.desc("id"));
+
     Optional<Article> findBySlug(String slug);
     /** 前台 slug 多候选匹配用：忽略大小写（WP 中文 slug 常以 %xx 小写形态入库，URL 解码后需换形态再查） */
     Optional<Article> findBySlugIgnoreCase(String slug);
