@@ -141,7 +141,8 @@ public class PageViewController {
      *       所以 {@code .+} 已经够用（{@code /a/b} 这种多段路径压根不会命中这条路由）。</li>
      * </ol>
      */
-    @GetMapping("/{slug:(?!admin\\.html$|index\\.html$|privacy\\.html$|favicon\\.svg$|favicon\\.ico$|robots\\.txt$|sitemap\\.xml$|error$).+}")
+    // terms.html = 服务条款（App Store 1.2 要求登录前可访问），务必留在断言里，否则会被当 slug 302 回首页
+    @GetMapping("/{slug:(?!admin\\.html$|index\\.html$|privacy\\.html$|terms\\.html$|favicon\\.svg$|favicon\\.ico$|robots\\.txt$|sitemap\\.xml$|error$).+}")
     public String rootSlug(@PathVariable String slug, Model model, jakarta.servlet.http.HttpServletRequest request) {
         String s = slug.replaceAll("/+$", "");
         Article a = findArticleFlexible(s).filter(ArticleService::isPublished).orElse(null);
