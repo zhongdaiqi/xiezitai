@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.JpaSort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -124,10 +125,18 @@ public class ArticleController {
         int s = Math.min(Math.max(size, 1), 200);
         String col = isAllowedSort(sort) ? sort : "publishedAt";
         Sort.Direction dir = "asc".equalsIgnoreCase(order) ? Sort.Direction.ASC : Sort.Direction.DESC;
+        // 待审核 / 草稿 / 已驳回的 publishedAt 是 null。数据库把 NULL 当最小值，
+        // 倒序时它们会全部沉到列表最末 —— 文章一多就得翻到最后一页才看得见新投稿，
+        // 管理员实际等于「看不到待审核」。这里退化到 createdAt 参与排序：
+        // 没发布的按创建时间参与竞争，新投稿自然排在最前，而不是被 NULL 拖到末尾。
+        // 用 JpaSort.unsafe 是因为 Sort 只认实体属性名，写不了 coalesce 表达式。
+        Sort primary = "publishedAt".equals(col)
+                ? JpaSort.unsafe(dir, "coalesce(a.publishedAt, a.createdAt)")
+                : Sort.by(Sort.Order.by(col).with(dir));
         // 次排序 id 跟随主排序方向：同一时间戳内「顺序」时小 id 在前、「倒序」时大 id 在前，
         // 既保证翻页稳定（总有序），也符合用户点「顺序/倒序」的直觉
         return articles.searchAdmin(kw, st,
-                PageRequest.of(p, s, Sort.by(Sort.Order.by(col).with(dir), new Sort.Order(dir, "id"))));
+                PageRequest.of(p, s, primary.and(Sort.by(new Sort.Order(dir, "id")))));
     }
 
     private static boolean isAllowedSort(String s) {

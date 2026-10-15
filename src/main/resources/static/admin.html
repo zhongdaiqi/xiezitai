@@ -345,17 +345,24 @@
                            onkeydown="if(event.key==='Enter'){event.preventDefault();onArticleSearchInput(true);}">
                     <select id="a-filter-status" onchange="onArticleStatusChange()">
                         <option value="">全部状态</option>
+                        <option value="PENDING">待审核</option>
                         <option value="PUBLISHED">已发布</option>
                         <option value="DRAFT">草稿</option>
+                        <option value="REJECTED">已驳回</option>
                     </select>
                     <select id="a-sort" onchange="loadArticles(0)">
                         <option value="publishedAt">发布时间</option>
                         <option value="updatedAt">更新时间</option>
+                        <option value="createdAt">创建时间</option>
                     </select>
                     <select id="a-order" onchange="loadArticles(0)">
                         <option value="desc" selected>倒序</option>
                         <option value="asc">顺序</option>
                     </select>
+                    <!-- 待审核快捷入口：新投稿的 publishedAt 为空，光靠翻页很容易漏掉，
+                         这里常驻显示待审核数量，点一下直接筛出来 -->
+                    <button type="button" class="ghost" id="a-pending-btn" style="display:none"
+                            onclick="quickPendingFilter()">待审核 <b id="a-pending-count">0</b> 篇</button>
                 </div>
                 <div class="table-wrap">
                     <table id="alist"><thead><tr><th>标题</th><th>标签</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody></tbody></table>
@@ -1559,7 +1566,7 @@ async function boot() {
 const ALIST_SIZE = 10;      // 侧栏一页几条（行卡片式，10 条大约一屏）
 let aListPage = 0;          // 从 0 起，与后端 Page 的 page 参数一致
 let aListKw = '';           // 关键词：标题 / 摘要 / 正文
-let aListStatus = '';       // ''=全部 / PUBLISHED / DRAFT
+let aListStatus = '';       // ''=全部 / PENDING / PUBLISHED / DRAFT / REJECTED
 let aListTotal = 0, aListPages = 1;
 let aSearchTimer = null;
 let articlesCache = {};
@@ -1573,6 +1580,29 @@ function onArticleSearchInput(immediate) {
 function onArticleStatusChange() {
     aListStatus = $('a-filter-status').value || '';
     loadArticles(0);
+}
+
+/** 点「待审核 N 篇」→ 把状态筛选切到待审核并回到第一页 */
+function quickPendingFilter() {
+    const sel = $('a-filter-status');
+    if (sel) sel.value = 'PENDING';
+    onArticleStatusChange();
+}
+
+/**
+ * 刷新「待审核 N 篇」按钮。
+ * 只取 size=1 的 Page 读 totalElements，不拉正文，代价可以忽略；
+ * 数量大于 0 才显示按钮，没有待审核时不打扰。
+ */
+async function refreshPendingHint() {
+    const btn = $('a-pending-btn');
+    if (!btn) return;
+    try {
+        const p = await jget('/api/admin/articles?page=0&size=1&status=PENDING');
+        const n = (p && p.totalElements) || 0;
+        $('a-pending-count').textContent = n;
+        btn.style.display = n > 0 ? 'inline-block' : 'none';
+    } catch (e) { /* 提示条失败不影响列表本身 */ }
 }
 
 async function loadArticles(page) {
@@ -1590,6 +1620,7 @@ async function loadArticles(page) {
     aListTotal = p.totalElements || 0;
     aListPages = totalPages;
     renderArticleRows(p.content || []);
+    refreshPendingHint();
     renderArticlePager();
 }
 
